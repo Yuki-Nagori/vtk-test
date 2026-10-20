@@ -1,0 +1,26 @@
+[package]
+name = "panta-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+links = "panta_ffi"
+build = "build.rs"
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]
+cxx.workspace = true
+panta-core.workspace = true
+panta-mesh.workspace = true
+panta-foundation.workspace = true
+
+[build-dependencies]
+cxx-build.workspace = true
+panta-build.workspace = true
+
+[lints]
+workspace = true

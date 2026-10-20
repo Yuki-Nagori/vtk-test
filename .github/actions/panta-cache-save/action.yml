@@ -1,0 +1,30 @@
+# 三平台 test job 仅在 main push 保存已验证的下载缓存；PR 只恢复。
+name: Save panta caches
+description: 输出缓存体积并保存 cargo-home 与 tools/deps 两键缓存
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        du -sh target/panta-tools target/panta-deps ~/.cargo/registry 2>/dev/null || true
+
+    - if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      continue-on-error: true
+      uses: actions/cache/save@v4
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          ~/.cargo/git/checkouts
+        key: cargo-home-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+
+    - if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      continue-on-error: true
+      uses: actions/cache/save@v4
+      with:
+        path: |
+          target/panta-tools
+          target/panta-deps
+          !target/panta-tools/cargo-*
+        key: panta-cache-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'crates/panta-build/Cargo.toml', 'crates/panta-build/src/*.rs', 'native/CMakeLists.txt', 'native/cmake/*.cmake', 'native/cmake/**/*.cmake') }}

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="7" height="5" viewBox="0 0 7 5" fill="none">
+  <!-- 内部绘制的界面符号；Git 历史保留原始设计。 -->
+  <path d="M0.7 0.6h5.6L3.5 4.4z" fill="currentColor"/>
+</svg>

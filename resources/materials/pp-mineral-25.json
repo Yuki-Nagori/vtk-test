@@ -1,0 +1,113 @@
+{
+  "schema": "panta.material-preview/v1",
+  "id": "pp-mineral-25-v1",
+  "source_text": "PP — 25% mineral filler",
+  "semantics": {
+    "polymer_class": "mineral-filled polypropylene",
+    "family": "Polypropylene (PP)",
+    "filler": "Mineral",
+    "filler_content_percent": 25.0
+  },
+  "viscosity": {
+    "model": "cross-wlf",
+    "n": 0.345755,
+    "tau_star_pa": 27366.9,
+    "d1": 1.14454e+16,
+    "d2": 263.15,
+    "d3": 0.0,
+    "a1": 36.9765,
+    "a2": 51.6
+  },
+  "pvt": {
+    "model": "tait-2domain",
+    "convention": "modified-tait-13",
+    "transition": {
+      "b5": 404.15,
+      "b6": 2.66e-07
+    },
+    "melt": {
+      "b1m": 0.0007896,
+      "b2m": 3.308e-07,
+      "b3m": 142654000.0,
+      "b4m": 0.003534
+    },
+    "solid": {
+      "b1s": 0.0007479,
+      "b2s": 1.78e-07,
+      "b3s": 241484000.0,
+      "b4s": 0.001927
+    },
+    "transition_term": {
+      "b7": 4.166e-05,
+      "b8": 0.1247,
+      "b9": 3.694e-08
+    }
+  },
+  "specific_heat": {
+    "model": "tabulated",
+    "temps_k": [
+      305.15,
+      363.15,
+      375.15,
+      387.15,
+      389.15,
+      391.15,
+      393.15,
+      395.15,
+      397.15,
+      403.15,
+      463.15,
+      513.15
+    ],
+    "values": [
+      1438.0,
+      1647.0,
+      1743.0,
+      2940.0,
+      5159.0,
+      7706.0,
+      6485.0,
+      3175.0,
+      1986.0,
+      1762.0,
+      1922.0,
+      2047.0
+    ]
+  },
+  "thermal_conductivity": {
+    "model": "tabulated",
+    "temps_k": [
+      333.15,
+      363.15,
+      393.15,
+      423.15,
+      453.15,
+      483.15,
+      513.15
+    ],
+    "values": [
+      0.467,
+      0.426,
+      0.4145,
+      0.301,
+      0.279,
+      0.2765,
+      0.274
+    ]
+  },
+  "processing": {
+    "recommended_melt_range_k": [
+      453.15,
+      493.15
+    ],
+    "maximum_melt_k": 503.15,
+    "recommended_mold_range_k": [
+      313.15,
+      353.15
+    ],
+    "ejection_temperature_k": 383.15,
+    "transition_temperature_k": 395.15,
+    "maximum_shear_stress_pa": 250000.0,
+    "maximum_shear_rate_s": 100000.0
+  }
+}

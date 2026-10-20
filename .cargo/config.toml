@@ -1,0 +1,7 @@
+[alias]
+# 安装当前 Cargo profile 对应的桌面运行目录（不是平台安装器）。
+panta-package = "run --locked --package panta-launcher -- package"
+# 测试直接使用 cargo test --locked -p <package> 或 --workspace。
+quality = "run -q --locked --package panta-tests -- quality"
+lint = "run -q --locked --package panta-tests -- lint"
+format = "run -q --locked --package panta-tests -- format"

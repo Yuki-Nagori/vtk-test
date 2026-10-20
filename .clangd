@@ -1,0 +1,3 @@
+# clangd 使用 CMake 原生编译数据库；debug 为日常开发配置。
+CompileFlags:
+  CompilationDatabase: target/native/debug

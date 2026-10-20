@@ -1,0 +1,42 @@
+# Cargo workspace outputs; keep Cargo.lock and .cargo/config.toml tracked.
+/target/
+
+# Native build and package outputs (out-of-source builds only).
+/build/
+/out/
+/dist/
+/native/build/
+/native/out/
+/layering-lint-fixtures/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+CMakeUserPresets.json
+compile_commands.json
+.ninja_deps
+.ninja_log
+
+# Qt Creator per-user state; QML/resources and generated-code inputs stay tracked.
+CMakeLists.txt.user
+CMakeLists.txt.user.*
+
+# Local runtime data and verification outputs; fixtures belong outside these dirs.
+/.local/
+/artifacts/
+
+# Machine-local environment overrides; keep documented examples.
+.env
+.env.*
+!.env.example
+!.env.template
+
+# Editor/system caches; shared .vscode settings are intentionally not excluded.
+.cache/
+.clangd/
+.idea/
+.vs/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~

@@ -1,0 +1,7 @@
+# 固定项目工具链，由 rustup 解析；工具链缺失时先执行：
+#   rustup toolchain install 1.99.0
+# 当前使用 Rust 1.99 API，workspace 最低构建版本同步为 1.99。
+[toolchain]
+channel = "1.99.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
