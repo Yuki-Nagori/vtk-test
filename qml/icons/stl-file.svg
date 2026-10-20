@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="16" height="16" viewBox="0 0 16 16" fill="none">
+  <!-- 内部绘制的 STL 资产符号；Git 历史保留原始设计。 -->
+  <path d="M3 1.5h7l3 3v11H3z" fill="#e8f0f7" stroke="#4a6f9f"/>
+  <path d="M10 1.5v3h3M5 11l2-3 2 2 1.5-2 1.5 3z" stroke="#2e7ce0" stroke-width="1.1" stroke-linejoin="round"/>
+</svg>

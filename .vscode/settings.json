@@ -1,0 +1,28 @@
+{
+    // 共享设置只使用 ${workspaceFolder} 相对路径，不写入个人机器路径。
+    "cmake.sourceDirectory": "${workspaceFolder}/native",
+    "cmake.configurePreset": "debug",
+    "cmake.buildPreset": "debug",
+    "cmake.configureOnOpen": false,
+    // QML 与 Cargo 使用同一 Qt；构建元数据由 cargo build 生成。
+    "qt-qml.qmlls.customExePath": "${workspaceFolder}/target/panta-deps/qt/staging/bin/qmlls",
+    "qt-qml.qmlls.customArgs": [
+        "--no-cmake-calls",
+        "-b", "${workspaceFolder}/target/native/debug",
+        "-I", "${workspaceFolder}/target/panta-deps/qt/staging/qml"
+    ],
+    // 使用 CMake 实际编译参数索引 native 源码。
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/target/native/debug/compile_commands.json",
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+    "C_Cpp.default.cppStandard": "c++20",
+    "C_Cpp.default.intelliSenseMode": "${default}",
+    // 编译数据库尚未生成时提供最小回退路径；生成后以数据库中的 -I/-F
+    // 参数为准，避免手工 includePath 覆盖真实编译选项。
+    "C_Cpp.default.includePath": [
+        "${workspaceFolder}/native/**",
+        "${workspaceFolder}/tests/cpp/**",
+        "${workspaceFolder}/tests/qml/**",
+        "${workspaceFolder}/target/panta-deps/qt/staging/include/**",
+        "${workspaceFolder}/target/panta-deps/qt/staging/lib/**/Headers"
+    ]
+}

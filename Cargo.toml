@@ -1,0 +1,53 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/launcher",
+    "crates/panta-build",
+    "crates/panta-core",
+    "crates/panta-foundation",
+    "crates/panta-mesh",
+    "crates/panta-import",
+    "crates/panta-cli",
+    "crates/panta-ffi",
+    "tests",
+]
+# 根目录默认成员固定为桌面入口：workspace 有多个可执行（panta-cli、panta-tests）
+# 后，裸 `cargo run` 无法自动选择，按 004/040 的入口约定仍默认启动主窗口。
+# 默认成员同时收窄裸 build/test 的范围，全量检查必须显式 `--workspace`（CI 即如此）。
+default-members = ["crates/launcher"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# 本仓库使用 Rust 1.99 的原子计数 API；最低版本与锁定工具链同步。
+rust-version = "1.99"
+license = "Apache-2.0"
+repository = "https://github.com/Yuki-Nagori/panta"
+
+[workspace.dependencies]
+libc = "0.2"
+fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
+panta-build = { path = "crates/panta-build", version = "0.1.0" }
+panta-foundation = { path = "crates/panta-foundation", version = "0.1.0" }
+panta-mesh = { path = "crates/panta-mesh", version = "0.1.0" }
+panta-import = { path = "crates/panta-import", version = "0.1.0" }
+serde_json = "1.0"
+cxx = "1.0.202"
+cxx-build = "1.0.202"
+panta-core = { path = "crates/panta-core", version = "0.1.0" }
+panta-ffi = { path = "crates/panta-ffi", version = "0.1.0" }
+serde = { version = "1.0", features = ["derive"] }
+sha2 = "0.10"
+zstd = "0.14.2"
+
+[workspace.lints.rust]
+# 默认拒绝 unsafe；已登记例外只有 FFI 边界（任务 006）的 CXX 生成胶水，以及
+# 任务 047 的 panta-foundation::crash 专用模块。两处均只在模块级 allow 放开，
+# 手写 unsafe 必须逐块写 // SAFETY:，规范见 standards/rust.md。
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+# 测试和 build script 也必须显式处理失败；完整质量入口由任务 011 继续扩展。
+unwrap_used = "deny"
+expect_used = "deny"

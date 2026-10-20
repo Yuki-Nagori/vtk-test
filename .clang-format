@@ -1,0 +1,22 @@
+---
+# 默认样式同时覆盖 C++ 与 Objective-C++，避免 .mm 被语言过滤拒绝。
+BasedOnStyle: LLVM
+# Regroup 按分类优先级把包含重排为规范块（块间空行、块内按优先级+字母序）：
+# 结构由规则归一化生成，不依赖作者手摆空行。存量文件均为优先级 1 的单块，
+# 输出不变；netgen 的 mystdlib.h（优先级 0，提供遗留头编译所需的
+# `using namespace std`，字母序默认会排到 meshing/* 之后导致编译失败）
+# 会被自动拆分为最前的独立块。
+IncludeBlocks: Regroup
+# 契约头优先：netgen 的 mystdlib.h 提供遗留头（ngarray/table 等）编译所需
+# 的 `using namespace std`，字母序默认会把它排到 meshing/* 之后导致编译
+# 失败；优先级 0 使其在块内恒排最前。正则兼容尖括号与引号两种写法，
+IncludeCategories:
+  - Regex: '^[<"]mystdlib\.h[>"]$'
+    Priority: 0
+  - Regex: '.*'
+    Priority: 1
+Standard: c++20
+IndentWidth: 4
+ColumnLimit: 100
+DerivePointerAlignment: false
+PointerAlignment: Left

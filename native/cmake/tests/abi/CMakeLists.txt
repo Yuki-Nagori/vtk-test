@@ -1,0 +1,22 @@
+# 仅验证 CMake 配置元数据，不冒充 MSVC 编译/运行验证。
+cmake_minimum_required(VERSION 3.22)
+project(panta_abi_policy_test LANGUAGES CXX)
+# 本夹具只测试 ABI 元数据的继承和拒绝覆盖，不重复执行生产编译器供给检查。
+set(PANTA_USE_SYSTEM_TOOLS ON)
+set(MSVC TRUE)
+include("${CMAKE_CURRENT_LIST_DIR}/../../build-policy.cmake")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated.cpp" "int generated() { return 0; }\n")
+# 模拟 Qt 创建 object library：刻意不调用任何自有 target helper。
+add_library(plugin_init OBJECT "${CMAKE_CURRENT_BINARY_DIR}/generated.cpp")
+if(INJECT_BAD_RUNTIME)
+  set_property(TARGET plugin_init PROPERTY MSVC_RUNTIME_LIBRARY MultiThreadedDebugDLL)
+endif()
+if(INJECT_BAD_ITERATOR)
+  set_property(TARGET plugin_init PROPERTY COMPILE_DEFINITIONS _ITERATOR_DEBUG_LEVEL=2)
+endif()
+add_library(prebuilt STATIC IMPORTED)
+get_target_property(_mapping prebuilt MAP_IMPORTED_CONFIG_DEBUG)
+if(NOT _mapping STREQUAL "Release;RelWithDebInfo;")
+  message(FATAL_ERROR "Debug imported dependency mapping was not inherited")
+endif()
+panta_verify_msvc_abi("${CMAKE_CURRENT_SOURCE_DIR}")

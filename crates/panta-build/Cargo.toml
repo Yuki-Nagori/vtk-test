@@ -1,0 +1,16 @@
+[package]
+name = "panta-build"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+sha2.workspace = true
+fs4.workspace = true
+cc = "1.4.6"
+
+[lints]
+workspace = true

@@ -1,0 +1,57 @@
+# 三平台完整行为回归；格式、Clippy 与 QML 静态检查集中在单独的 Ubuntu job。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: build and test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      CMAKE_GENERATOR: Ninja
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/panta-toolchain
+      - if: runner.os == 'Linux'
+        uses: ./.github/actions/linux-gl-prereqs
+      - uses: ./.github/actions/panta-cache-restore
+      # Cargo 编译 workspace 和 launcher 构建脚本；native 集成测试构建 CMake
+      # 测试目标并执行 qmllint/CTest，不另跑重复的 check/build/test 阶段。
+      - name: Build and test Rust, native and QML
+        run: cargo test --locked --workspace
+      - uses: ./.github/actions/panta-cache-save
+
+  quality:
+    name: format, Clippy and QML (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CMAKE_GENERATOR: Ninja
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/panta-toolchain
+        with:
+          components: "rustfmt,clippy"
+      - uses: ./.github/actions/linux-gl-prereqs
+      - uses: ./.github/actions/panta-cache-restore
+      - name: Check source formatting
+        run: cargo format --check
+      - name: Check Rust
+        run: cargo lint clippy --check
+      - name: Check QML
+        run: cargo lint qmllint --check

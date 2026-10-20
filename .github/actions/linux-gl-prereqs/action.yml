@@ -1,0 +1,14 @@
+# Linux 宿主 GL 前置（任务 012）：链接期 GL 头文件、QML 运行所需
+# libEGL/libxkbcommon 与软件渲染驱动、VTK Wayland find module 所需的
+# wayland-protocols 与 xkbcommon 开发文件。属宿主能力，不进项目依赖。
+name: Install Linux GL prerequisites
+description: apt 安装 Qt configure 与 QML 运行所需的宿主 GL 前置
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          libgl-dev libegl1 libxkbcommon-dev libxkbcommon0 libgl1-mesa-dri libwayland-dev \
+          wayland-protocols

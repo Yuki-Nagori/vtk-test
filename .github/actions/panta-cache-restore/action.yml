@@ -1,0 +1,26 @@
+# 恢复 Cargo 下载缓存与托管工具/SDK；不缓存构建树。
+name: Restore panta caches
+description: 恢复 Cargo 下载与托管工具/SDK 缓存
+runs:
+  using: composite
+  steps:
+    - uses: actions/cache/restore@v4
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          ~/.cargo/git/checkouts
+        key: cargo-home-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+        restore-keys: |
+          cargo-home-${{ runner.os }}-${{ runner.arch }}-
+
+    - uses: actions/cache/restore@v4
+      with:
+        path: |
+          target/panta-tools
+          target/panta-deps
+          !target/panta-tools/cargo-*
+        key: panta-cache-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'crates/panta-build/Cargo.toml', 'crates/panta-build/src/*.rs', 'native/CMakeLists.txt', 'native/cmake/*.cmake', 'native/cmake/**/*.cmake') }}
+        restore-keys: |
+          panta-cache-${{ runner.os }}-${{ runner.arch }}-

@@ -1,0 +1,19 @@
+[package]
+name = "panta-tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+build = "build.rs"
+
+[dependencies]
+panta-build.workspace = true
+
+[[test]]
+name = "native"
+path = "integration/native.rs"
+
+[lints]
+workspace = true
