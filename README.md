@@ -48,7 +48,7 @@ Cargo 会按锁定清单自动获取 CMake、Ninja、Qt 和 native SDK 到 `targ
 
 `cargo panta-package` 通过 Qt 部署脚本收集 Qt/QML 运行时，并由 CMake 安装 app 实际链接的 native 动态依赖及许可清单；不会带上 native 开发用静态库、头文件和 CMake 导出。它生成安装目录，不生成 DMG、MSI 或 DEB 安装器，也不做 Developer ID 签名或公证。macOS arm64 的本地安装目录已做独立启动和真实窗口检查；下载的 CI 测试包会校验 app 资源签名完整性，但未公证，首次启动时 macOS 可能显示安全确认。Windows/Linux 的安装目录和目标机窗口仍待验收。
 
-GitHub Actions 在 macOS arm64、Windows x86_64 和 Linux x86_64 构建并运行完整行为测试；单一 Ubuntu quality job 检查格式、Clippy 和 qmllint。本仓库不自动打包或生产 SDK；测试安装目录通过本地 `cargo panta-package` 生成。
+PR 与 main 推送的 GitHub Actions（`ci.yml`）只在 Linux x86_64 构建并运行完整行为测试，另有 Ubuntu quality job 检查格式、Clippy 和 qmllint；macOS arm64 与 Windows x86_64 的完整行为测试移至 `nightly.yml`，每天 18:00 UTC（北京时间 02:00）定时运行，也可在 Actions 页面手动触发（workflow_dispatch）。本仓库不自动打包或生产 SDK；测试安装目录通过本地 `cargo panta-package` 生成。
 
 Release 安装目录可用 `cargo run --locked --release --package panta-launcher -- package` 生成到 `target/package/release`。
 

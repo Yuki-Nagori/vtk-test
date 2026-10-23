@@ -1,4 +1,5 @@
-# 三平台完整行为回归；格式、Clippy 与 QML 静态检查集中在单独的 Ubuntu job。
+# PR 与 main 推送只跑 Linux：完整行为回归 + 格式、Clippy 与 QML 静态检查。
+# macOS 与 Windows 的完整行为回归移至 nightly.yml（定时 + 手动触发）。
 name: CI
 
 on:
@@ -15,20 +16,15 @@ concurrency:
 
 jobs:
   test:
-    name: build and test (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, ubuntu-latest, windows-2022]
-    runs-on: ${{ matrix.os }}
+    name: build and test (ubuntu-latest)
+    runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
       CMAKE_GENERATOR: Ninja
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/panta-toolchain
-      - if: runner.os == 'Linux'
-        uses: ./.github/actions/linux-gl-prereqs
+      - uses: ./.github/actions/linux-gl-prereqs
       - uses: ./.github/actions/panta-cache-restore
       # Cargo 编译 workspace 和 launcher 构建脚本；native 集成测试构建 CMake
       # 测试目标并执行 qmllint/CTest，不另跑重复的 check/build/test 阶段。

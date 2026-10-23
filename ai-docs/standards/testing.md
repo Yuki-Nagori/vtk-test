@@ -57,6 +57,6 @@ cargo lint --check               # Clippy与QML lint
 cargo quality                   # 手动格式、Clippy、QML lint及完整行为测试
 ```
 
-CI 在三平台执行 `cargo test --locked --workspace`，其中包含 native/QML 构建、完整 CTest 和 qmllint；单一 Ubuntu quality job 顺序执行格式、Clippy 和 qmllint。没有按变更路径分发的测试层级或每日诊断 workflow。
+PR 与 main 推送的 CI（`ci.yml`）只在 Linux 执行 `cargo test --locked --workspace`，其中包含 native/QML 构建、完整 CTest 和 qmllint；单一 Ubuntu quality job 顺序执行格式、Clippy 和 qmllint。macOS 与 Windows 的同一测试由 `nightly.yml` 每日定时（18:00 UTC）及手动触发运行。没有按变更路径分发的测试层级。
 
 新增、迁移或删除测试时，同步 Cargo manifest、CMake source/target/CTest 注册、实际格式/lint 输入、README 和所属任务，并验证测试被发现、失败能正确传播。禁止保留同一测试的双份实现。
