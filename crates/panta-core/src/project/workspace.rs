@@ -378,6 +378,11 @@ pub fn project_error_message(code: &str) -> &'static str {
         "project.export_cancelled" => "导出已取消。",
         "project.diagnostics_cancelled" => "网格质量诊断已取消。",
         "project.mesh_not_resident" => "请先打开要导出的网格。",
+        "animation.not_a_sequence" => {
+            "所选文件不是编号序列（需同目录、同前缀、同扩展名、末尾编号的至少 2 个文件）。"
+        }
+        "animation.io_failed" => "读取序列目录失败。",
+        "animation.frame_failed" => "该帧无法读取或解析。",
         "project.mesh_lod_only" => {
             "该网格过大，当前仅加载了显示用简化网格（LOD）；质量诊断与导出需要完整网格，暂不支持。"
         }

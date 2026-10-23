@@ -73,9 +73,9 @@ ApplicationWindow {
     readonly property bool canCreateOrOpen: !busy
     readonly property bool canSave: projectOpen && !busy
     readonly property bool canImport: projectOpen && !busy
-    readonly property bool canExport: meshActive && !busy && projectModel.activeMeshLodStatus.length === 0
+    readonly property bool canExport: meshActive && !busy && !projectModel.animationActive && projectModel.activeMeshLodStatus.length === 0
     readonly property bool canScreenshot: !busy
-    readonly property bool canDiagnose: meshActive && !busy && projectModel.activeMeshLodStatus.length === 0
+    readonly property bool canDiagnose: meshActive && !busy && !projectModel.animationActive && projectModel.activeMeshLodStatus.length === 0
     // 仅当诊断报告属于活动页签时展示，切换页签后需重新诊断。
     readonly property var activeQuality: projectModel.meshQuality.documentId === projectModel.activeDocumentId ? projectModel.meshQuality : ({})
 
@@ -148,6 +148,15 @@ ApplicationWindow {
         fileMode: FileDialog.OpenFile
         nameFilters: ["Panta 工程文件 (*.panta)"]
         onAccepted: projectModel.openProjectUrl(selectedFile)
+    }
+
+    FileDialog {
+        id: openAnimationFileDialog
+        objectName: "openAnimationFileDialog"
+        title: "打开时序序列（选择任一帧）"
+        fileMode: FileDialog.OpenFile
+        nameFilters: ["网格帧 (*.stl *.vtu *.vtp *.vtk *.obj *.ply)"]
+        onAccepted: projectModel.openAnimationUrl(selectedFile)
     }
 
     MessageDialog {
@@ -489,6 +498,68 @@ ApplicationWindow {
                 color: Theme.colorTextMuted
                 font.pixelSize: Theme.fontSmall
                 wrapMode: Text.WrapAnywhere
+            }
+            // 时序动画（task 020）：只读序列播放，帧未就绪时停在上一帧等待。
+            RowLayout {
+                Layout.fillWidth: true
+                Label {
+                    Layout.fillWidth: true
+                    text: "时序动画"
+                    font.bold: true
+                }
+                Button {
+                    objectName: "openAnimationButton"
+                    text: projectModel.animationActive ? "关闭序列" : "打开序列…"
+                    onClicked: projectModel.animationActive ? projectModel.closeAnimation() : openAnimationFileDialog.open()
+                    ToolTip.visible: hovered
+                    ToolTip.text: "选择编号序列中的任一帧文件（如 flow_0001.stl），自动发现同前缀的全部帧"
+                }
+            }
+            ColumnLayout {
+                objectName: "animationPanel"
+                Layout.fillWidth: true
+                visible: projectModel.animationActive
+                RowLayout {
+                    Layout.fillWidth: true
+                    Button {
+                        text: "◀"
+                        onClicked: projectModel.stepAnimation(-1)
+                    }
+                    Button {
+                        objectName: "animationPlayButton"
+                        text: projectModel.animationPlaying ? "暂停" : "播放"
+                        onClicked: projectModel.setAnimationPlaying(!projectModel.animationPlaying)
+                    }
+                    Button {
+                        text: "▶"
+                        onClicked: projectModel.stepAnimation(1)
+                    }
+                    SpinBox {
+                        objectName: "animationFpsSpin"
+                        from: 1
+                        to: 60
+                        value: projectModel.animationFps
+                        onValueModified: projectModel.setAnimationFps(value)
+                        ToolTip.visible: hovered
+                        ToolTip.text: "帧率 (fps)"
+                    }
+                }
+                Slider {
+                    objectName: "animationFrameSlider"
+                    Layout.fillWidth: true
+                    from: 0
+                    to: Math.max(0, projectModel.animationFrameCount - 1)
+                    stepSize: 1
+                    value: Math.max(0, projectModel.animationFrame)
+                    onMoved: projectModel.setAnimationFrame(Math.round(value))
+                }
+                Label {
+                    objectName: "animationStatus"
+                    Layout.fillWidth: true
+                    text: projectModel.animationStatus
+                    color: Theme.colorTextMuted
+                    wrapMode: Text.WrapAnywhere
+                }
             }
             // 大网格 LOD 提示（task 019）：显示的是简化网格，拾取为近似值，诊断/导出不可用。
             Label {

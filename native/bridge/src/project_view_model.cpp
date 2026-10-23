@@ -77,6 +77,8 @@ ProjectViewModel::ProjectViewModel(QObject* parent)
             !m_diagnosticsProgress)
             m_taskProgressPoll.stop();
     });
+    m_animationPoll.setInterval(10);
+    connect(&m_animationPoll, &QTimer::timeout, this, &ProjectViewModel::tick_animation);
     reset_documents();
 }
 
@@ -312,6 +314,9 @@ void ProjectViewModel::prepareActiveMesh() {
         [this, future = result->future(), selection] {
             m_meshPreparationPending = false;
             const auto prepared = future.result();
+            // 序列播放期间视口由动画帧占用；关闭序列时重新准备活动网格。
+            if (m_animation)
+                return;
             if (selection != m_meshSelection) {
                 prepared->mesh.reset();
                 prepareActiveMesh();
@@ -937,6 +942,13 @@ void ProjectViewModel::refresh_workspace(bool forceActiveNotification) {
         ++m_meshSelection;
         m_activeMesh.reset();
         m_activeLodSourceTriangles = 0;
+        if (m_animation) {
+            // 切换文档即退出序列查看（保守：序列不与文档并存）。
+            m_animation.reset();
+            m_animationPoll.stop();
+            m_animationPlaying = false;
+            emit animationChanged();
+        }
         prepareActiveMesh();
         emit activeDocumentChanged();
         emit meshChanged();
@@ -1005,4 +1017,135 @@ double panta::bridge::ProjectViewModel::importPreviewProgress() const {
     if (!m_importPreviewPending || m_previewRequest == 0)
         return -1.0;
     return panta::ffi::project_service_stl_preview_progress(*m_service, m_previewRequest);
+}
+
+bool panta::bridge::ProjectViewModel::openAnimationUrl(const QUrl& url) {
+    clearError();
+    std::string path;
+    QString conversionError;
+    const QString local = url.isLocalFile() ? url.toLocalFile() : url.toString();
+    if (!toBoundaryText(QDir::cleanPath(QDir::fromNativeSeparators(local)), &path,
+                        &conversionError))
+        return fail(conversionError);
+    panta::ffi::ProjectDiagnostic error;
+    auto sequence = panta::ffi::animation_open(path, error);
+    if (!error.code.empty())
+        return fail(error);
+    m_animation.emplace(std::move(sequence));
+    m_animationFrameCount = static_cast<int>(panta::ffi::animation_frame_count(**m_animation));
+    m_animationTarget = 0;
+    m_animationDisplayed = -1;
+    m_animationPlaying = false;
+    m_animationFrameError.clear();
+    panta::ffi::animation_request(**m_animation, 0);
+    m_animationClock.start();
+    m_animationPoll.start();
+    emit animationChanged();
+    return true;
+}
+
+void panta::bridge::ProjectViewModel::closeAnimation() {
+    if (!m_animation)
+        return;
+    m_animation.reset();
+    m_animationPoll.stop();
+    m_animationPlaying = false;
+    m_animationFrameCount = 0;
+    m_animationDisplayed = -1;
+    m_activeMesh.reset();
+    emit animationChanged();
+    emit meshChanged();
+    prepareActiveMesh();
+}
+
+void panta::bridge::ProjectViewModel::setAnimationFrame(int frame) {
+    if (!m_animation || m_animationFrameCount <= 0)
+        return;
+    m_animationTarget = std::clamp(frame, 0, m_animationFrameCount - 1);
+    panta::ffi::animation_request(**m_animation, static_cast<std::uint64_t>(m_animationTarget));
+}
+
+void panta::bridge::ProjectViewModel::stepAnimation(int delta) {
+    if (!m_animation || m_animationFrameCount <= 0)
+        return;
+    const int base = m_animationDisplayed < 0 ? 0 : m_animationDisplayed;
+    setAnimationFrame(((base + delta) % m_animationFrameCount + m_animationFrameCount) %
+                      m_animationFrameCount);
+}
+
+void panta::bridge::ProjectViewModel::setAnimationPlaying(bool playing) {
+    if (!m_animation || m_animationPlaying == playing)
+        return;
+    m_animationPlaying = playing;
+    m_animationClock.restart();
+    emit animationChanged();
+}
+
+void panta::bridge::ProjectViewModel::setAnimationFps(int fps) {
+    const int clamped = std::clamp(fps, 1, 60);
+    if (clamped == m_animationFps)
+        return;
+    m_animationFps = clamped;
+    emit animationChanged();
+}
+
+QString panta::bridge::ProjectViewModel::animationStatus() const {
+    if (!m_animation)
+        return {};
+    const auto frame = m_animationDisplayed < 0 ? 0 : m_animationDisplayed;
+    QString text = QStringLiteral("帧 %1 / %2：%3（已缓存 %4 帧）")
+                       .arg(frame + 1)
+                       .arg(m_animationFrameCount)
+                       .arg(QString::fromUtf8(panta::ffi::animation_frame_name(
+                           **m_animation, static_cast<std::uint64_t>(frame))))
+                       .arg(panta::ffi::animation_cached_frames(**m_animation));
+    if (!m_animationFrameError.isEmpty())
+        text += QStringLiteral("；") + m_animationFrameError;
+    return text;
+}
+
+// 10ms 轮询：播放时按帧率推进目标帧；目标帧未就绪则保持上一帧等待，不阻塞 GUI。
+void panta::bridge::ProjectViewModel::tick_animation() {
+    if (!m_animation || m_animationFrameCount <= 0)
+        return;
+    if (m_animationPlaying && m_animationDisplayed == m_animationTarget &&
+        m_animationClock.elapsed() >= 1000 / m_animationFps) {
+        setAnimationFrame((m_animationTarget + 1) % m_animationFrameCount);
+        m_animationClock.restart();
+    }
+    if (m_animationDisplayed == m_animationTarget)
+        return;
+    auto frame =
+        panta::ffi::animation_frame(**m_animation, static_cast<std::uint64_t>(m_animationTarget));
+    if (!frame.error.code.empty()) {
+        // 坏帧不替换视口，只记录诊断并视为已到达，播放继续。
+        m_animationFrameError =
+            QString::fromUtf8(panta::ffi::project_error_message(frame.error.code));
+        m_animationDisplayed = m_animationTarget;
+        emit animationChanged();
+        return;
+    }
+    if (!frame.ready)
+        return;
+    try {
+        auto mesh = std::make_shared<panta::visualization::SurfaceMeshSnapshot>();
+        const auto current = panta::ffi::project_service_current(*m_service);
+        mesh->project_revision = current.value.revision;
+        mesh->vertices.reserve(frame.coordinates.size() / 3);
+        for (std::size_t offset = 0; offset + 2 < frame.coordinates.size(); offset += 3)
+            mesh->vertices.push_back({frame.coordinates[offset], frame.coordinates[offset + 1],
+                                      frame.coordinates[offset + 2]});
+        m_activeMeshTriangles = mesh->vertices.size() / 3;
+        m_activeLodSourceTriangles = 0;
+        m_activeMesh = std::move(mesh);
+    } catch (const std::exception& error) {
+        fail(QStringLiteral("project.mesh_allocation_failed"), QStringLiteral("resource"),
+             QString::fromUtf8(error.what()));
+        setAnimationPlaying(false);
+        return;
+    }
+    m_animationFrameError.clear();
+    m_animationDisplayed = m_animationTarget;
+    emit meshChanged();
+    emit animationChanged();
 }
