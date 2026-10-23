@@ -37,7 +37,10 @@ use project_operation::{
 };
 mod display;
 pub use display::MeshDisplayInput;
-use display::{export_mesh_display, prepare_mesh_display, project_service_mesh_display_input};
+use display::{
+    diagnose_mesh_display, export_mesh_display, prepare_mesh_display,
+    project_service_mesh_display_input,
+};
 mod mesh;
 use mesh::{mesh_coordinates, mesh_validate_tet};
 
@@ -218,6 +221,29 @@ pub mod bridge {
         pub error: ProjectDiagnostic,
     }
 
+    /// 表面网格质量诊断摘要（复用 panta_mesh::diagnose_surface，默认容差）。
+    #[derive(Default, Clone, PartialEq)]
+    pub struct MeshQualityReport {
+        pub weld_tolerance: f64,
+        pub triangle_count: u64,
+        pub raw_vertex_count: u64,
+        pub welded_vertex_count: u64,
+        pub near_duplicate_vertex_count: u64,
+        pub degenerate_triangle_count: u64,
+        pub boundary_edge_count: u64,
+        pub hole_count: u64,
+        pub non_manifold_edge_count: u64,
+        pub inconsistent_orientation_edge_count: u64,
+        pub clean: bool,
+    }
+
+    /// 网格质量诊断结果；失败 value 不可消费。
+    #[derive(Default)]
+    pub struct MeshQualityReportResult {
+        pub value: MeshQualityReport,
+        pub error: ProjectDiagnostic,
+    }
+
     /// 驻留 Mesh 的显示快照结果。
     #[derive(Default)]
     pub struct SurfaceMeshSnapshotResult {
@@ -250,6 +276,7 @@ pub mod bridge {
             import_id: &str,
         ) -> Box<MeshDisplayInput>;
         fn prepare_mesh_display(input: Box<MeshDisplayInput>) -> SurfaceMeshSnapshotResult;
+        fn diagnose_mesh_display(input: Box<MeshDisplayInput>) -> MeshQualityReportResult;
         fn export_mesh_display(input: Box<MeshDisplayInput>, path: &str) -> ProjectDiagnostic;
 
         fn project_service_new() -> Box<ProjectService>;

@@ -416,6 +416,76 @@ bool ProjectViewModel::beginExportActiveMeshUrl(const QUrl& url) {
     return true;
 }
 
+bool ProjectViewModel::beginDiagnoseActiveMesh() {
+    clearError();
+    if (m_diagnosticsPending)
+        return fail(QStringLiteral("project.command_invalid"), QStringLiteral("state"),
+                    QStringLiteral("diagnostics already pending"));
+    if (m_activeDocumentId.isEmpty())
+        return fail(QStringLiteral("project.mesh_not_resident"), QStringLiteral("state"));
+    using Input = rust::Box<panta::ffi::MeshDisplayInput>;
+    using Result = std::shared_ptr<panta::ffi::MeshQualityReportResult>;
+    using Watcher = QFutureWatcher<Result>;
+    const QString documentId = m_activeDocumentId;
+    const auto input = std::make_shared<std::optional<Input>>(
+        panta::ffi::project_service_mesh_display_input(*m_service, documentId.toStdString()));
+    const auto result = std::make_shared<QPromise<Result>>();
+    auto watcher = std::make_unique<Watcher>();
+    result->start();
+    watcher->setFuture(result->future());
+    connect(watcher.get(), &Watcher::finished, watcher.get(), &QObject::deleteLater);
+    connect(
+        watcher.get(), &Watcher::finished, this,
+        [this, future = result->future(), documentId] {
+            m_diagnosticsPending = false;
+            const auto report = future.result();
+            const bool succeeded = report && report->error.code.empty();
+            if (succeeded) {
+                const auto& value = report->value;
+                const auto count = [](std::uint64_t number) { return QVariant::fromValue(number); };
+                m_meshQuality = QVariantMap{
+                    {QStringLiteral("documentId"), documentId},
+                    {QStringLiteral("clean"), value.clean},
+                    {QStringLiteral("weldTolerance"), value.weld_tolerance},
+                    {QStringLiteral("triangleCount"), count(value.triangle_count)},
+                    {QStringLiteral("rawVertexCount"), count(value.raw_vertex_count)},
+                    {QStringLiteral("weldedVertexCount"), count(value.welded_vertex_count)},
+                    {QStringLiteral("nearDuplicateVertexCount"),
+                     count(value.near_duplicate_vertex_count)},
+                    {QStringLiteral("degenerateTriangleCount"),
+                     count(value.degenerate_triangle_count)},
+                    {QStringLiteral("boundaryEdgeCount"), count(value.boundary_edge_count)},
+                    {QStringLiteral("holeCount"), count(value.hole_count)},
+                    {QStringLiteral("nonManifoldEdgeCount"), count(value.non_manifold_edge_count)},
+                    {QStringLiteral("inconsistentOrientationEdgeCount"),
+                     count(value.inconsistent_orientation_edge_count)},
+                };
+            } else if (report) {
+                m_meshQuality.clear();
+                fail(report->error);
+            }
+            emit meshQualityChanged();
+            emit diagnosticsFinished(succeeded);
+        },
+        Qt::QueuedConnection);
+    try {
+        startBackgroundWaiter([input, result] {
+            auto report = std::make_shared<panta::ffi::MeshQualityReportResult>(
+                panta::ffi::diagnose_mesh_display(std::move(input->value())));
+            input->reset();
+            result->addResult(report);
+            result->finish();
+        });
+    } catch (const std::system_error& error) {
+        return fail(QStringLiteral("project.io"), QStringLiteral("io"),
+                    QString::fromUtf8(error.what()));
+    }
+    watcher.release()->setParent(this);
+    m_diagnosticsPending = true;
+    emit meshQualityChanged();
+    return true;
+}
+
 bool ProjectViewModel::renameProject(const QString& name) {
     clearError();
     std::string boundaryName;

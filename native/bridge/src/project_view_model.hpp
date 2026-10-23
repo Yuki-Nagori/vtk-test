@@ -59,11 +59,16 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     Q_PROPERTY(QString activeDocumentId READ activeDocumentId NOTIFY activeDocumentChanged)
     Q_PROPERTY(QString activeDocumentTitle READ activeDocumentTitle NOTIFY activeDocumentChanged)
     Q_PROPERTY(bool exportPending READ exportPending NOTIFY exportPendingChanged)
+    Q_PROPERTY(bool diagnosticsPending READ diagnosticsPending NOTIFY meshQualityChanged)
+    Q_PROPERTY(QVariantMap meshQuality READ meshQuality NOTIFY meshQualityChanged)
 
   public:
     explicit ProjectViewModel(QObject* parent = nullptr);
     [[nodiscard]] bool projectOperationPending() const { return m_projectOperationPending; }
     [[nodiscard]] bool exportPending() const { return m_exportPending; }
+    [[nodiscard]] bool diagnosticsPending() const { return m_diagnosticsPending; }
+    /// 最近一次诊断报告；documentId 标明所属页签，空映射表示尚未诊断。
+    [[nodiscard]] QVariantMap meshQuality() const { return m_meshQuality; }
     [[nodiscard]] bool importPreviewLargeMeshWarning() const {
         return m_importPreviewLargeMeshWarning;
     }
@@ -170,6 +175,10 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     /// 写盘在后台线程执行；返回准入结果，完成后发出 exportFinished。
     Q_INVOKABLE bool beginExportActiveMeshUrl(const QUrl& url);
 
+    /// 在后台诊断活动页签的已驻留网格（task 006 diagnose_surface，默认容差）；
+    /// 返回准入结果，完成后更新 meshQuality 并发出 diagnosticsFinished。
+    Q_INVOKABLE bool beginDiagnoseActiveMesh();
+
   signals:
     void errorChanged();
     void projectOperationPendingChanged();
@@ -190,6 +199,8 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     void activeDocumentChanged();
     void exportPendingChanged();
     void exportFinished(const QString& path, bool succeeded);
+    void meshQualityChanged();
+    void diagnosticsFinished(bool succeeded);
 
   protected:
     /// 启动只等待独占 Rust 请求的线程；启动失败抛 system_error，调用方尚未准入领域任务。
@@ -229,6 +240,8 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     bool m_projectOperationPending = false;
     bool m_meshPreparationPending = false;
     bool m_exportPending = false;
+    bool m_diagnosticsPending = false;
+    QVariantMap m_meshQuality;
     quint64 m_meshSelection = 0;
     bool m_importPreviewLargeMeshWarning = false;
     quint64 m_importPreviewExpandedBytes = 0;

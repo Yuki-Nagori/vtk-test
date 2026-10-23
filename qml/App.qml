@@ -19,7 +19,7 @@ ApplicationWindow {
     color: Theme.colorPanel
 
     readonly property bool projectOpen: projectModel.currentPath.length > 0
-    readonly property bool busy: projectModel.projectOperationPending || projectModel.importPending || projectModel.exportPending
+    readonly property bool busy: projectModel.projectOperationPending || projectModel.importPending || projectModel.exportPending || projectModel.diagnosticsPending
     readonly property bool meshActive: projectModel.activeDocumentId.length > 0
     // 导出 / 截图的一次性结果提示；新的错误或操作会覆盖它。
     property string notice: ""
@@ -39,6 +39,9 @@ ApplicationWindow {
     readonly property bool canImport: projectOpen && !busy
     readonly property bool canExport: meshActive && !busy
     readonly property bool canScreenshot: !busy
+    readonly property bool canDiagnose: meshActive && !busy
+    // 仅当诊断报告属于活动页签时展示，切换页签后需重新诊断。
+    readonly property var activeQuality: projectModel.meshQuality.documentId === projectModel.activeDocumentId ? projectModel.meshQuality : ({})
 
     function showNotice(text: string, isError: bool) {
         notice = text;
@@ -126,6 +129,11 @@ ApplicationWindow {
         sequences: [StandardKey.Save]
         enabled: shellWindow.canSave
         onActivated: projectModel.saveProject()
+    }
+    Shortcut {
+        sequence: "Ctrl+D"
+        enabled: shellWindow.canDiagnose
+        onActivated: projectModel.beginDiagnoseActiveMesh()
     }
     Shortcut {
         sequence: "Ctrl+I"
@@ -277,6 +285,40 @@ ApplicationWindow {
                 color: Theme.colorTextMuted
                 font.pixelSize: Theme.fontSmall
                 wrapMode: Text.WrapAnywhere
+            }
+            // 网格质量诊断面板：复用 task 006 的表面诊断，后台执行。
+            RowLayout {
+                Layout.fillWidth: true
+                visible: shellWindow.meshActive
+                Label {
+                    Layout.fillWidth: true
+                    text: "网格质量"
+                    font.bold: true
+                }
+                Button {
+                    objectName: "diagnoseMeshButton"
+                    text: projectModel.diagnosticsPending ? "诊断中…" : "诊断"
+                    enabled: shellWindow.canDiagnose
+                    onClicked: projectModel.beginDiagnoseActiveMesh()
+                    ToolTip.visible: hovered
+                    ToolTip.text: "检查重复顶点、退化面、开放边界、非流形边与法向一致性 (Ctrl+D)"
+                }
+            }
+            ColumnLayout {
+                objectName: "meshQualityPanel"
+                Layout.fillWidth: true
+                visible: shellWindow.meshActive && shellWindow.activeQuality.documentId !== undefined
+                spacing: 2
+                Repeater {
+                    model: [["结论", shellWindow.activeQuality.clean ? "无问题" : "存在问题", !shellWindow.activeQuality.clean], ["三角面", shellWindow.activeQuality.triangleCount, false], ["焊接后顶点", shellWindow.activeQuality.weldedVertexCount, false], ["近重复顶点", shellWindow.activeQuality.nearDuplicateVertexCount, shellWindow.activeQuality.nearDuplicateVertexCount > 0], ["退化三角面", shellWindow.activeQuality.degenerateTriangleCount, shellWindow.activeQuality.degenerateTriangleCount > 0], ["开放边界边", shellWindow.activeQuality.boundaryEdgeCount, shellWindow.activeQuality.boundaryEdgeCount > 0], ["孔洞", shellWindow.activeQuality.holeCount, shellWindow.activeQuality.holeCount > 0], ["非流形边", shellWindow.activeQuality.nonManifoldEdgeCount, shellWindow.activeQuality.nonManifoldEdgeCount > 0], ["法向不一致边", shellWindow.activeQuality.inconsistentOrientationEdgeCount, shellWindow.activeQuality.inconsistentOrientationEdgeCount > 0], ["焊接容差", Number(shellWindow.activeQuality.weldTolerance ?? 0).toExponential(2), false]]
+                    delegate: Label {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        text: String(modelData[0]) + "：" + String(modelData[1])
+                        color: modelData[2] ? Theme.colorError : Theme.colorTextMuted
+                        font.pixelSize: Theme.fontSmall
+                    }
+                }
             }
         }
         Rectangle {

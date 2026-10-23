@@ -1075,3 +1075,40 @@ TEST(ProjectViewModelTest, ExportsTheActiveMeshInTheBackgroundAndReportsFailures
     EXPECT_FALSE(finished.takeFirst().at(1).toBool());
     EXPECT_EQ(view_model.errorCode(), QStringLiteral("project.export_unsupported_format"));
 }
+
+TEST(ProjectViewModelTest, DiagnosesTheActiveMeshInTheBackground) {
+    QTemporaryDir fixture;
+    ASSERT_TRUE(fixture.isValid());
+    const QString sourcePath = QDir(fixture.path()).filePath(QStringLiteral("open.stl"));
+    QFile source(sourcePath);
+    ASSERT_TRUE(source.open(QIODevice::WriteOnly | QIODevice::Text));
+    ASSERT_GT(source.write("solid open\nfacet normal 0 0 1\n outer loop\n"
+                           "  vertex 0 0 0\n  vertex 1 0 0\n  vertex 0 1 0\n"
+                           " endloop\nendfacet\nendsolid open\n"),
+              0);
+    source.close();
+
+    ProjectViewModel view_model;
+    ASSERT_TRUE(finish_project_operation(
+        view_model, view_model.createProject(QStringLiteral("Diagnose"), fixture.path())));
+    EXPECT_FALSE(view_model.beginDiagnoseActiveMesh());
+    EXPECT_EQ(view_model.errorCode(), QStringLiteral("project.mesh_not_resident"));
+    EXPECT_FALSE(view_model.diagnosticsPending());
+
+    ASSERT_TRUE(view_model.importStl(sourcePath, QStringLiteral("dual-domain"),
+                                     QStringLiteral("millimeters"), false));
+    ASSERT_TRUE(wait_for_active_mesh(view_model, view_model.activeDocumentId()));
+    QSignalSpy finished(&view_model, &ProjectViewModel::diagnosticsFinished);
+    ASSERT_TRUE(view_model.beginDiagnoseActiveMesh());
+    EXPECT_TRUE(view_model.diagnosticsPending());
+    ASSERT_TRUE(finished.wait(10000));
+    EXPECT_TRUE(finished.takeFirst().at(0).toBool());
+    EXPECT_FALSE(view_model.diagnosticsPending());
+    const QVariantMap quality = view_model.meshQuality();
+    EXPECT_EQ(quality.value(QStringLiteral("documentId")).toString(),
+              view_model.activeDocumentId());
+    EXPECT_EQ(quality.value(QStringLiteral("triangleCount")).toULongLong(), 1U);
+    EXPECT_EQ(quality.value(QStringLiteral("boundaryEdgeCount")).toULongLong(), 3U);
+    EXPECT_EQ(quality.value(QStringLiteral("holeCount")).toULongLong(), 1U);
+    EXPECT_FALSE(quality.value(QStringLiteral("clean")).toBool());
+}
