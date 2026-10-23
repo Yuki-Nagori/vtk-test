@@ -6,7 +6,7 @@
 
 | 项目 | 项目选择 | 验证重点 |
 |---|---|---|
-| 平台 | macOS / arm64 为本地窗口验收平台；CI 配置覆盖 macOS/Linux/Windows | 记录实际系统、SDK、编译器及图形后端，不把 CI 构建当成真实窗口验收 |
+| 平台 | macOS / arm64 为本地窗口验收平台；PR CI 覆盖 Linux，nightly 覆盖 macOS/Windows | 记录实际系统、SDK、编译器及图形后端，不把 CI 构建当成真实窗口验收 |
 | C++ | 自有代码 C++20；Cargo 托管 LLVM 22.1.7；平台 SDK / 标准库由宿主提供 | 部署目标、编译器选项、ABI 与平台运行库 |
 | C++ 测试 | GoogleTest v1.18.0（三平台固定 SDK，仅 `BUILD_TESTING`；规则见 [gtest](gtest.md)） | native 测试聚合、错误传播与真实覆盖范围 |
 | Rust | stable 1.99.0，edition 2024；`rust-version` 下限 1.99 | 锁定工具链与依赖的 MSRV |
