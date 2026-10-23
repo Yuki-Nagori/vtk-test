@@ -21,6 +21,10 @@ pub enum ProjectError {
     ImportUnsupportedMeshType(String),
     ImportUnsupportedUnits(String),
     ImportParseFailed(String),
+    /// 体网格导入：含非线性四面体单元或四面体校验失败（task 021）。
+    ImportVolumeUnsupported(String),
+    /// 体网格命令作用于非体网格（task 021）。
+    VolumeUnavailable(String),
     ImportSourceChanged(String),
     ImportAssetWriteFailed(String),
     ImportRecordMissing(String),
@@ -57,6 +61,8 @@ impl ProjectError {
             Self::ImportUnsupportedMeshType(_) => "project.import_unsupported_mesh_type",
             Self::ImportUnsupportedUnits(_) => "project.import_unsupported_units",
             Self::ImportParseFailed(_) => "project.import_parse_failed",
+            Self::ImportVolumeUnsupported(_) => "project.import_volume_unsupported",
+            Self::VolumeUnavailable(_) => "project.volume_unavailable",
             Self::ImportSourceChanged(_) => "project.import_source_changed",
             Self::ImportAssetWriteFailed(_) => "project.import_asset_write_failed",
             Self::ImportRecordMissing(_) => "project.import_record_missing",
@@ -81,7 +87,7 @@ impl ProjectError {
                 "missing"
             }
             Self::AlreadyExists(_) | Self::ImportSourceChanged(_) => "conflict",
-            Self::NoProject | Self::ExportCancelled => "state",
+            Self::NoProject | Self::ExportCancelled | Self::VolumeUnavailable(_) => "state",
             Self::InvalidFile(_)
             | Self::ManifestInvalid(_)
             | Self::UnsupportedSchema(_)
@@ -89,6 +95,7 @@ impl ProjectError {
             | Self::ImportUnsupportedMeshType(_)
             | Self::ImportUnsupportedUnits(_)
             | Self::ImportParseFailed(_)
+            | Self::ImportVolumeUnsupported(_)
             | Self::ExportUnsupportedFormat(_)
             | Self::ExportTooLarge(_)
             | Self::ExportSourceUnavailable(_) => "format",
@@ -118,6 +125,8 @@ impl ProjectError {
             | Self::ImportUnsupportedMeshType(name)
             | Self::ImportUnsupportedUnits(name)
             | Self::ImportParseFailed(name)
+            | Self::ImportVolumeUnsupported(name)
+            | Self::VolumeUnavailable(name)
             | Self::ImportSourceChanged(name)
             | Self::ImportAssetWriteFailed(name)
             | Self::ImportRecordMissing(name)

@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError};
 
 use panta_import::ImportError;
-use panta_mesh::{MeshAsset, MeshAssetError, MeshAssetReader, SurfaceMesh};
+use panta_mesh::{MeshAsset, MeshAssetError, MeshAssetReader, SurfaceMesh, TetMesh};
 
 pub(crate) const OUTCOME_CAPACITY: usize = 256;
 
@@ -51,13 +51,16 @@ pub struct Outcome {
     pub mesh: Option<SurfaceMesh>,
     /// 非 0 表示 `mesh` 是显示 LOD，值为源资产面数（task 019）。
     pub lod_source_triangles: u64,
+    /// 体网格资产：`mesh` 为外表面，此处为原始四面体（task 021）。
+    pub volume: Option<Arc<TetMesh>>,
 }
 
 /// 超过此面数的表面资产激活时改为流式构建显示 LOD，不整体读入（约 1.4 GiB 展开体积）。
 pub const LOD_ACTIVATION_TRIANGLES: u64 = 20_000_000;
 
 /// 激活成功的负载：网格与（若为 LOD）源资产面数。
-pub(crate) type LoadedMesh = (SurfaceMesh, u64);
+/// 第三项为体网格资产的四面体数据（task 021），显示网格为其外表面。
+pub(crate) type LoadedMesh = (SurfaceMesh, u64, Option<Arc<TetMesh>>);
 
 /// 资产读取、校验或后台调度的失败诊断。
 pub(crate) struct ActivationFailure {
@@ -248,12 +251,14 @@ fn publish(
         detail: String::new(),
         mesh: None,
         lod_source_triangles: 0,
+        volume: None,
     };
     match result {
-        Ok(Some((mesh, lod_source))) if !entry.cancel_requested.load(Ordering::SeqCst) => {
+        Ok(Some((mesh, lod_source, volume))) if !entry.cancel_requested.load(Ordering::SeqCst) => {
             outcome.kind = OutcomeKind::Succeeded;
             outcome.mesh = Some(mesh);
             outcome.lod_source_triangles = lod_source;
+            outcome.volume = volume;
         }
         Ok(_) => {}
         Err(error) => {
@@ -287,7 +292,7 @@ pub(crate) fn load_committed_surface(
     request: ActivationRequest,
 ) -> Result<SurfaceMesh, ActivationFailure> {
     load_asset(request, || false, u64::MAX)?
-        .map(|(mesh, _)| mesh)
+        .map(|(mesh, _, _)| mesh)
         .ok_or(ActivationFailure {
             code: "project.asset_read_failed",
             category: "io",
@@ -325,15 +330,19 @@ fn load_asset(
     };
     match asset {
         MeshAsset::Surface(mesh) if digest == request.expected_digest => {
-            Ok((!cancelled()).then_some((mesh, 0)))
+            Ok((!cancelled()).then_some((mesh, 0, None)))
         }
         MeshAsset::Surface(_) => Err(ActivationFailure {
             code: "project.asset_parse_failed",
             category: "format",
             detail: asset_path.display().to_string(),
         }),
+        MeshAsset::Volume(volume) if digest == request.expected_digest => {
+            let surface = panta_mesh::boundary_surface(&volume);
+            Ok((!cancelled()).then_some((surface, 0, Some(Arc::new(volume)))))
+        }
         MeshAsset::Volume(_) => Err(ActivationFailure {
-            code: "project.asset_unsupported_format",
+            code: "project.asset_parse_failed",
             category: "format",
             detail: asset_path.display().to_string(),
         }),
@@ -386,7 +395,7 @@ fn load_lod(
         detail: "LOD worker panicked".to_owned(),
     })?;
     match result {
-        Ok(Some(lod)) if !cancelled() => Ok(Some(Some((lod.mesh, source)))),
+        Ok(Some(lod)) if !cancelled() => Ok(Some(Some((lod.mesh, source, None)))),
         Ok(_) => Ok(Some(None)),
         Err(MeshAssetError::Io(kind)) => Err(ActivationFailure {
             code: "project.asset_read_failed",
@@ -748,6 +757,7 @@ mod tests {
                     triangles: Vec::new(),
                 },
                 0,
+                None,
             ))),
         );
         // 请求已消费后，迟到结果不再发布。
@@ -758,6 +768,7 @@ mod tests {
                     triangles: Vec::new(),
                 },
                 0,
+                None,
             ))),
         );
         let outcomes = coordinator.drain();
@@ -780,6 +791,7 @@ mod tests {
                     triangles: Vec::new(),
                 },
                 0,
+                None,
             ))),
         );
         let outcomes = coordinator.drain();
@@ -828,6 +840,7 @@ mod tests {
                     triangles: Vec::new(),
                 },
                 0,
+                None,
             ))),
         );
         assert!(coordinator.drain().is_empty(), "迟到成功不得发布");
@@ -856,6 +869,7 @@ mod tests {
                     triangles: Vec::new(),
                 },
                 0,
+                None,
             ))),
         );
         // 成功结果已入队；随后代次推进（工程切换）：旧代次结果在 drain

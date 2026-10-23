@@ -47,6 +47,10 @@ use progress::{
     project_service_stl_import_progress, project_service_stl_preview_progress,
     task_progress_cancel, task_progress_fraction, task_progress_new, task_progress_share,
 };
+mod volume;
+use volume::{
+    project_service_export_volume_vtu, project_service_volume_info, project_service_volume_section,
+};
 mod animation;
 use animation::{
     AnimationSequence, animation_cached_frames, animation_frame, animation_frame_count,
@@ -265,6 +269,19 @@ pub mod bridge {
     }
 
     /// 时序动画单帧（task 020）：ready 时 coordinates 为扁平三角面坐标。
+    /// 体网格摘要与质量统计；`available` 为假时 error 说明原因（表面网格或未驻留）。
+    #[derive(Default)]
+    pub struct VolumeInfoResult {
+        pub available: bool,
+        pub node_count: u64,
+        pub tet_count: u64,
+        pub min_dihedral_degrees: f64,
+        pub max_aspect_ratio: f64,
+        pub mean_aspect_ratio: f64,
+        pub poor_count: u64,
+        pub error: ProjectDiagnostic,
+    }
+
     #[derive(Default)]
     pub struct AnimationFrameResult {
         pub ready: bool,
@@ -281,6 +298,22 @@ pub mod bridge {
         fn animation_frame_name(sequence: &AnimationSequence, index: u64) -> String;
         fn animation_request(sequence: &mut AnimationSequence, index: u64);
         fn animation_frame(sequence: &mut AnimationSequence, index: u64) -> AnimationFrameResult;
+        fn project_service_volume_info(
+            service: &ProjectService,
+            import_id: &str,
+        ) -> VolumeInfoResult;
+        /// 单切面显示坐标，复用帧结果结构（ready + 连续三角坐标）。
+        fn project_service_volume_section(
+            service: &ProjectService,
+            import_id: &str,
+            axis: u32,
+            fraction: f64,
+        ) -> AnimationFrameResult;
+        fn project_service_export_volume_vtu(
+            service: &ProjectService,
+            import_id: &str,
+            path: &str,
+        ) -> ProjectDiagnostic;
     }
 
     extern "Rust" {

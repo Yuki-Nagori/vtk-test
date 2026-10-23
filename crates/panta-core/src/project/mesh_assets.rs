@@ -1,7 +1,7 @@
 //! Mesh sidecar 的工程内发布与安全读取边界。
 
 use super::ProjectError;
-use panta_mesh::{MeshAssetRef, SurfaceMesh, encode_mesh_asset_ref};
+use panta_mesh::{MeshAssetRef, encode_mesh_asset_ref};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -10,12 +10,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
 
 /// 崩溃后重试可复用内容完全相同的孤立 sidecar；不同内容不得覆盖不可变路径。
-pub(super) fn write_surface_mesh_asset_or_reuse(
+pub(super) fn write_mesh_asset_or_reuse(
     path: &Path,
-    mesh: &SurfaceMesh,
+    mesh: MeshAssetRef<'_>,
     on_progress: &dyn Fn(f64),
 ) -> Result<Option<(String, bool)>, ProjectError> {
-    let (bytes, digest) = encode_mesh_asset_ref(MeshAssetRef::Surface(mesh)).map_err(|error| {
+    let (bytes, digest) = encode_mesh_asset_ref(mesh).map_err(|error| {
         ProjectError::ImportAssetWriteFailed(format!("encode mesh asset: {error}"))
     })?;
     if path.exists() {

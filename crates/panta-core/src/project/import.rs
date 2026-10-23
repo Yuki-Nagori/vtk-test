@@ -19,9 +19,7 @@ pub(super) struct PendingImport {
     request: u64,
     phase: Arc<AtomicU8>,
     progress: Arc<Progress>,
-    receiver: Receiver<
-        Result<(super::ProjectState, ImportRecord, panta_mesh::SurfaceMesh), ProjectError>,
-    >,
+    receiver: Receiver<Result<ImportCommit, ProjectError>>,
 }
 
 impl PendingImport {
@@ -165,10 +163,11 @@ impl ProjectService {
             )),
         };
         self.pending_import = None;
-        let (state, record, mesh) = result?;
+        let (state, record, mesh, volume) = result?;
         self.latest_mesh_id = Some(record.id.clone());
         self.mesh_cache.insert_active(record.id.clone(), mesh);
         self.mesh_lod_sources.remove(&record.id);
+        self.set_volume_mesh(&record.id, volume);
         self.current = Some(state);
         Ok(Some(record))
     }
@@ -198,6 +197,14 @@ impl ProjectService {
     }
 }
 
+/// 提交结果：候选状态、导入记录、显示网格，以及体网格导入时的四面体数据（task 021）。
+type ImportCommit = (
+    super::ProjectState,
+    ImportRecord,
+    panta_mesh::SurfaceMesh,
+    Option<panta_mesh::TetMesh>,
+);
+
 fn commit_import(
     candidate: &mut super::ProjectState,
     session: &mut StlImportSession,
@@ -206,7 +213,7 @@ fn commit_import(
     import_number: usize,
     phase: &AtomicU8,
     progress: &Progress,
-) -> Result<(super::ProjectState, ImportRecord, panta_mesh::SurfaceMesh), ProjectError> {
+) -> Result<ImportCommit, ProjectError> {
     // 细粒度进度：复核读取/解析 5–50%（按字节 / 三角面），缩放 60%，资产写出 60–90%（按块），
     // 清单提交 100%。
     progress.set_fraction(0.05);
@@ -223,8 +230,12 @@ fn commit_import(
     ensure_import_running(phase)?;
     progress.set_fraction(0.5);
     let mut record = prepared.record(import_number, options);
+    let volume = volume_from_prepared(&prepared, options)?;
     drop(std::mem::take(&mut prepared.bytes));
-    prepared.scale_mesh_mm(options).map_err(map_import_error)?;
+    match &volume {
+        Some(volume) => prepared.mesh = panta_mesh::boundary_surface(volume),
+        None => prepared.scale_mesh_mm(options).map_err(map_import_error)?,
+    }
     progress.set_fraction(0.6);
     let lease = super::repository::WriteLease::acquire(candidate)?;
     let project_root = candidate
@@ -234,7 +245,10 @@ fn commit_import(
     let (asset_reference, asset_path, created) = write_import_mesh_asset(
         project_root,
         &mut record,
-        &prepared.mesh,
+        match &volume {
+            Some(volume) => panta_mesh::MeshAssetRef::Volume(volume),
+            None => panta_mesh::MeshAssetRef::Surface(&prepared.mesh),
+        },
         Some(phase),
         &|value| progress.set_fraction(0.6 + value * 0.3),
     )?;
@@ -263,7 +277,47 @@ fn commit_import(
     asset.committed = true;
     phase.store(IMPORT_COMMITTED, Ordering::Release);
     progress.set_fraction(1.0);
-    Ok((candidate.clone(), record, prepared.mesh))
+    Ok((candidate.clone(), record, prepared.mesh, volume))
+}
+
+/// 「实体 3D」类型的 VTU / 旧版 VTK 按线性四面体体网格导入：坐标换算到毫米后构建并校验；
+/// 含其他单元类型时整体拒绝（task 021 保守决策）。其他组合仍按表面导入。
+fn volume_from_prepared(
+    prepared: &panta_import::PreparedStl,
+    options: ImportOptions,
+) -> Result<Option<panta_mesh::TetMesh>, ProjectError> {
+    if !options.is_solid()
+        || !matches!(
+            prepared.format,
+            panta_import::ImportFormat::Vtu | panta_import::ImportFormat::VtkLegacy
+        )
+    {
+        return Ok(None);
+    }
+    let snapshot = panta_import::SourceSnapshot {
+        path: prepared.path.clone(),
+        source_name: prepared.source_name.clone(),
+        format: prepared.format,
+        bytes: prepared.bytes.clone(),
+        modified_unix_ms: prepared.modified_unix_ms,
+    };
+    let grid = panta_import::parse_volume_snapshot(&snapshot).map_err(|error| match error {
+        ImportError::Format(detail) => ProjectError::ImportVolumeUnsupported(detail.to_string()),
+        other => map_import_error(other),
+    })?;
+    let factor = options.factor_mm();
+    let mut points = grid.points;
+    for point in &mut points {
+        *point = point.map(|value| value * factor);
+        if point.iter().any(|value| !value.is_finite()) {
+            return Err(ProjectError::ImportParseFailed(
+                "millimeter coordinate overflow".to_owned(),
+            ));
+        }
+    }
+    panta_mesh::tet_mesh_from_cells(points, grid.tets)
+        .map(Some)
+        .map_err(|error| ProjectError::ImportVolumeUnsupported(error.to_string()))
 }
 
 struct ImportAsset {
@@ -283,7 +337,7 @@ impl Drop for ImportAsset {
 fn write_import_mesh_asset(
     project_root: &Path,
     record: &mut ImportRecord,
-    mesh: &panta_mesh::SurfaceMesh,
+    mesh: panta_mesh::MeshAssetRef<'_>,
     phase: Option<&AtomicU8>,
     on_progress: &dyn Fn(f64),
 ) -> Result<(MeshAssetRef, std::path::PathBuf, bool), ProjectError> {
@@ -299,12 +353,25 @@ fn write_import_mesh_asset(
         };
         record.mesh_asset_id = asset_id;
         let mut asset_reference = new_surface_asset_ref(record, "millimeters");
+        if matches!(mesh, panta_mesh::MeshAssetRef::Volume(_)) {
+            asset_reference.kind = "volume".to_owned();
+        }
         let asset_path =
             super::service::resolve_asset_path(project_root, &asset_reference.relative_path)
                 .map_err(|error| ProjectError::ImportAssetWriteFailed(error.to_string()))?;
-        let write_result =
-            mesh_assets::write_surface_mesh_asset_or_reuse(&asset_path, mesh, on_progress)
-                .map_err(|error| ProjectError::ImportAssetWriteFailed(error.to_string()))?;
+        let write_result = mesh_assets::write_mesh_asset_or_reuse(
+            &asset_path,
+            match &mesh {
+                panta_mesh::MeshAssetRef::Surface(surface) => {
+                    panta_mesh::MeshAssetRef::Surface(surface)
+                }
+                panta_mesh::MeshAssetRef::Volume(volume) => {
+                    panta_mesh::MeshAssetRef::Volume(volume)
+                }
+            },
+            on_progress,
+        )
+        .map_err(|error| ProjectError::ImportAssetWriteFailed(error.to_string()))?;
         if let Some((digest, created)) = write_result {
             asset_reference.digest = digest;
             return Ok((asset_reference, asset_path, created));
@@ -370,7 +437,7 @@ impl ProjectService {
         candidate.revision = revision;
         candidate.dirty = false;
         let phase = AtomicU8::new(IMPORT_RUNNING);
-        let (candidate, record, mesh) = commit_import(
+        let (candidate, record, mesh, volume) = commit_import(
             &mut candidate,
             &mut self.import_session,
             source,
@@ -382,6 +449,7 @@ impl ProjectService {
         self.current = Some(candidate);
         self.latest_mesh_id = Some(record.id.clone());
         self.mesh_cache.insert_active(record.id.clone(), mesh);
+        self.set_volume_mesh(&record.id, volume);
         Ok(record)
     }
 

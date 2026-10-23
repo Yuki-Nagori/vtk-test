@@ -27,6 +27,8 @@ pub struct ProjectService {
     pub(super) activation_attempts: HashMap<String, u64>,
     /// 驻留网格为显示 LOD 时记录源面数（task 019）。
     pub(super) mesh_lod_sources: HashMap<String, u64>,
+    /// 驻留网格来自体网格资产时的四面体数据（task 021）；显示网格为其外表面。
+    pub(super) volume_meshes: HashMap<String, Arc<panta_mesh::TetMesh>>,
     pub(super) activation: Arc<crate::activation::ActivationCoordinator>,
     // 候选提交期间锁住工程元数据；Mesh 驻留和只读显示操作仍可继续。
     pub(super) pending_project: Option<super::command_job::PendingProjectOperation>,
@@ -88,6 +90,7 @@ impl ProjectService {
         self.latest_mesh_id = None;
         self.mesh_cache.clear();
         self.mesh_lod_sources.clear();
+        self.volume_meshes.clear();
         self.activation_attempts.clear();
         self.activation.advance_generation();
         self.reset_document_workspace();
@@ -178,7 +181,7 @@ impl ProjectService {
             })?;
         if asset_ref.revision == 0
             || !panta_mesh::is_readable_mesh_asset_version(asset_ref.format_version)
-            || asset_ref.kind != "surface"
+            || !matches!(asset_ref.kind.as_str(), "surface" | "volume")
             || asset_ref.source_revision != record.source_digest
         {
             return Err(ProjectError::ManifestInvalid(
