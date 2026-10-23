@@ -14,6 +14,7 @@ pub struct CompletedActivation {
     pub category: &'static str,
     pub detail: String,
     pub mesh: Option<Arc<SurfaceMesh>>,
+    pub lod_source_triangles: u64,
 }
 
 impl ProjectService {
@@ -30,6 +31,7 @@ impl ProjectService {
         } else if outcome.kind == OutcomeKind::Succeeded {
             if let Some(value) = outcome.mesh.take() {
                 self.cache_activation_result(&outcome.import_id, outcome.attempt, value);
+                self.set_mesh_lod_source(&outcome.import_id, outcome.lod_source_triangles);
                 mesh = self.mesh_cache.snapshot(&outcome.import_id);
             } else {
                 outcome.kind = OutcomeKind::Failed;
@@ -64,12 +66,29 @@ impl ProjectService {
             category: outcome.category,
             detail: outcome.detail,
             mesh,
+            lod_source_triangles: outcome.lod_source_triangles,
         }
     }
 
     /// 捕获驻留网格的不可变所有权；调用只增加引用，格式转换可在宿主后台执行。
     pub fn mesh_snapshot_for_import(&self, import_id: &str) -> Option<Arc<SurfaceMesh>> {
         self.mesh_cache.snapshot(import_id)
+    }
+
+    /// 驻留网格若为显示 LOD，返回源资产面数；完整网格或未驻留返回 0。
+    pub fn mesh_lod_source_for_import(&self, import_id: &str) -> u64 {
+        if self.mesh_cache.get(import_id).is_none() {
+            return 0;
+        }
+        self.mesh_lod_sources.get(import_id).copied().unwrap_or(0)
+    }
+
+    pub(super) fn set_mesh_lod_source(&mut self, import_id: &str, source: u64) {
+        if source == 0 {
+            self.mesh_lod_sources.remove(import_id);
+        } else {
+            self.mesh_lod_sources.insert(import_id.to_owned(), source);
+        }
     }
 }
 
@@ -89,6 +108,7 @@ mod tests {
             mesh: Some(SurfaceMesh {
                 triangles: vec![[[0.0; 3]; 3]],
             }),
+            lod_source_triangles: 0,
         }
     }
 

@@ -168,6 +168,7 @@ impl ProjectService {
         let (state, record, mesh) = result?;
         self.latest_mesh_id = Some(record.id.clone());
         self.mesh_cache.insert_active(record.id.clone(), mesh);
+        self.mesh_lod_sources.remove(&record.id);
         self.current = Some(state);
         Ok(Some(record))
     }

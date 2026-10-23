@@ -378,6 +378,9 @@ pub fn project_error_message(code: &str) -> &'static str {
         "project.export_cancelled" => "导出已取消。",
         "project.diagnostics_cancelled" => "网格质量诊断已取消。",
         "project.mesh_not_resident" => "请先打开要导出的网格。",
+        "project.mesh_lod_only" => {
+            "该网格过大，当前仅加载了显示用简化网格（LOD）；质量诊断与导出需要完整网格，暂不支持。"
+        }
         _ => "无法完成工程操作。",
     }
 }

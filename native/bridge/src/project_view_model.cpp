@@ -294,6 +294,7 @@ void ProjectViewModel::prepareActiveMesh() {
     struct Prepared {
         std::shared_ptr<const panta::visualization::SurfaceMeshSnapshot> mesh;
         panta::ffi::ProjectDiagnostic error;
+        quint64 lodSourceTriangles = 0;
     };
     using Result = std::shared_ptr<Prepared>;
     using Watcher = QFutureWatcher<Result>;
@@ -327,6 +328,8 @@ void ProjectViewModel::prepareActiveMesh() {
                 prepareActiveMesh();
                 return;
             }
+            m_activeMeshTriangles = prepared->mesh ? prepared->mesh->vertices.size() / 3 : 0;
+            m_activeLodSourceTriangles = prepared->lodSourceTriangles;
             m_activeMesh = std::move(prepared->mesh);
             emit meshChanged();
         },
@@ -336,6 +339,7 @@ void ProjectViewModel::prepareActiveMesh() {
             auto prepared = std::make_shared<Prepared>();
             auto source = panta::ffi::prepare_mesh_display(ready->get());
             prepared->error = std::move(source.error);
+            prepared->lodSourceTriangles = source.value.lod_source_triangles;
             if (prepared->error.code.empty()) {
                 try {
                     auto mesh = std::make_shared<panta::visualization::SurfaceMeshSnapshot>();
@@ -930,6 +934,7 @@ void ProjectViewModel::refresh_workspace(bool forceActiveNotification) {
         m_activeDocumentId = nextActiveId;
         ++m_meshSelection;
         m_activeMesh.reset();
+        m_activeLodSourceTriangles = 0;
         prepareActiveMesh();
         emit activeDocumentChanged();
         emit meshChanged();
@@ -984,3 +989,12 @@ void ProjectViewModel::sync_activation_poll() {
 }
 
 } // namespace panta::bridge
+
+QString panta::bridge::ProjectViewModel::activeMeshLodStatus() const {
+    if (!m_activeMesh || m_activeLodSourceTriangles == 0)
+        return {};
+    return QStringLiteral(
+               "大网格：显示简化 LOD %1 面 / 源 %2 面；拾取坐标为近似值，诊断与导出不可用")
+        .arg(m_activeMeshTriangles)
+        .arg(m_activeLodSourceTriangles);
+}
