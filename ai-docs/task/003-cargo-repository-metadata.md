@@ -1,6 +1,6 @@
 # 003 — Cargo 元数据 repository 指向本仓库
 
-- 状态：ready
+- 状态：implemented
 - 阶段：仓库维护
 - 依赖：无
 - 优先级：P2
@@ -43,14 +43,14 @@
 
 ## 验收标准
 
-- [ ] `cargo metadata --no-deps --format-version 1` 中所有 workspace 包 repository 为 vtk-test。
+- [x] `cargo metadata --no-deps --format-version 1` 中所有 workspace 包 repository 为 vtk-test。
 - [ ] Linux CI 通过。
 
 ## 验证计划与结果
 
 | 日期 | 环境 / 命令或场景 | 预期 | 实际结果 / 证据 |
 |---|---|---|---|
-| — | `cargo metadata --no-deps` | 全部为 vtk-test | 未执行 |
+| 2026-10-24 | /workspace/vtk-test，`cargo metadata --no-deps --format-version 1 --offline` | 全部为 vtk-test | 9 个 workspace 包均为 `https://github.com/Yuki-Nagori/vtk-test` |
 
 ## 风险与回退
 
@@ -59,7 +59,8 @@
 ## 决策与工作记录
 
 - 2026-10-24：创建任务。
+- 2026-10-24：修改根 `Cargo.toml` repository；本地 metadata 核对通过，Cargo.lock 无变化。待 Linux CI。
 
 ## 完成摘要
 
-未完成。
+repository 已指向 vtk-test；Linux CI 结果见对应 PR。
