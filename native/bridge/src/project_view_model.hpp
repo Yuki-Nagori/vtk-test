@@ -45,6 +45,7 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     Q_PROPERTY(QString importedUnits READ importedUnits NOTIFY importsChanged)
     Q_PROPERTY(QString importedDimensions READ importedDimensions NOTIFY importsChanged)
     Q_PROPERTY(quint64 importedTriangleCount READ importedTriangleCount NOTIFY importsChanged)
+    Q_PROPERTY(QString activeMeshLodStatus READ activeMeshLodStatus NOTIFY meshChanged)
     Q_PROPERTY(QVariantList meshTypes READ meshTypes CONSTANT)
     Q_PROPERTY(QString defaultMeshType READ defaultMeshType CONSTANT)
     Q_PROPERTY(bool importPreviewPending READ importPreviewPending NOTIFY importPreviewChanged)
@@ -114,6 +115,7 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     [[nodiscard]] const QString& importedUnits() const;
     [[nodiscard]] const QString& importedDimensions() const;
     [[nodiscard]] quint64 importedTriangleCount() const;
+    [[nodiscard]] QString activeMeshLodStatus() const;
     [[nodiscard]] bool importPreviewPending() const;
     [[nodiscard]] bool importPreviewReady() const;
     [[nodiscard]] const QString& importPreviewName() const;
@@ -289,6 +291,8 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     QString m_activeDocumentId;
     /// 当前活动文档的 C++ 显示 DTO；Rust ProjectService 拥有所有驻留 Mesh 与缓存策略。
     std::shared_ptr<const panta::visualization::SurfaceMeshSnapshot> m_activeMesh;
+    quint64 m_activeMeshTriangles = 0;
+    quint64 m_activeLodSourceTriangles = 0;
     QTimer m_importPreviewPoll;
     QTimer m_stlImportPoll;
     QTimer m_taskProgressPoll;

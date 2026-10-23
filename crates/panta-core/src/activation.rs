@@ -49,7 +49,15 @@ pub struct Outcome {
     pub category: &'static str,
     pub detail: String,
     pub mesh: Option<SurfaceMesh>,
+    /// 非 0 表示 `mesh` 是显示 LOD，值为源资产面数（task 019）。
+    pub lod_source_triangles: u64,
 }
+
+/// 超过此面数的表面资产激活时改为流式构建显示 LOD，不整体读入（约 1.4 GiB 展开体积）。
+pub const LOD_ACTIVATION_TRIANGLES: u64 = 20_000_000;
+
+/// 激活成功的负载：网格与（若为 LOD）源资产面数。
+pub(crate) type LoadedMesh = (SurfaceMesh, u64);
 
 /// 资产读取、校验或后台调度的失败诊断。
 pub(crate) struct ActivationFailure {
@@ -208,7 +216,7 @@ impl ActivationCoordinator {
     }
 
     /// 一次性消费在飞请求；重复完成或旧会话结果在锁内丢弃。
-    fn complete(&self, attempt: u64, result: Result<Option<SurfaceMesh>, ActivationFailure>) {
+    fn complete(&self, attempt: u64, result: Result<Option<LoadedMesh>, ActivationFailure>) {
         publish(&mut self.lock(), &self.generation, attempt, result);
     }
 
@@ -222,7 +230,7 @@ fn publish(
     state: &mut CoordinatorState,
     generation: &AtomicU64,
     attempt: u64,
-    result: Result<Option<SurfaceMesh>, ActivationFailure>,
+    result: Result<Option<LoadedMesh>, ActivationFailure>,
 ) {
     let Some(entry) = state.attempts.remove(&attempt) else {
         return;
@@ -239,11 +247,13 @@ fn publish(
         category: "",
         detail: String::new(),
         mesh: None,
+        lod_source_triangles: 0,
     };
     match result {
-        Ok(Some(mesh)) if !entry.cancel_requested.load(Ordering::SeqCst) => {
+        Ok(Some((mesh, lod_source))) if !entry.cancel_requested.load(Ordering::SeqCst) => {
             outcome.kind = OutcomeKind::Succeeded;
             outcome.mesh = Some(mesh);
+            outcome.lod_source_triangles = lod_source;
         }
         Ok(_) => {}
         Err(error) => {
@@ -264,7 +274,11 @@ fn run_attempt(
     request: ActivationRequest,
     cancel_requested: Arc<AtomicBool>,
 ) {
-    let result = load_asset(request, || cancel_requested.load(Ordering::SeqCst));
+    let result = load_asset(
+        request,
+        || cancel_requested.load(Ordering::SeqCst),
+        LOD_ACTIVATION_TRIANGLES,
+    );
     coordinator.complete(attempt, result);
 }
 
@@ -272,17 +286,21 @@ fn run_attempt(
 pub(crate) fn load_committed_surface(
     request: ActivationRequest,
 ) -> Result<SurfaceMesh, ActivationFailure> {
-    load_asset(request, || false)?.ok_or(ActivationFailure {
-        code: "project.asset_read_failed",
-        category: "io",
-        detail: "asset read did not complete".to_owned(),
-    })
+    load_asset(request, || false, u64::MAX)?
+        .map(|(mesh, _)| mesh)
+        .ok_or(ActivationFailure {
+            code: "project.asset_read_failed",
+            category: "io",
+            detail: "asset read did not complete".to_owned(),
+        })
 }
 
+/// `lod_threshold`：v3 表面资产面数超过它时只构建显示 LOD（导出等完整读取传 `u64::MAX`）。
 fn load_asset(
     request: ActivationRequest,
     cancelled: impl Fn() -> bool,
-) -> Result<Option<SurfaceMesh>, ActivationFailure> {
+    lod_threshold: u64,
+) -> Result<Option<LoadedMesh>, ActivationFailure> {
     if cancelled() {
         return Ok(None);
     }
@@ -294,12 +312,20 @@ fn load_asset(
                 detail: error.detail(),
             },
         )?;
+    if let Some(loaded) = load_lod(
+        &asset_path,
+        &request.expected_digest,
+        &cancelled,
+        lod_threshold,
+    )? {
+        return Ok(loaded);
+    }
     let Some((asset, digest)) = read_mesh_asset(&asset_path, &cancelled)? else {
         return Ok(None);
     };
     match asset {
         MeshAsset::Surface(mesh) if digest == request.expected_digest => {
-            Ok((!cancelled()).then_some(mesh))
+            Ok((!cancelled()).then_some((mesh, 0)))
         }
         MeshAsset::Surface(_) => Err(ActivationFailure {
             code: "project.asset_parse_failed",
@@ -310,6 +336,67 @@ fn load_asset(
             code: "project.asset_unsupported_format",
             category: "format",
             detail: asset_path.display().to_string(),
+        }),
+    }
+}
+
+/// 大资产走流式 LOD：外层 `None` 表示不适用（非 v3 表面或未超阈值），交给整体读取。
+/// 摘要（目录 SHA-256）在扫描前核对；每块 SHA-256 在扫描中校验。
+#[allow(clippy::type_complexity)]
+fn load_lod(
+    path: &std::path::Path,
+    expected_digest: &str,
+    cancelled: &impl Fn() -> bool,
+    lod_threshold: u64,
+) -> Result<Option<Option<LoadedMesh>>, ActivationFailure> {
+    let Ok(chunks) = panta_mesh::SurfaceAssetChunks::open(path) else {
+        return Ok(None);
+    };
+    let source = chunks.triangle_count();
+    if source <= lod_threshold {
+        return Ok(None);
+    }
+    if chunks.digest() != expected_digest {
+        return Err(ActivationFailure {
+            code: "project.asset_parse_failed",
+            category: "format",
+            detail: path.display().to_string(),
+        });
+    }
+    drop(chunks);
+    // 预算不超过阈值的一半，保证 LOD 显著小于触发阈值。
+    let budget = usize::try_from(lod_threshold / 2)
+        .unwrap_or(usize::MAX)
+        .min(panta_mesh::DEFAULT_LOD_TRIANGLE_BUDGET);
+    // 取消：LOD 在作用域线程中运行，当前线程轮询宿主取消并置位进度句柄，LOD 在批次边界停止。
+    let progress = panta_mesh::Progress::new();
+    let result = std::thread::scope(|scope| {
+        let worker = scope.spawn(|| panta_mesh::build_surface_lod(path, budget, Some(&progress)));
+        while !worker.is_finished() {
+            if cancelled() {
+                progress.cancel();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        worker.join()
+    });
+    let result = result.map_err(|_| ActivationFailure {
+        code: "project.activation_worker_failed",
+        category: "internal",
+        detail: "LOD worker panicked".to_owned(),
+    })?;
+    match result {
+        Ok(Some(lod)) if !cancelled() => Ok(Some(Some((lod.mesh, source)))),
+        Ok(_) => Ok(Some(None)),
+        Err(MeshAssetError::Io(kind)) => Err(ActivationFailure {
+            code: "project.asset_read_failed",
+            category: "io",
+            detail: format!("{}: {kind}", path.display()),
+        }),
+        Err(other) => Err(ActivationFailure {
+            code: "project.asset_parse_failed",
+            category: "format",
+            detail: other.to_string(),
         }),
     }
 }
@@ -571,6 +658,43 @@ mod tests {
     }
 
     #[test]
+    fn large_surface_assets_activate_as_display_lod_and_exports_read_in_full()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = crate::project::temp_directory::Fixture::new()?;
+        let count = 60_000;
+        let torus = panta_mesh::SyntheticTorus::new(count);
+        let file = File::create(fixture.root.join("big.pmesh"))?;
+        let (_, digest) =
+            panta_mesh::write_surface_asset_streaming(file, count, |r, o| torus.fill(r, o), None)?
+                .ok_or("cancelled")?;
+        let request = || ActivationRequest {
+            project_root: fixture.root.clone(),
+            relative_path: "big.pmesh".to_owned(),
+            expected_digest: digest.clone(),
+        };
+        let lod = load_asset(request(), || false, 1_000)
+            .map_err(|f| f.detail)?
+            .ok_or("cancelled")?;
+        assert_eq!(lod.1, count as u64);
+        assert!(lod.0.triangles.len() < count);
+        let full = load_asset(request(), || false, u64::MAX)
+            .map_err(|f| f.detail)?
+            .ok_or("cancelled")?;
+        assert_eq!((full.0.triangles.len(), full.1), (count, 0));
+        assert_eq!(
+            load_committed_surface(request())
+                .ok()
+                .map(|m| m.triangles.len()),
+            Some(count)
+        );
+        assert!(matches!(load_asset(request(), || true, 1_000), Ok(None)));
+        let mut wrong = request();
+        wrong.expected_digest = "sha256:other".to_owned();
+        assert!(load_asset(wrong, || false, 1_000).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn worker_validates_relative_asset_paths_and_preserves_missing_diagnostics()
     -> Result<(), Box<dyn std::error::Error>> {
         let fixture = crate::project::temp_directory::Fixture::new()?;
@@ -619,16 +743,22 @@ mod tests {
 
         coordinator.complete(
             attempt.attempt,
-            Ok(Some(SurfaceMesh {
-                triangles: Vec::new(),
-            })),
+            Ok(Some((
+                SurfaceMesh {
+                    triangles: Vec::new(),
+                },
+                0,
+            ))),
         );
         // 请求已消费后，迟到结果不再发布。
         coordinator.complete(
             attempt.attempt,
-            Ok(Some(SurfaceMesh {
-                triangles: Vec::new(),
-            })),
+            Ok(Some((
+                SurfaceMesh {
+                    triangles: Vec::new(),
+                },
+                0,
+            ))),
         );
         let outcomes = coordinator.drain();
         assert_eq!(outcomes.len(), 1);
@@ -645,9 +775,12 @@ mod tests {
         assert!(coordinator.cancel(attempt.attempt));
         coordinator.complete(
             attempt.attempt,
-            Ok(Some(SurfaceMesh {
-                triangles: Vec::new(),
-            })),
+            Ok(Some((
+                SurfaceMesh {
+                    triangles: Vec::new(),
+                },
+                0,
+            ))),
         );
         let outcomes = coordinator.drain();
         assert_eq!(outcomes.len(), 1);
@@ -690,9 +823,12 @@ mod tests {
         // 旧请求已移除，迟到网格就地释放。
         coordinator.complete(
             attempt.attempt,
-            Ok(Some(SurfaceMesh {
-                triangles: Vec::new(),
-            })),
+            Ok(Some((
+                SurfaceMesh {
+                    triangles: Vec::new(),
+                },
+                0,
+            ))),
         );
         assert!(coordinator.drain().is_empty(), "迟到成功不得发布");
     }
@@ -715,9 +851,12 @@ mod tests {
 
         coordinator.complete(
             attempt.attempt,
-            Ok(Some(SurfaceMesh {
-                triangles: Vec::new(),
-            })),
+            Ok(Some((
+                SurfaceMesh {
+                    triangles: Vec::new(),
+                },
+                0,
+            ))),
         );
         // 成功结果已入队；随后代次推进（工程切换）：旧代次结果在 drain
         // 边界被过滤，坐标（含网格负载）就地释放，不跨会话发布。

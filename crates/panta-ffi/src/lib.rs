@@ -142,6 +142,8 @@ pub mod bridge {
     pub struct SurfaceMeshSnapshot {
         pub coordinates: Vec<f64>,
         pub revision: u64,
+        /// 非 0：坐标是显示 LOD，值为源资产面数。
+        pub lod_source_triangles: u64,
     }
 
     /// native Netgen 转换结果的批量输入。坐标每三项一个节点；tet 每四项、

@@ -73,9 +73,9 @@ ApplicationWindow {
     readonly property bool canCreateOrOpen: !busy
     readonly property bool canSave: projectOpen && !busy
     readonly property bool canImport: projectOpen && !busy
-    readonly property bool canExport: meshActive && !busy
+    readonly property bool canExport: meshActive && !busy && projectModel.activeMeshLodStatus.length === 0
     readonly property bool canScreenshot: !busy
-    readonly property bool canDiagnose: meshActive && !busy
+    readonly property bool canDiagnose: meshActive && !busy && projectModel.activeMeshLodStatus.length === 0
     // 仅当诊断报告属于活动页签时展示，切换页签后需重新诊断。
     readonly property var activeQuality: projectModel.meshQuality.documentId === projectModel.activeDocumentId ? projectModel.meshQuality : ({})
 
@@ -489,6 +489,15 @@ ApplicationWindow {
                 color: Theme.colorTextMuted
                 font.pixelSize: Theme.fontSmall
                 wrapMode: Text.WrapAnywhere
+            }
+            // 大网格 LOD 提示（task 019）：显示的是简化网格，拾取为近似值，诊断/导出不可用。
+            Label {
+                objectName: "activeMeshLodStatus"
+                Layout.fillWidth: true
+                visible: shellWindow.meshActive && text.length > 0
+                text: projectModel.activeMeshLodStatus
+                color: Theme.colorTextMuted
+                wrapMode: Text.Wrap
             }
             // 网格质量诊断面板：复用 task 006 的表面诊断，后台执行。
             RowLayout {

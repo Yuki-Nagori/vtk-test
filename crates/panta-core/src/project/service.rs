@@ -25,6 +25,8 @@ pub struct ProjectService {
     pub(super) latest_mesh_id: Option<String>,
     pub(super) mesh_cache: SurfaceMeshCache,
     pub(super) activation_attempts: HashMap<String, u64>,
+    /// 驻留网格为显示 LOD 时记录源面数（task 019）。
+    pub(super) mesh_lod_sources: HashMap<String, u64>,
     pub(super) activation: Arc<crate::activation::ActivationCoordinator>,
     // 候选提交期间锁住工程元数据；Mesh 驻留和只读显示操作仍可继续。
     pub(super) pending_project: Option<super::command_job::PendingProjectOperation>,
@@ -85,6 +87,7 @@ impl ProjectService {
         self.clear_stl_preview();
         self.latest_mesh_id = None;
         self.mesh_cache.clear();
+        self.mesh_lod_sources.clear();
         self.activation_attempts.clear();
         self.activation.advance_generation();
         self.reset_document_workspace();

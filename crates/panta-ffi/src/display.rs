@@ -4,6 +4,23 @@ use std::sync::Arc;
 
 pub struct MeshDisplayInput {
     mesh: Result<(Arc<panta_mesh::SurfaceMesh>, u64), bridge::ProjectDiagnostic>,
+    /// 非 0：驻留网格是显示 LOD，值为源面数；诊断与导出拒绝 LOD（task 019）。
+    lod_source_triangles: u64,
+}
+
+impl MeshDisplayInput {
+    /// 诊断 / 导出需要完整网格；LOD 输入返回明确诊断。
+    fn full_mesh(self) -> Result<Arc<panta_mesh::SurfaceMesh>, bridge::ProjectDiagnostic> {
+        let (mesh, _) = self.mesh?;
+        if self.lod_source_triangles > 0 {
+            return Err(crate::project_response::diagnostic(
+                "project.mesh_lod_only",
+                "resource",
+                format!("{} source triangles", self.lod_source_triangles),
+            ));
+        }
+        Ok(mesh)
+    }
 }
 
 pub(super) fn project_service_mesh_display_input(
@@ -27,7 +44,11 @@ pub(super) fn project_service_mesh_display_input(
             })?;
         Ok((mesh, snapshot.revision))
     })();
-    Box::new(MeshDisplayInput { mesh })
+    let lod_source_triangles = service.service.mesh_lod_source_for_import(import_id);
+    Box::new(MeshDisplayInput {
+        mesh,
+        lod_source_triangles,
+    })
 }
 
 /// 只访问拥有式不可变输入；不访问活跃工程服务，可以移交宿主工作线程。
@@ -38,11 +59,13 @@ pub(super) fn project_service_mesh_display_input(
 pub(super) fn prepare_mesh_display(
     input: Box<MeshDisplayInput>,
 ) -> bridge::SurfaceMeshSnapshotResult {
+    let lod_source_triangles = input.lod_source_triangles;
     let result = input.mesh.and_then(|(mesh, revision)| {
         crate::mesh_coordinates(&mesh)
             .map(|coordinates| bridge::SurfaceMeshSnapshot {
                 coordinates,
                 revision,
+                lod_source_triangles,
             })
             .map_err(|detail| {
                 crate::project_response::diagnostic(
@@ -62,8 +85,8 @@ pub(super) fn export_mesh_display(
     path: &str,
     progress: &crate::TaskProgress,
 ) -> bridge::ProjectDiagnostic {
-    match input.mesh {
-        Ok((mesh, _)) => {
+    match input.full_mesh() {
+        Ok(mesh) => {
             match panta_core::project::export_mesh_file_with_progress(
                 &mesh,
                 std::path::Path::new(path),
@@ -83,7 +106,7 @@ pub(super) fn diagnose_mesh_display(
     input: Box<MeshDisplayInput>,
     progress: &crate::TaskProgress,
 ) -> bridge::MeshQualityReportResult {
-    let result = input.mesh.and_then(|(mesh, _)| {
+    let result = input.full_mesh().and_then(|mesh| {
         panta_mesh::diagnose_surface_with_progress(&mesh, Default::default(), &progress.0)
             .map(|report| bridge::MeshQualityReport {
                 clean: report.is_clean(),
@@ -131,6 +154,7 @@ mod tests {
         let report = diagnose_mesh_display(
             Box::new(MeshDisplayInput {
                 mesh: Ok((Arc::new(mesh.clone()), 1)),
+                lod_source_triangles: 0,
             }),
             &crate::TaskProgress::default(),
         );
@@ -138,7 +162,8 @@ mod tests {
         cancelled.0.cancel();
         let stopped = diagnose_mesh_display(
             Box::new(MeshDisplayInput {
-                mesh: Ok((Arc::new(mesh), 1)),
+                mesh: Ok((Arc::new(mesh.clone()), 1)),
+                lod_source_triangles: 0,
             }),
             &cancelled,
         );
@@ -156,9 +181,19 @@ mod tests {
                     "state",
                     "x".into(),
                 )),
+                lod_source_triangles: 0,
             }),
             &crate::TaskProgress::default(),
         );
         assert_eq!(missing.error.code, "project.mesh_not_resident");
+
+        let lod = diagnose_mesh_display(
+            Box::new(MeshDisplayInput {
+                mesh: Ok((Arc::new(mesh), 1)),
+                lod_source_triangles: 30_000_000,
+            }),
+            &crate::TaskProgress::default(),
+        );
+        assert_eq!(lod.error.code, "project.mesh_lod_only");
     }
 }

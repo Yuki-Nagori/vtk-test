@@ -82,3 +82,12 @@ cargo run --release -p panta-mesh --example scale_bench -- --triangles 1B --dir 
 ## 完成摘要
 
 流式读写、两遍流式 LOD、合成网格与规模基准已实现；本机 1B 面 LOD 76 s、峰值内存 <1 GiB。
+
+## 后续：LOD 接入应用（PR feat/lod-activation）
+
+- 激活时若 v3 表面资产面数 > `LOD_ACTIVATION_TRIANGLES`（20M），自动用 `build_surface_lod` 生成显示 LOD（预算 2M 面），只驻留 LOD；摘要先校验，取消在批次边界生效。
+- `ProjectService` 记录 `mesh_lod_sources`（文档 id → 源面数）；重新导入/替换项目时清除。
+- 保守决策：网格诊断与导出遇 LOD 返回 `project.mesh_lod_only`，UI 同时禁用按钮，避免在简化网格上给出错误结论或导出失真数据。
+- 侧栏显示“大网格：显示简化 LOD N 面 / 源 M 面…”提示；拾取沿用显示三角形，因此在 LOD 上直接可用，坐标为近似值。
+- 需真机/GPU 验证：大资产实际显示、帧率、LOD 上拾取精度。
+- 导入解析的细粒度进度另开 PR。
