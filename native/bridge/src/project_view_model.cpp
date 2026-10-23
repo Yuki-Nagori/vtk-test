@@ -427,9 +427,8 @@ bool ProjectViewModel::beginDiagnoseActiveMesh() {
     using Result = std::shared_ptr<panta::ffi::MeshQualityReportResult>;
     using Watcher = QFutureWatcher<Result>;
     const QString documentId = m_activeDocumentId;
-    const auto input =
-        std::make_shared<std::optional<Input>>(panta::ffi::project_service_mesh_display_input(
-            *m_service, documentId.toStdString()));
+    const auto input = std::make_shared<std::optional<Input>>(
+        panta::ffi::project_service_mesh_display_input(*m_service, documentId.toStdString()));
     const auto result = std::make_shared<QPromise<Result>>();
     auto watcher = std::make_unique<Watcher>();
     result->start();
