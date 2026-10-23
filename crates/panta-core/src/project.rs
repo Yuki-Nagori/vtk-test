@@ -22,7 +22,7 @@ pub use panta_import::{
 };
 pub use panta_mesh::{DEFAULT_RELATIVE_WELD_TOLERANCE, DiagnosticOptions, SurfaceDiagnostics};
 pub(crate) use service::resolve_asset_path;
-pub use service::{ProjectService, export_mesh_file};
+pub use service::{ProjectService, export_mesh_file, export_mesh_file_with_progress};
 pub use workspace::{
     ActivationRequest as WorkspaceActivationRequest, ActivationResultKind, CloseDocumentResult,
     DocumentDiagnostic, DocumentKind, DocumentState, DocumentWorkspace, WorkspaceDocument,

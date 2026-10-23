@@ -32,6 +32,8 @@ pub enum ProjectError {
     /// 读取或校验待导出的已提交资产失败；detail 前缀为原激活错误码。
     ExportSourceUnavailable(String),
     ExportWriteFailed(String),
+    /// 宿主在写出完成前取消了导出；目标文件未被改动。
+    ExportCancelled,
 }
 
 impl ProjectError {
@@ -63,6 +65,7 @@ impl ProjectError {
             Self::ExportTooLarge(_) => "project.export_too_large",
             Self::ExportSourceUnavailable(_) => "project.export_source_unavailable",
             Self::ExportWriteFailed(_) => "project.export_write_failed",
+            Self::ExportCancelled => "project.export_cancelled",
         }
     }
 
@@ -78,7 +81,7 @@ impl ProjectError {
                 "missing"
             }
             Self::AlreadyExists(_) | Self::ImportSourceChanged(_) => "conflict",
-            Self::NoProject => "state",
+            Self::NoProject | Self::ExportCancelled => "state",
             Self::InvalidFile(_)
             | Self::ManifestInvalid(_)
             | Self::UnsupportedSchema(_)
@@ -99,7 +102,9 @@ impl ProjectError {
     /// 原始上下文，可包含路径、参数或系统错误；不得用它推断错误类型。
     pub fn detail(&self) -> String {
         match self {
-            Self::EmptyName | Self::LocationEmpty | Self::NoProject => String::new(),
+            Self::EmptyName | Self::LocationEmpty | Self::NoProject | Self::ExportCancelled => {
+                String::new()
+            }
             Self::InvalidName(name)
             | Self::LocationNotAbsolute(name)
             | Self::LocationCreateFailed(name)

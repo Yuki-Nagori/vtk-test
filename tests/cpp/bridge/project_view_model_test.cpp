@@ -1112,3 +1112,56 @@ TEST(ProjectViewModelTest, DiagnosesTheActiveMeshInTheBackground) {
     EXPECT_EQ(quality.value(QStringLiteral("holeCount")).toULongLong(), 1U);
     EXPECT_FALSE(quality.value(QStringLiteral("clean")).toBool());
 }
+
+TEST(ProjectViewModelTest, ReportsProgressAndCancelsDiagnosticsAndExport) {
+    QTemporaryDir fixture;
+    ASSERT_TRUE(fixture.isValid());
+    const QString sourcePath = QDir(fixture.path()).filePath(QStringLiteral("part.stl"));
+    QFile source(sourcePath);
+    ASSERT_TRUE(source.open(QIODevice::WriteOnly | QIODevice::Text));
+    ASSERT_GT(source.write("solid part\nfacet normal 0 0 1\n outer loop\n"
+                           "  vertex 0 0 0\n  vertex 1 0 0\n  vertex 0 1 0\n"
+                           " endloop\nendfacet\nendsolid part\n"),
+              0);
+    source.close();
+
+    HeldBackgroundViewModel view_model;
+    ASSERT_TRUE(finish_project_operation(
+        view_model, view_model.createProject(QStringLiteral("Progress"), fixture.path())));
+    ASSERT_TRUE(view_model.importStl(sourcePath, QStringLiteral("dual-domain"),
+                                     QStringLiteral("millimeters"), false));
+    ASSERT_TRUE(wait_for_active_mesh(view_model, view_model.activeDocumentId()));
+    EXPECT_EQ(view_model.importProgress(), -1.0);
+    EXPECT_EQ(view_model.diagnosticsProgress(), -1.0);
+    EXPECT_FALSE(view_model.cancelDiagnostics());
+    EXPECT_FALSE(view_model.cancelExport());
+
+    view_model.holdWork = true;
+    QSignalSpy diagnosed(&view_model, &ProjectViewModel::diagnosticsFinished);
+    ASSERT_TRUE(view_model.beginDiagnoseActiveMesh());
+    EXPECT_EQ(view_model.diagnosticsProgress(), 0.0);
+    EXPECT_TRUE(view_model.cancelDiagnostics());
+    view_model.releaseFirst();
+    ASSERT_TRUE(diagnosed.wait(10000));
+    EXPECT_FALSE(diagnosed.takeFirst().at(0).toBool());
+    EXPECT_EQ(view_model.errorCode(), QStringLiteral("project.diagnostics_cancelled"));
+    EXPECT_EQ(view_model.diagnosticsProgress(), -1.0);
+
+    const QString target = QDir(fixture.path()).filePath(QStringLiteral("out.stl"));
+    QSignalSpy exported(&view_model, &ProjectViewModel::exportFinished);
+    ASSERT_TRUE(view_model.beginExportActiveMeshUrl(QUrl::fromLocalFile(target)));
+    EXPECT_EQ(view_model.exportProgress(), 0.0);
+    EXPECT_TRUE(view_model.cancelExport());
+    view_model.releaseFirst();
+    ASSERT_TRUE(exported.wait(10000));
+    EXPECT_FALSE(exported.takeFirst().at(1).toBool());
+    EXPECT_EQ(view_model.errorCode(), QStringLiteral("project.export_cancelled"));
+    EXPECT_FALSE(QFileInfo::exists(target));
+
+    ASSERT_TRUE(view_model.beginExportActiveMeshUrl(QUrl::fromLocalFile(target)));
+    view_model.releaseFirst();
+    ASSERT_TRUE(exported.wait(10000));
+    EXPECT_TRUE(exported.takeFirst().at(1).toBool());
+    EXPECT_TRUE(QFileInfo::exists(target));
+    EXPECT_EQ(view_model.exportProgress(), -1.0);
+}

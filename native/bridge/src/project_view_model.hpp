@@ -12,6 +12,7 @@
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
 #include <functional>
+#include <optional>
 #include <panta/visualization/mesh_source.hpp>
 #include <rust/cxx.h>
 
@@ -61,6 +62,10 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     Q_PROPERTY(bool exportPending READ exportPending NOTIFY exportPendingChanged)
     Q_PROPERTY(bool diagnosticsPending READ diagnosticsPending NOTIFY meshQualityChanged)
     Q_PROPERTY(QVariantMap meshQuality READ meshQuality NOTIFY meshQualityChanged)
+    /// 后台任务进度 0..=1；没有对应任务进行时为 -1（task 016）。
+    Q_PROPERTY(double importProgress READ importProgress NOTIFY taskProgressChanged)
+    Q_PROPERTY(double exportProgress READ exportProgress NOTIFY taskProgressChanged)
+    Q_PROPERTY(double diagnosticsProgress READ diagnosticsProgress NOTIFY taskProgressChanged)
 
   public:
     explicit ProjectViewModel(QObject* parent = nullptr);
@@ -69,6 +74,9 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     [[nodiscard]] bool diagnosticsPending() const { return m_diagnosticsPending; }
     /// 最近一次诊断报告；documentId 标明所属页签，空映射表示尚未诊断。
     [[nodiscard]] QVariantMap meshQuality() const { return m_meshQuality; }
+    [[nodiscard]] double importProgress() const;
+    [[nodiscard]] double exportProgress() const;
+    [[nodiscard]] double diagnosticsProgress() const;
     [[nodiscard]] bool importPreviewLargeMeshWarning() const {
         return m_importPreviewLargeMeshWarning;
     }
@@ -179,6 +187,11 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     /// 返回准入结果，完成后更新 meshQuality 并发出 diagnosticsFinished。
     Q_INVOKABLE bool beginDiagnoseActiveMesh();
 
+    /// 请求协作式取消进行中的导出 / 诊断；返回是否有任务接收了请求。
+    /// 完成信号仍会到达，结果为 project.export_cancelled / project.diagnostics_cancelled。
+    Q_INVOKABLE bool cancelExport();
+    Q_INVOKABLE bool cancelDiagnostics();
+
   signals:
     void errorChanged();
     void projectOperationPendingChanged();
@@ -201,6 +214,8 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     void exportFinished(const QString& path, bool succeeded);
     void meshQualityChanged();
     void diagnosticsFinished(bool succeeded);
+    /// 任一后台任务进行中时约每 100ms 触发一次。
+    void taskProgressChanged();
 
   protected:
     /// 启动只等待独占 Rust 请求的线程；启动失败抛 system_error，调用方尚未准入领域任务。
@@ -265,6 +280,9 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     std::shared_ptr<const panta::visualization::SurfaceMeshSnapshot> m_activeMesh;
     QTimer m_importPreviewPoll;
     QTimer m_stlImportPoll;
+    QTimer m_taskProgressPoll;
+    std::optional<rust::Box<panta::ffi::TaskProgress>> m_exportProgress;
+    std::optional<rust::Box<panta::ffi::TaskProgress>> m_diagnosticsProgress;
     quint64 m_previewRequest = 0;
     bool m_importPreviewPending = false;
     QTimer m_activationPoll;

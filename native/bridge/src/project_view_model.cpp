@@ -69,6 +69,12 @@ ProjectViewModel::ProjectViewModel(QObject* parent)
     connect(&m_importPreviewPoll, &QTimer::timeout, this, &ProjectViewModel::finish_import_preview);
     m_stlImportPoll.setInterval(10);
     connect(&m_stlImportPoll, &QTimer::timeout, this, &ProjectViewModel::finish_stl_import);
+    m_taskProgressPoll.setInterval(100);
+    connect(&m_taskProgressPoll, &QTimer::timeout, this, [this] {
+        emit taskProgressChanged();
+        if (!m_importPending && !m_exportProgress && !m_diagnosticsProgress)
+            m_taskProgressPoll.stop();
+    });
     reset_documents();
 }
 
@@ -381,6 +387,9 @@ bool ProjectViewModel::beginExportActiveMeshUrl(const QUrl& url) {
     const auto input =
         std::make_shared<std::optional<Input>>(panta::ffi::project_service_mesh_display_input(
             *m_service, m_activeDocumentId.toStdString()));
+    auto hostProgress = panta::ffi::task_progress_new();
+    const auto progress = std::make_shared<rust::Box<panta::ffi::TaskProgress>>(
+        panta::ffi::task_progress_share(*hostProgress));
     const auto result = std::make_shared<QPromise<Result>>();
     auto watcher = std::make_unique<Watcher>();
     result->start();
@@ -390,6 +399,8 @@ bool ProjectViewModel::beginExportActiveMeshUrl(const QUrl& url) {
         watcher.get(), &Watcher::finished, this,
         [this, future = result->future(), path] {
             m_exportPending = false;
+            m_exportProgress.reset();
+            emit taskProgressChanged();
             emit exportPendingChanged();
             const auto diagnostic = future.result();
             const bool succeeded = diagnostic && diagnostic->code.empty();
@@ -399,9 +410,10 @@ bool ProjectViewModel::beginExportActiveMeshUrl(const QUrl& url) {
         },
         Qt::QueuedConnection);
     try {
-        startBackgroundWaiter([input, result, boundaryPath] {
+        startBackgroundWaiter([input, result, boundaryPath, progress] {
             auto diagnostic = std::make_shared<panta::ffi::ProjectDiagnostic>(
-                panta::ffi::export_mesh_display(std::move(input->value()), boundaryPath));
+                panta::ffi::export_mesh_display(std::move(input->value()), boundaryPath,
+                                                **progress));
             input->reset();
             result->addResult(diagnostic);
             result->finish();
@@ -412,7 +424,10 @@ bool ProjectViewModel::beginExportActiveMeshUrl(const QUrl& url) {
     }
     watcher.release()->setParent(this);
     m_exportPending = true;
+    m_exportProgress.emplace(std::move(hostProgress));
+    m_taskProgressPoll.start();
     emit exportPendingChanged();
+    emit taskProgressChanged();
     return true;
 }
 
@@ -429,6 +444,9 @@ bool ProjectViewModel::beginDiagnoseActiveMesh() {
     const QString documentId = m_activeDocumentId;
     const auto input = std::make_shared<std::optional<Input>>(
         panta::ffi::project_service_mesh_display_input(*m_service, documentId.toStdString()));
+    auto hostProgress = panta::ffi::task_progress_new();
+    const auto progress = std::make_shared<rust::Box<panta::ffi::TaskProgress>>(
+        panta::ffi::task_progress_share(*hostProgress));
     const auto result = std::make_shared<QPromise<Result>>();
     auto watcher = std::make_unique<Watcher>();
     result->start();
@@ -438,6 +456,8 @@ bool ProjectViewModel::beginDiagnoseActiveMesh() {
         watcher.get(), &Watcher::finished, this,
         [this, future = result->future(), documentId] {
             m_diagnosticsPending = false;
+            m_diagnosticsProgress.reset();
+            emit taskProgressChanged();
             const auto report = future.result();
             const bool succeeded = report && report->error.code.empty();
             if (succeeded) {
@@ -469,9 +489,9 @@ bool ProjectViewModel::beginDiagnoseActiveMesh() {
         },
         Qt::QueuedConnection);
     try {
-        startBackgroundWaiter([input, result] {
+        startBackgroundWaiter([input, result, progress] {
             auto report = std::make_shared<panta::ffi::MeshQualityReportResult>(
-                panta::ffi::diagnose_mesh_display(std::move(input->value())));
+                panta::ffi::diagnose_mesh_display(std::move(input->value()), **progress));
             input->reset();
             result->addResult(report);
             result->finish();
@@ -482,7 +502,39 @@ bool ProjectViewModel::beginDiagnoseActiveMesh() {
     }
     watcher.release()->setParent(this);
     m_diagnosticsPending = true;
+    m_diagnosticsProgress.emplace(std::move(hostProgress));
+    m_taskProgressPoll.start();
     emit meshQualityChanged();
+    emit taskProgressChanged();
+    return true;
+}
+
+double ProjectViewModel::importProgress() const {
+    if (!m_importPending)
+        return -1.0;
+    return panta::ffi::project_service_stl_import_progress(*m_service, m_importRequest);
+}
+
+double ProjectViewModel::exportProgress() const {
+    return m_exportProgress ? panta::ffi::task_progress_fraction(**m_exportProgress) : -1.0;
+}
+
+double ProjectViewModel::diagnosticsProgress() const {
+    return m_diagnosticsProgress ? panta::ffi::task_progress_fraction(**m_diagnosticsProgress)
+                                 : -1.0;
+}
+
+bool ProjectViewModel::cancelExport() {
+    if (!m_exportProgress)
+        return false;
+    panta::ffi::task_progress_cancel(**m_exportProgress);
+    return true;
+}
+
+bool ProjectViewModel::cancelDiagnostics() {
+    if (!m_diagnosticsProgress)
+        return false;
+    panta::ffi::task_progress_cancel(**m_diagnosticsProgress);
     return true;
 }
 
@@ -541,6 +593,7 @@ bool ProjectViewModel::beginImportStl(const QString& rawPath, const QString& raw
     m_importRequest = result.value;
     m_importPending = true;
     m_stlImportPoll.start();
+    m_taskProgressPoll.start();
     emit importPendingChanged();
     return true;
 }

@@ -375,6 +375,8 @@ pub fn project_error_message(code: &str) -> &'static str {
         "project.export_source_unavailable" => "无法读取要导出的网格资产。",
         "project.export_write_failed" => "无法写入导出文件。",
         "project.diagnostics_failed" => "网格质量诊断失败。",
+        "project.export_cancelled" => "导出已取消。",
+        "project.diagnostics_cancelled" => "网格质量诊断已取消。",
         "project.mesh_not_resident" => "请先打开要导出的网格。",
         _ => "无法完成工程操作。",
     }
