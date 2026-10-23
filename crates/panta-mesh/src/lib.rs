@@ -8,6 +8,7 @@ use std::fmt::{Display, Formatter};
 
 mod asset;
 mod diagnostics;
+mod progress;
 pub use asset::{
     MESH_ASSET_FORMAT_VERSION, MeshAsset, MeshAssetError, MeshAssetReader, MeshAssetRef,
     decode_mesh_asset, decode_mesh_asset_with_digest, encode_mesh_asset, encode_mesh_asset_ref,
@@ -15,8 +16,9 @@ pub use asset::{
 };
 pub use diagnostics::{
     DEFAULT_RELATIVE_WELD_TOLERANCE, DiagnosticError, DiagnosticOptions, SurfaceDiagnostics,
-    diagnose_surface,
+    diagnose_surface, diagnose_surface_with_progress,
 };
+pub use progress::{PROGRESS_STRIDE, Progress};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceMesh {

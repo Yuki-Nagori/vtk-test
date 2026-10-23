@@ -4,7 +4,7 @@
 //! 按位相同的顶点去重（`-0.0` 视同 `0.0`），不做容差焊接；STL 二进制只能存 f32，
 //! 会损失精度。写出先进临时文件，成功后原子替换目标，失败不留下半成品。
 
-use panta_mesh::SurfaceMesh;
+use panta_mesh::{PROGRESS_STRIDE, Progress, SurfaceMesh};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::fs::{self, File};
@@ -45,6 +45,8 @@ pub enum ExportError {
     UnsupportedFormat(String),
     /// 网格超出目标格式的索引或计数上限。
     TooLarge(&'static str),
+    /// 宿主经 [`Progress::cancel`] 取消；临时文件已删除，目标未被改动。
+    Cancelled,
     Io(io::Error),
 }
 
@@ -53,6 +55,7 @@ impl Display for ExportError {
         match self {
             Self::UnsupportedFormat(path) => write!(formatter, "unsupported export format: {path}"),
             Self::TooLarge(limit) => write!(formatter, "mesh exceeds format limit: {limit}"),
+            Self::Cancelled => write!(formatter, "export cancelled"),
             Self::Io(error) => write!(formatter, "{error}"),
         }
     }
@@ -85,18 +88,39 @@ pub fn detect_export_format(path: &Path) -> Result<ExportFormat, ExportError> {
 
 /// 写出到 `path`：格式由扩展名决定；先写同目录临时文件再 rename。
 pub fn export_surface_mesh(mesh: &SurfaceMesh, path: &Path) -> Result<ExportFormat, ExportError> {
+    export_surface_mesh_with_progress(mesh, path, &Progress::new())
+}
+
+/// 同 [`export_surface_mesh`]，并报告进度：带索引格式的顶点去重占 0–40%，
+/// 写出按估算字节数占 40–99%，原子替换后为 100%；写出过程中可协作取消。
+pub fn export_surface_mesh_with_progress(
+    mesh: &SurfaceMesh,
+    path: &Path,
+    progress: &Progress,
+) -> Result<ExportFormat, ExportError> {
     let format = detect_export_format(path)?;
     let temporary = temporary_path(path);
     let result = (|| {
         let file = File::create(&temporary)?;
-        let mut writer = BufWriter::with_capacity(1 << 20, file);
-        write_surface_mesh(mesh, format, &mut writer)?;
+        let estimate = estimated_bytes(mesh, format);
+        let mut writer = ProgressWriter {
+            inner: BufWriter::with_capacity(1 << 20, file),
+            progress,
+            written: 0,
+            estimate,
+        };
+        write_with_progress(mesh, format, &mut writer, progress)?;
+        if progress.is_cancelled() {
+            return Err(ExportError::Cancelled);
+        }
         let file = writer
+            .inner
             .into_inner()
             .map_err(io::IntoInnerError::into_error)?;
         file.sync_all()?;
         drop(file);
         fs::rename(&temporary, path)?;
+        progress.set_fraction(1.0);
         Ok(format)
     })();
     if result.is_err() {
@@ -120,13 +144,69 @@ pub fn write_surface_mesh(
     format: ExportFormat,
     writer: &mut impl Write,
 ) -> Result<(), ExportError> {
+    write_with_progress(mesh, format, writer, &Progress::new())
+}
+
+fn write_with_progress(
+    mesh: &SurfaceMesh,
+    format: ExportFormat,
+    writer: &mut impl Write,
+    progress: &Progress,
+) -> Result<(), ExportError> {
+    let indexed = || IndexedMesh::new(mesh, progress);
     match format {
         ExportFormat::Stl => write_stl(mesh, writer),
-        ExportFormat::Obj => write_obj(&IndexedMesh::new(mesh)?, writer),
-        ExportFormat::Ply => write_ply(&IndexedMesh::new(mesh)?, writer),
-        ExportFormat::VtkLegacy => write_vtk_legacy(&IndexedMesh::new(mesh)?, writer),
-        ExportFormat::Vtp => write_vtk_xml(&IndexedMesh::new(mesh)?, false, writer),
-        ExportFormat::Vtu => write_vtk_xml(&IndexedMesh::new(mesh)?, true, writer),
+        ExportFormat::Obj => write_obj(&indexed()?, writer),
+        ExportFormat::Ply => write_ply(&indexed()?, writer),
+        ExportFormat::VtkLegacy => write_vtk_legacy(&indexed()?, writer),
+        ExportFormat::Vtp => write_vtk_xml(&indexed()?, false, writer),
+        ExportFormat::Vtu => write_vtk_xml(&indexed()?, true, writer),
+    }
+    .map_err(|error| match error {
+        ExportError::Io(io) if io.kind() == io::ErrorKind::Interrupted => ExportError::Cancelled,
+        other => other,
+    })
+}
+
+/// 写出字节数的粗略估算，仅用于进度比例；假设焊接后顶点约为三角形数一半。
+fn estimated_bytes(mesh: &SurfaceMesh, format: ExportFormat) -> u64 {
+    let triangles = mesh.triangles.len() as u64;
+    let points = triangles / 2 + 3;
+    match format {
+        ExportFormat::Stl => 84 + 50 * triangles,
+        ExportFormat::Obj => points * 60 + triangles * 24,
+        ExportFormat::Ply | ExportFormat::VtkLegacy => points * 24 + triangles * 13,
+        ExportFormat::Vtp => (points * 24 + triangles * 32) * 4 / 3,
+        ExportFormat::Vtu => (points * 24 + triangles * 33) * 4 / 3,
+    }
+    .max(1)
+}
+
+/// 统计写出字节并映射到 40–99% 进度；取消时以 Interrupted 中止写出。
+struct ProgressWriter<'a, W: Write> {
+    inner: W,
+    progress: &'a Progress,
+    written: u64,
+    estimate: u64,
+}
+
+impl<W: Write> Write for ProgressWriter<'_, W> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let before = self.written >> 20;
+        let count = self.inner.write(buffer)?;
+        self.written += count as u64;
+        if self.written >> 20 != before {
+            if self.progress.is_cancelled() {
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "export cancelled"));
+            }
+            self.progress
+                .report(0.4, 0.99, self.written.min(self.estimate), self.estimate);
+        }
+        Ok(count)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
     }
 }
 
@@ -136,11 +216,18 @@ struct IndexedMesh {
 }
 
 impl IndexedMesh {
-    fn new(mesh: &SurfaceMesh) -> Result<Self, ExportError> {
+    fn new(mesh: &SurfaceMesh, progress: &Progress) -> Result<Self, ExportError> {
         let mut lookup: HashMap<[u64; 3], u32> = HashMap::with_capacity(mesh.triangles.len() / 2);
         let mut points = Vec::with_capacity(mesh.triangles.len() / 2);
         let mut triangles = Vec::with_capacity(mesh.triangles.len());
-        for triangle in &mesh.triangles {
+        let total = mesh.triangles.len() as u64;
+        for (position, triangle) in mesh.triangles.iter().enumerate() {
+            if position % PROGRESS_STRIDE == 0 {
+                if progress.is_cancelled() {
+                    return Err(ExportError::Cancelled);
+                }
+                progress.report(0.0, 0.4, position as u64, total);
+            }
             let mut indices = [0_u32; 3];
             for (slot, point) in indices.iter_mut().zip(triangle) {
                 let key = point.map(|value| (value + 0.0).to_bits());
