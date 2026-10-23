@@ -49,9 +49,9 @@
 
 ## CI
 
-- GitHub Actions workflow [ci.yml](../../.github/workflows/ci.yml)：push 到 main 与 pull request 触发；矩阵 `macos-latest` / `ubuntu-latest` / `windows-2022`。三平台统一 Ninja；Windows 使用托管 clang-cl、MSVC Build Tools/Windows SDK 环境与 Qt MSVC2022 预编译包；CI 不自行安装项目工具。CMake/Ninja/Qt 由 Cargo 构建或质量入口按需供给；GoogleTest 在 `BUILD_TESTING=ON` 时由 `sdk-provision` 下载并校验对应平台固定 SDK。Linux 上 Qt 预编译包的 configure 与 QML 运行依赖宿主 OpenGL 前置（见"开发者前置"），由 workflow 平台前置步骤以 apt 安装，属宿主能力而非项目依赖。构建引导的 curl 下载带 connect/speed/max 上限，任务级 `timeout-minutes` 兜底传输停滞。
+- GitHub Actions workflow [ci.yml](../../.github/workflows/ci.yml)：push 到 main 与 pull request 触发，仅 `ubuntu-latest`；[nightly.yml](../../.github/workflows/nightly.yml) 每天 18:00 UTC 定时及手动触发，矩阵 `macos-latest` / `windows-2022`。三平台统一 Ninja；Windows 使用托管 clang-cl、MSVC Build Tools/Windows SDK 环境与 Qt MSVC2022 预编译包；CI 不自行安装项目工具。CMake/Ninja/Qt 由 Cargo 构建或质量入口按需供给；GoogleTest 在 `BUILD_TESTING=ON` 时由 `sdk-provision` 下载并校验对应平台固定 SDK。Linux 上 Qt 预编译包的 configure 与 QML 运行依赖宿主 OpenGL 前置（见"开发者前置"），由 workflow 平台前置步骤以 apt 安装，属宿主能力而非项目依赖。构建引导的 curl 下载带 connect/speed/max 上限，任务级 `timeout-minutes` 兜底传输停滞。
 - Qt 6.11.2 Linux 预编译归档面向 RHEL9，Qt 工具（包括 `rcc`、`qtpaths`、`qmlimportscanner`）需要 ICU 73。`native/cmake/qt-provision.cmake` 同步下载并校验 Qt 官方的 ICU 73 预编译归档，解包到 `qt/staging/lib`，让 Ubuntu 使用与 Qt 工具匹配的 ABI；不使用系统 ICU、不伪造 SONAME，也不源码编译 ICU。Linux 仍跳过仅供 IDE 使用的 `.qmlls.build.ini` 和当前 app 的空 import scan，保留 QML typeinfo、cachegen、资源和运行时验证。
-- PR 与 main push 在三平台安装 rust-toolchain.toml 中的固定 Rust 工具链并执行 `cargo test --locked --workspace`，其中包含 native/QML 构建和完整行为测试；单一 Ubuntu quality job 运行 `cargo format --check`、`cargo lint clippy --check` 和 `cargo lint qmllint --check`。基础检查与验收边界见[质量工具链](../modules/quality-tooling.md)。
+- PR 与 main push 在 Linux、nightly 在 macOS / Windows 安装 rust-toolchain.toml 中的固定 Rust 工具链并执行 `cargo test --locked --workspace`，其中包含 native/QML 构建和完整行为测试；单一 Ubuntu quality job 运行 `cargo format --check`、`cargo lint clippy --check` 和 `cargo lint qmllint --check`。基础检查与验收边界见[质量工具链](../modules/quality-tooling.md)。
 - runner 需要镜像自带的平台编译器与 rustup；平台编译器和标准库属于 Cargo 无法替代的宿主能力，项目依赖仍由 Cargo 驱动的构建引导供给。
 - 边界：CI 覆盖以 workflow 和实际测试清单为准；VTK、OCCT、Netgen 的 SDK 生产在原 Panta Release 来源侧完成，本仓库验证消费、链接与已有测试，真实 GPU 窗口另行验收。
 

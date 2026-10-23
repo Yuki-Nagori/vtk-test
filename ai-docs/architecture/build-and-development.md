@@ -41,7 +41,7 @@ Cargo 自带的 `cargo package` 保留给 Rust crate 打包；桌面安装命令
 
 ## 工具链与依赖准备
 
-主验证平台为 macOS arm64（Apple clang 17 + CLT，2026-09-16 记录）；获取方式为 Cargo 统一托管：开发者只安装 git、rustup 与 Apple 命令行工具，`cargo build` 触发的构建引导按固定清单供给 CMake、Ninja、Qt 6、VTK、OCCT、Netgen（[依赖获取与主平台环境](../standards/dependency-acquisition.md)）。三平台构建由 CI 覆盖，安装树与真实窗口的验证边界见本页“当前可用范围”；构建通过不代表各目标平台的安装与窗口验收完成。
+主验证平台为 macOS arm64（Apple clang 17 + CLT，2026-09-16 记录）；获取方式为 Cargo 统一托管：开发者只安装 git、rustup 与 Apple 命令行工具，`cargo build` 触发的构建引导按固定清单供给 CMake、Ninja、Qt 6、VTK、OCCT、Netgen（[依赖获取与主平台环境](../standards/dependency-acquisition.md)）。Linux 构建由 PR / main CI 覆盖，macOS 与 Windows 构建由 nightly 覆盖，安装树与真实窗口的验证边界见本页“当前可用范围”；构建通过不代表各目标平台的安装与窗口验收完成。
 
 首次集成时记录：构建配置、Qt 图形后端、实测依赖版本与校验信息。第三方依赖不必自身以 C++20 编写，但头文件、ABI、运行库和链接方式必须与应用兼容。
 

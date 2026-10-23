@@ -1,4 +1,4 @@
-# 三平台 test job 仅在 main push 保存已验证的下载缓存；PR 只恢复。
+# ci.yml Linux test job 仅在 main push 保存已验证的下载缓存；PR 只恢复。
 name: Save panta caches
 description: 输出缓存体积并保存 cargo-home 与 tools/deps 两键缓存
 runs:

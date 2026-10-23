@@ -1,6 +1,6 @@
 # 004 — 同步文档中的 CI 平台描述
 
-- 状态：ready
+- 状态：implemented
 - 阶段：文档一致性
 - 依赖：无
 - 优先级：P1
@@ -51,14 +51,14 @@ PR #2 已把 PR / main push CI（`ci.yml`）收敛为仅 Linux，macOS / Windows
 
 ## 验收标准
 
-- [ ] 上列位置描述与 workflow 一致。
+- [x] 上列位置描述与 workflow 一致。
 - [ ] Linux CI 通过（注释改动不影响行为）。
 
 ## 验证计划与结果
 
 | 日期 | 环境 / 命令或场景 | 预期 | 实际结果 / 证据 |
 |---|---|---|---|
-| — | `rg -n "三平台" AGENTS.md tests ai-docs .github` 人工复核 | 仅剩历史记录与非 CI 语义 | 未执行 |
+| 2026-10-24 | `rg -n "三平台" AGENTS.md tests ai-docs .github` 人工复核 | 仅剩历史记录与非 CI 语义 | 已复核：剩余为 task 001 历史记录、SDK 三平台制品与依赖说明，非 CI 触发描述 |
 
 ## 风险与回退
 
@@ -67,7 +67,8 @@ PR #2 已把 PR / main push CI（`ci.yml`）收敛为仅 Linux，macOS / Windows
 ## 决策与工作记录
 
 - 2026-10-24：创建任务。
+- 2026-10-24：同步上列 5 处描述；nightly 的 save 步骤因条件限定 main push 而不保存缓存，注释仅描述 ci.yml 行为。待 Linux CI。
 
 ## 完成摘要
 
-未完成。
+文档与注释已与 workflow 一致；Linux CI 结果见对应 PR。
