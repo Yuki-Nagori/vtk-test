@@ -16,8 +16,57 @@ use std::fmt::{Display, Formatter};
 
 pub use obj::parse_obj;
 pub use ply::parse_ply;
-pub use vtk_legacy::parse_vtk_legacy;
-pub use vtk_xml::{parse_vtp, parse_vtu};
+pub use vtk_legacy::{parse_vtk_legacy, parse_vtk_legacy_grid};
+pub use vtk_xml::{parse_vtp, parse_vtu, parse_vtu_grid};
+
+/// 体网格导入的原始数据：首期只接受线性四面体（VTK 单元类型 10），
+/// 任何其他单元类型整体拒绝，不做部分导入。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RawGrid {
+    pub points: Vec<[f64; 3]>,
+    pub tets: Vec<[u32; 4]>,
+}
+
+impl RawGrid {
+    pub(crate) fn new(
+        points: Vec<[f64; 3]>,
+        cells: CellList,
+        types: Vec<u64>,
+    ) -> FormatResult<Self> {
+        const LINEAR_TETRA: u64 = 10;
+        if types.len() != cells.len() {
+            return Err(FormatError::new("cell types count mismatch"));
+        }
+        let mut tets = Vec::with_capacity(cells.len());
+        for (index, (kind, nodes)) in types.iter().zip(cells.iter()).enumerate() {
+            if *kind != LINEAR_TETRA {
+                return Err(FormatError::new(format!(
+                    "cell {index} has type {kind}; only linear tetrahedra (10) are supported"
+                )));
+            }
+            let nodes: [u64; 4] = nodes
+                .try_into()
+                .map_err(|_| FormatError::new(format!("tetrahedron {index} must have 4 nodes")))?;
+            let mut tet = [0u32; 4];
+            for (slot, node) in tet.iter_mut().zip(nodes) {
+                if node as usize >= points.len() {
+                    return Err(FormatError::new(format!(
+                        "tetrahedron {index} references node outside the node range"
+                    )));
+                }
+                *slot = u32::try_from(node).map_err(|_| FormatError::new("node index overflow"))?;
+            }
+            tets.push(tet);
+        }
+        if tets.is_empty() {
+            return Err(FormatError::new("grid has no tetrahedra"));
+        }
+        for point in &points {
+            checked_point(*point)?;
+        }
+        Ok(Self { points, tets })
+    }
+}
 
 /// 解析失败的格式专属诊断；文本面向开发者日志，不直接作为界面文案。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,6 +230,39 @@ mod fixture_tests {
         ("sphere_ascii.ply", 100),
         ("sphere_binary_le.ply", 100),
     ];
+
+    /// VTK 写出的四面体球：体网格导入后外表面与表面导入一致（64 个三角形），体素块整体拒绝。
+    #[test]
+    fn vtk_tet_fixtures_import_as_volume_and_other_cells_are_rejected()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/mesh/formats");
+        for name in [
+            "tet_ball_ascii.vtu",
+            "tet_ball_appended_zlib.vtu",
+            "tet_ball_legacy42_ascii.vtk",
+            "tet_ball_legacy51_binary.vtk",
+            "voxel_block_binary.vtu",
+        ] {
+            let path = root.join(name);
+            let snapshot = SourceSnapshot {
+                bytes: std::fs::read(&path)?,
+                source_name: name.to_owned(),
+                format: detect_format(&path)?,
+                path,
+                modified_unix_ms: None,
+            };
+            let result = crate::parse_volume_snapshot(&snapshot);
+            if name.starts_with("voxel") {
+                assert!(result.is_err(), "{name}");
+                continue;
+            }
+            let grid = result.map_err(|error| format!("{name}: {error}"))?;
+            let mesh = panta_mesh::tet_mesh_from_cells(grid.points, grid.tets)?;
+            assert_eq!(mesh.boundary.len(), 64, "{name}");
+        }
+        Ok(())
+    }
 
     #[test]
     fn vtk_written_fixtures_match_vtk_surface_triangle_counts()

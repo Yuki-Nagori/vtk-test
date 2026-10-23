@@ -474,3 +474,74 @@ fn base64(bytes: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 #[path = "export_tests.rs"]
 mod tests;
+
+/// 体网格导出 VTU（ASCII，原始节点与线性四面体单元，坐标为毫米），原子替换目标（task 021）。
+pub fn export_tet_mesh_vtu(mesh: &panta_mesh::TetMesh, path: &Path) -> Result<(), ExportError> {
+    let temporary = temporary_path(path);
+    let result = (|| {
+        let mut writer = BufWriter::with_capacity(1 << 20, File::create(&temporary)?);
+        write_tet_mesh_vtu(mesh, &mut writer)?;
+        let file = writer
+            .into_inner()
+            .map_err(io::IntoInnerError::into_error)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ignored = fs::remove_file(&temporary);
+    }
+    result
+}
+
+pub fn write_tet_mesh_vtu(
+    mesh: &panta_mesh::TetMesh,
+    writer: &mut impl Write,
+) -> Result<(), ExportError> {
+    writeln!(writer, "<?xml version=\"1.0\"?>")?;
+    writeln!(
+        writer,
+        "<VTKFile type=\"UnstructuredGrid\" version=\"1.0\" byte_order=\"LittleEndian\">"
+    )?;
+    writeln!(writer, "<UnstructuredGrid>")?;
+    writeln!(
+        writer,
+        "<Piece NumberOfPoints=\"{}\" NumberOfCells=\"{}\">",
+        mesh.nodes.len(),
+        mesh.tets.len()
+    )?;
+    writeln!(
+        writer,
+        "<Points><DataArray type=\"Float64\" NumberOfComponents=\"3\" format=\"ascii\">"
+    )?;
+    for [x, y, z] in &mesh.nodes {
+        writeln!(writer, "{x:?} {y:?} {z:?}")?;
+    }
+    writeln!(writer, "</DataArray></Points>")?;
+    writeln!(
+        writer,
+        "<Cells><DataArray type=\"Int64\" Name=\"connectivity\" format=\"ascii\">"
+    )?;
+    for tet in &mesh.tets {
+        let [a, b, c, d] = tet.nodes;
+        writeln!(writer, "{a} {b} {c} {d}")?;
+    }
+    writeln!(
+        writer,
+        "</DataArray><DataArray type=\"Int64\" Name=\"offsets\" format=\"ascii\">"
+    )?;
+    for index in 1..=mesh.tets.len() {
+        writeln!(writer, "{}", index * 4)?;
+    }
+    writeln!(
+        writer,
+        "</DataArray><DataArray type=\"UInt8\" Name=\"types\" format=\"ascii\">"
+    )?;
+    for _ in &mesh.tets {
+        writeln!(writer, "10")?;
+    }
+    writeln!(writer, "</DataArray></Cells>")?;
+    writeln!(writer, "</Piece></UnstructuredGrid></VTKFile>")?;
+    Ok(())
+}
