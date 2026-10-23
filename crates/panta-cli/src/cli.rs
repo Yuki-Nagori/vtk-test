@@ -14,8 +14,8 @@ const USAGE: &str = concat!(
     "用法：panta-cli ",
     "project inspect <工程文件.panta> | ",
     "project create <父目录> <工程名> | ",
-    "stl inspect <文件.stl> [--weld-tolerance <相对比例>] | ",
-    "stl import <工程文件.panta> <文件.stl> ",
+    "mesh inspect <网格文件> [--weld-tolerance <相对比例>] | ",
+    "mesh import <工程文件.panta> <网格文件> ",
     "[--mesh-type <id>] [--units <unit>]"
 );
 
@@ -62,14 +62,14 @@ pub fn run_process() -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(CommandOutput::StlInspect(preview, diagnostics)) => {
-            println!("STL: {}", preview.source_name);
+            println!("Mesh: {}", preview.source_name);
             println!("Triangles: {}", preview.triangle_count);
             println!(
                 "Dimensions: {} × {} × {}",
                 preview.dimensions[0], preview.dimensions[1], preview.dimensions[2]
             );
             println!(
-                "Note: STL does not encode units; dimensions and weld tolerance use source coordinates."
+                "Note: Mesh sources do not encode units; dimensions and weld tolerance use source coordinates."
             );
             print_diagnostics(&diagnostics);
             ExitCode::SUCCESS
@@ -139,14 +139,16 @@ fn run(arguments: &[OsString]) -> Result<CommandOutput, String> {
                 .ok_or_else(|| "工程名必须是有效 UTF-8".to_owned())?;
             project::create(&mut service, location, name).map(CommandOutput::ProjectCreate)
         }
-        [command, operation, path, options @ ..] if command == "stl" && operation == "inspect" => {
+        [command, operation, path, options @ ..]
+            if is_mesh_command(command) && operation == "inspect" =>
+        {
             let options = stl::parse_inspect_options(options)?;
             let path = resolve_project_path(PathBuf::from(path), &current_directory);
             stl::inspect(&mut service, path, options)
                 .map(|(preview, diagnostics)| CommandOutput::StlInspect(preview, diagnostics))
         }
         [command, operation, project_path, source_path, options @ ..]
-            if command == "stl" && operation == "import" =>
+            if is_mesh_command(command) && operation == "import" =>
         {
             let options = stl::parse_import_options(options)?;
             let project_path =
@@ -157,6 +159,11 @@ fn run(arguments: &[OsString]) -> Result<CommandOutput, String> {
         }
         _ => Err(USAGE.to_owned()),
     }
+}
+
+/// `mesh` 为通用入口，支持 STL / VTU / VTP / VTK / OBJ / PLY；`stl` 保留为同义别名。
+fn is_mesh_command(command: &OsString) -> bool {
+    command == "mesh" || command == "stl"
 }
 
 fn resolve_project_path(path: PathBuf, current_directory: &Path) -> PathBuf {

@@ -74,7 +74,7 @@ ApplicationWindow {
             }
             Button {
                 objectName: "importStlButton"
-                text: "导入 STL"
+                text: "导入网格"
                 enabled: shellWindow.projectOpen && !shellWindow.busy
                 onClicked: importDialog.open()
             }
@@ -110,7 +110,7 @@ ApplicationWindow {
             Label {
                 Layout.fillWidth: true
                 visible: assetList.count === 0
-                text: shellWindow.projectOpen ? "导入 STL 网格以查看。" : "新建或打开工程。"
+                text: shellWindow.projectOpen ? "导入网格以查看。" : "新建或打开工程。"
                 wrapMode: Text.Wrap
             }
             ListView {

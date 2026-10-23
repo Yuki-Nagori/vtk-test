@@ -148,10 +148,13 @@ fn stl_inspect_prints_the_shared_preview_for_a_path_with_spaces_and_unicode()
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout)?;
-    assert!(stdout.contains("STL: 零件 sample.stl"), "{stdout}");
+    assert!(stdout.contains("Mesh: 零件 sample.stl"), "{stdout}");
     assert!(stdout.contains("Triangles: 1"), "{stdout}");
     assert!(stdout.contains("Dimensions: 1 × 2 × 0"), "{stdout}");
-    assert!(stdout.contains("STL does not encode units"), "{stdout}");
+    assert!(
+        stdout.contains("Mesh sources do not encode units"),
+        "{stdout}"
+    );
     assert!(stdout.contains("Mesh quality: issues found"), "{stdout}");
     assert!(
         stdout.contains("Boundary edges: 3 in 1 hole(s)"),
@@ -248,7 +251,7 @@ fn stl_inspect_rejects_missing_and_malformed_inputs_with_diagnostics()
     assert!(String::from_utf8_lossy(&empty_output.stderr).contains("project.import_parse_failed"));
     assert!(empty_output.stdout.is_empty());
 
-    let unsupported = fixture.root.join("model.obj");
+    let unsupported = fixture.root.join("model.3mf");
     std::fs::write(&unsupported, b"triangle data")?;
     let unsupported_output = panta_cli()
         .args(["stl", "inspect"])
@@ -309,7 +312,7 @@ fn stl_inspect_accepts_a_non_utf8_unix_parent_path() -> Result<(), Box<dyn std::
 
         assert_eq!(output.status.code(), Some(0), "{output:?}");
         let stdout = String::from_utf8(output.stdout)?;
-        assert!(stdout.contains("STL: part-\u{fffd}.stl"), "{stdout}");
+        assert!(stdout.contains("Mesh: part-\u{fffd}.stl"), "{stdout}");
         assert!(stdout.contains("Triangles: 1"), "{stdout}");
     }
     Ok(())
@@ -481,7 +484,7 @@ fn stl_import_rejects_invalid_sources_and_projects_without_partial_assets()
     let project = creator.create(&fixture.root, "CLI failed imports")?;
     let missing = fixture.root.join("missing.stl");
     let malformed = fixture.root.join("malformed.stl");
-    let unsupported = fixture.root.join("model.obj");
+    let unsupported = fixture.root.join("model.3mf");
     let invalid_project = fixture.root.join("invalid.panta");
     std::fs::write(&malformed, b"not an STL")?;
     std::fs::write(&unsupported, b"triangle data")?;
@@ -563,5 +566,45 @@ fn stl_import_allows_duplicate_display_names_and_assigns_distinct_ids()
     assert_eq!(records[1].display_name, "model");
     assert_ne!(records[0].id, records[1].id);
     assert_ne!(records[0].mesh_asset_id, records[1].mesh_asset_id);
+    Ok(())
+}
+
+#[test]
+fn mesh_import_accepts_vtu_and_records_the_source_format() -> Result<(), Box<dyn std::error::Error>>
+{
+    let fixture = temp_directory::Fixture::new()?;
+    let mut creator = ProjectService::new();
+    let project = creator.create(&fixture.root, "CLI VTU import")?;
+    let source = mesh_fixture("formats/tet_ball_appended_zlib.vtu");
+
+    let inspected = panta_cli()
+        .args(["mesh", "inspect"])
+        .arg(&source)
+        .output()?;
+    assert_eq!(inspected.status.code(), Some(0), "{inspected:?}");
+    let stdout = String::from_utf8(inspected.stdout)?;
+    assert!(stdout.contains("Triangles: 64"), "{stdout}");
+    assert!(stdout.contains("Mesh quality: no issues found"), "{stdout}");
+
+    let imported = panta_cli()
+        .args(["mesh", "import"])
+        .arg(&project.path)
+        .arg(&source)
+        .output()?;
+    assert_eq!(imported.status.code(), Some(0), "{imported:?}");
+    let stdout = String::from_utf8(imported.stdout)?;
+    assert!(
+        stdout.contains("Imported: tet_ball_appended_zlib"),
+        "{stdout}"
+    );
+
+    let mut reopened = ProjectService::new();
+    reopened.execute(panta_core::project::ProjectCommand::Open {
+        path: project.path.clone(),
+    })?;
+    let records = reopened.imports()?;
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].format, "vtu");
+    assert_eq!(records[0].triangle_count, 64);
     Ok(())
 }

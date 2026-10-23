@@ -39,6 +39,7 @@ panta-ffi = { path = "crates/panta-ffi", version = "0.1.0" }
 serde = { version = "1.0", features = ["derive"] }
 sha2 = "0.10"
 zstd = "0.14.2"
+flate2 = { version = "1.0", default-features = false, features = ["rust_backend"] }
 
 [workspace.lints.rust]
 # 默认拒绝 unsafe；已登记例外只有 FFI 边界（任务 006）的 CXX 生成胶水，以及

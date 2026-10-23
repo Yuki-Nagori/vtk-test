@@ -58,11 +58,11 @@ DialogWindow {
 
     function errorMessage() {
         if (projectModel.errorCode === "project.import_file_missing")
-            return "所选 STL 文件不存在。";
+            return "所选网格文件不存在。";
         if (projectModel.errorCode === "project.import_invalid_file")
-            return "请选择要导入的 STL 文件。";
+            return "请选择要导入的网格文件。";
         if (projectModel.errorCode === "project.import_parse_failed")
-            return "无法读取所选 STL 文件。";
+            return "无法读取所选网格文件。";
         if (projectModel.errorCode === "project.import_asset_write_failed")
             return "无法将网格资产保存到工程中。";
         return "导入操作无法完成。";
@@ -83,7 +83,7 @@ DialogWindow {
 
             ThemedLabel {
                 Layout.fillWidth: true
-                text: "导入 STL 文件前请选择网格类型和单位。"
+                text: "导入网格文件前请选择网格类型和单位。"
                 textSize: Theme.fontSmall
                 textColor: Theme.colorTextMuted
                 wrapMode: Text.Wrap
@@ -109,8 +109,8 @@ DialogWindow {
                         Layout.preferredHeight: Theme.controlHeight
                         text: dialog.sourcePath
                         readOnly: true
-                        placeholderText: "选择 STL 文件"
-                        Accessible.name: "STL 文件"
+                        placeholderText: "选择网格文件"
+                        Accessible.name: "网格文件"
                     }
                     ThemedButton {
                         text: "浏览"
@@ -154,7 +154,7 @@ DialogWindow {
                 }
                 ThemedLabel {
                     Layout.fillWidth: true
-                    text: dialog.projectModel.importPreviewReady && dialog.sourcePath.length > 0 ? dialog.projectModel.importPreviewDimensions + " " + unitsCombo.currentText : "请选择 STL 文件"
+                    text: dialog.projectModel.importPreviewReady && dialog.sourcePath.length > 0 ? dialog.projectModel.importPreviewDimensions + " " + unitsCombo.currentText : "请选择网格文件"
                     textSize: Theme.fontBody
                     textColor: Theme.colorTextMuted
                 }
@@ -172,7 +172,7 @@ DialogWindow {
             ThemedLabel {
                 Layout.fillWidth: true
                 visible: dialog.projectModel.importPending
-                text: "正在将 STL 文件添加到工程…"
+                text: "正在将网格文件添加到工程…"
                 textSize: Theme.fontSmall
                 textColor: Theme.colorTextMuted
             }
@@ -221,9 +221,9 @@ DialogWindow {
 
     FileDialog {
         id: fileDialog
-        title: "选择 STL 文件"
+        title: "选择网格文件"
         fileMode: FileDialog.OpenFile
-        nameFilters: ["STL 文件 (*.stl)"]
+        nameFilters: ["网格文件 (*.stl *.vtu *.vtp *.vtk *.obj *.ply)", "STL 文件 (*.stl)", "VTK 文件 (*.vtu *.vtp *.vtk)", "OBJ 文件 (*.obj)", "PLY 文件 (*.ply)"]
         onAccepted: {
             if (!dialog.visible)
                 return;

@@ -395,6 +395,7 @@ pub(super) fn map_import_error(error: ImportError) -> ProjectError {
         ImportError::UnsupportedFormat(path) => ProjectError::ImportInvalidFile(path),
         ImportError::Read(detail) => ProjectError::ImportParseFailed(detail),
         ImportError::Parse(detail) => ProjectError::ImportParseFailed(detail.to_string()),
+        ImportError::Format(detail) => ProjectError::ImportParseFailed(detail.to_string()),
         ImportError::SourceChanged(path) => ProjectError::ImportSourceChanged(path),
         ImportError::UnsupportedMeshType(kind) => ProjectError::ImportUnsupportedMeshType(kind),
         ImportError::UnsupportedUnits(units) => ProjectError::ImportUnsupportedUnits(units),
