@@ -424,6 +424,7 @@ fn activation_failure(error: &ImportError) -> (&'static str, &'static str, Strin
         }
         ImportError::Read(detail) => ("project.asset_read_failed", "io", detail.clone()),
         ImportError::Parse(error) => ("project.asset_parse_failed", "format", error.to_string()),
+        ImportError::Format(error) => ("project.asset_parse_failed", "format", error.to_string()),
         ImportError::SourceChanged(path) => {
             ("project.asset_source_changed", "conflict", path.clone())
         }

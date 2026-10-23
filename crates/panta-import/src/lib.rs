@@ -1,6 +1,8 @@
 //! 格式识别和来源快照；格式专属算法由对应领域后端执行。
 //! STEP / IGES 的几何读取由后续 OCCT adapter 接入。
 
+pub mod formats;
+
 use panta_mesh::{StlError, SurfaceMesh, SurfaceSummary, parse_stl, surface_mesh_expanded_bytes};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -11,8 +13,37 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportFormat {
     Stl,
+    /// VTK XML UnstructuredGrid；体单元只保留外表面。
+    Vtu,
+    /// VTK XML PolyData。
+    Vtp,
+    /// 旧版 `.vtk`（POLYDATA / UNSTRUCTURED_GRID）。
+    VtkLegacy,
+    Obj,
+    Ply,
     Step,
     Iges,
+}
+
+impl ImportFormat {
+    /// 写入 ImportRecord.format 的稳定标识；同时是默认显示名要剥离的扩展名。
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Stl => "stl",
+            Self::Vtu => "vtu",
+            Self::Vtp => "vtp",
+            Self::VtkLegacy => "vtk",
+            Self::Obj => "obj",
+            Self::Ply => "ply",
+            Self::Step => "step",
+            Self::Iges => "iges",
+        }
+    }
+
+    /// 由 Rust 表面网格解析器支持、可走网格导入会话的格式。
+    pub fn is_surface_mesh(self) -> bool {
+        !matches!(self, Self::Step | Self::Iges)
+    }
 }
 
 #[derive(Debug)]
@@ -21,6 +52,8 @@ pub enum ImportError {
     UnsupportedFormat(String),
     Read(String),
     Parse(StlError),
+    /// STL 以外网格格式的解析错误。
+    Format(formats::FormatError),
     SourceChanged(String),
     UnsupportedMeshType(String),
     UnsupportedUnits(String),
@@ -193,6 +226,11 @@ pub fn detect_format(path: &Path) -> Result<ImportFormat, ImportError> {
         .unwrap_or_default();
     match extension.to_ascii_lowercase().as_str() {
         "stl" => Ok(ImportFormat::Stl),
+        "vtu" => Ok(ImportFormat::Vtu),
+        "vtp" => Ok(ImportFormat::Vtp),
+        "vtk" => Ok(ImportFormat::VtkLegacy),
+        "obj" => Ok(ImportFormat::Obj),
+        "ply" => Ok(ImportFormat::Ply),
         "step" | "stp" => Ok(ImportFormat::Step),
         "iges" | "igs" => Ok(ImportFormat::Iges),
         _ => Err(ImportError::UnsupportedFormat(path.display().to_string())),
@@ -310,14 +348,20 @@ fn reserve_source_bytes(
     }
 }
 
-/// 唯一的 STL 解析入口；几何格式尚无 native backend 时不得走此函数。
-pub fn parse_stl_snapshot(snapshot: &SourceSnapshot) -> Result<SurfaceMesh, ImportError> {
-    if snapshot.format != ImportFormat::Stl {
-        return Err(ImportError::UnsupportedFormat(
+/// 唯一的表面网格解析入口；STEP / IGES 等几何格式尚无 native backend，不得走此函数。
+pub fn parse_mesh_snapshot(snapshot: &SourceSnapshot) -> Result<SurfaceMesh, ImportError> {
+    let bytes = &snapshot.bytes;
+    match snapshot.format {
+        ImportFormat::Stl => parse_stl(bytes).map_err(ImportError::Parse),
+        ImportFormat::Vtu => formats::parse_vtu(bytes).map_err(ImportError::Format),
+        ImportFormat::Vtp => formats::parse_vtp(bytes).map_err(ImportError::Format),
+        ImportFormat::VtkLegacy => formats::parse_vtk_legacy(bytes).map_err(ImportError::Format),
+        ImportFormat::Obj => formats::parse_obj(bytes).map_err(ImportError::Format),
+        ImportFormat::Ply => formats::parse_ply(bytes).map_err(ImportError::Format),
+        ImportFormat::Step | ImportFormat::Iges => Err(ImportError::UnsupportedFormat(
             snapshot.path.display().to_string(),
-        ));
+        )),
     }
-    parse_stl(&snapshot.bytes).map_err(ImportError::Parse)
 }
 
 /// 预览与提交共享同一字节快照；提交前重新读取源文件并逐字节比较。
@@ -330,6 +374,7 @@ pub struct StlImportSession {
 pub struct PreparedStl {
     pub path: PathBuf,
     pub source_name: String,
+    pub format: ImportFormat,
     pub bytes: Vec<u8>,
     pub mesh: SurfaceMesh,
     pub modified_unix_ms: Option<u64>,
@@ -346,14 +391,14 @@ impl PreparedStl {
             record_version: IMPORT_RECORD_VERSION,
             parser_version: STL_IMPORT_PARSER_VERSION,
             id: format!("import-{import_number}"),
-            display_name: default_display_name(&self.source_name, "stl"),
+            display_name: default_display_name(&self.source_name, self.format.id()),
             source_name: self.source_name.clone(),
             source_path: self.path.to_string_lossy().into_owned(),
             source_digest: Some(source_digest(&self.bytes)),
             source_size_bytes: u64::try_from(self.bytes.len()).unwrap_or(u64::MAX),
             source_modified_unix_ms: self.modified_unix_ms,
             mesh_asset_id: format!("mesh-import-{import_number}"),
-            format: "stl".to_owned(),
+            format: self.format.id().to_owned(),
             mesh_type: options.mesh_type.to_owned(),
             units: options.units.label().to_owned(),
             show_import_log: options.show_import_log,
@@ -400,7 +445,7 @@ impl StlImportSession {
     ) -> Result<StlImportPreview, CheckedReadError> {
         self.preview = None;
         let input = read_source_checked(path, &is_cancelled)?;
-        let mesh = parse_stl_snapshot(&input).map_err(CheckedReadError::Failed)?;
+        let mesh = parse_mesh_snapshot(&input).map_err(CheckedReadError::Failed)?;
         if is_cancelled() {
             return Err(CheckedReadError::Cancelled(path.display().to_string()));
         }
@@ -409,6 +454,7 @@ impl StlImportSession {
         self.preview = Some(PreparedStl {
             path: input.path,
             source_name: input.source_name,
+            format: input.format,
             bytes: input.bytes,
             mesh,
             modified_unix_ms: input.modified_unix_ms,
@@ -434,7 +480,7 @@ impl StlImportSession {
         is_cancelled: impl Fn() -> bool,
     ) -> Result<PreparedStl, CheckedReadError> {
         let input = read_source_checked(path, &is_cancelled)?;
-        if input.format != ImportFormat::Stl {
+        if !input.format.is_surface_mesh() {
             return Err(CheckedReadError::Failed(ImportError::UnsupportedFormat(
                 path.display().to_string(),
             )));
@@ -453,13 +499,14 @@ impl StlImportSession {
                 return Ok(confirmed);
             }
         }
-        let mesh = parse_stl_snapshot(&input).map_err(CheckedReadError::Failed)?;
+        let mesh = parse_mesh_snapshot(&input).map_err(CheckedReadError::Failed)?;
         if is_cancelled() {
             return Err(CheckedReadError::Cancelled(path.display().to_string()));
         }
         Ok(PreparedStl {
             path: input.path,
             source_name: input.source_name,
+            format: input.format,
             bytes: input.bytes,
             mesh,
             modified_unix_ms: input.modified_unix_ms,
@@ -695,7 +742,7 @@ mod tests {
             modified_unix_ms: None,
         };
         assert!(matches!(
-            parse_stl_snapshot(&non_stl),
+            parse_mesh_snapshot(&non_stl),
             Err(ImportError::UnsupportedFormat(_))
         ));
         let non_stl_path = fixture.root.join("part.step");
@@ -798,7 +845,7 @@ mod tests {
         ));
         // 未登记扩展名在读取前即拒绝（与 read_source 同一契约）；
         // .step 能通过格式识别，拒绝发生在解析层，不属读取边界。
-        let unknown = fixture.root.join("part.obj");
+        let unknown = fixture.root.join("part.3mf");
         fs::write(&unknown, b"anything")?;
         assert!(matches!(
             read_source_checked(&unknown, || false),

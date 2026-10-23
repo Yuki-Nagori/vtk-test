@@ -362,13 +362,13 @@ pub fn project_error_message(code: &str) -> &'static str {
         "project.manifest_invalid" | "project.unsupported_schema" => "所选工程文件不受支持。",
         "project.no_project" => "请先打开或创建工程。",
         "project.command_invalid" => "工程更改无效。",
-        "project.import_file_missing" => "所选 STL 文件不存在。",
-        "project.import_invalid_file" => "请选择要导入的 STL 文件。",
+        "project.import_file_missing" => "所选网格文件不存在。",
+        "project.import_invalid_file" => "请选择要导入的网格文件。",
         "project.import_unsupported_mesh_type" | "project.import_unsupported_units" => {
             "请选择有效的 STL 导入选项。"
         }
-        "project.import_source_changed" => "预览后 STL 文件已更改，请重新选择。",
-        "project.import_parse_failed" => "无法读取所选 STL 文件。",
+        "project.import_source_changed" => "预览后网格文件已更改，请重新选择。",
+        "project.import_parse_failed" => "无法读取所选网格文件。",
         "project.import_asset_write_failed" => "无法将网格资产保存到工程中。",
         _ => "无法完成工程操作。",
     }
@@ -649,8 +649,8 @@ mod tests {
             ("project.unsupported_schema", "所选工程文件不受支持。"),
             ("project.no_project", "请先打开或创建工程。"),
             ("project.command_invalid", "工程更改无效。"),
-            ("project.import_file_missing", "所选 STL 文件不存在。"),
-            ("project.import_invalid_file", "请选择要导入的 STL 文件。"),
+            ("project.import_file_missing", "所选网格文件不存在。"),
+            ("project.import_invalid_file", "请选择要导入的网格文件。"),
             (
                 "project.import_unsupported_mesh_type",
                 "请选择有效的 STL 导入选项。",
@@ -661,9 +661,9 @@ mod tests {
             ),
             (
                 "project.import_source_changed",
-                "预览后 STL 文件已更改，请重新选择。",
+                "预览后网格文件已更改，请重新选择。",
             ),
-            ("project.import_parse_failed", "无法读取所选 STL 文件。"),
+            ("project.import_parse_failed", "无法读取所选网格文件。"),
             (
                 "project.import_asset_write_failed",
                 "无法将网格资产保存到工程中。",
