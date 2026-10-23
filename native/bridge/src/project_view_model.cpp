@@ -411,9 +411,9 @@ bool ProjectViewModel::beginExportActiveMeshUrl(const QUrl& url) {
         Qt::QueuedConnection);
     try {
         startBackgroundWaiter([input, result, boundaryPath, progress] {
-            auto diagnostic = std::make_shared<panta::ffi::ProjectDiagnostic>(
-                panta::ffi::export_mesh_display(std::move(input->value()), boundaryPath,
-                                                **progress));
+            auto diagnostic =
+                std::make_shared<panta::ffi::ProjectDiagnostic>(panta::ffi::export_mesh_display(
+                    std::move(input->value()), boundaryPath, **progress));
             input->reset();
             result->addResult(diagnostic);
             result->finish();

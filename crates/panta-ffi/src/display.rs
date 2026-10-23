@@ -104,11 +104,7 @@ pub(super) fn diagnose_mesh_display(
                 } else {
                     "project.diagnostics_failed"
                 };
-                crate::project_response::diagnostic(
-                    code,
-                    "validation",
-                    error.to_string(),
-                )
+                crate::project_response::diagnostic(code, "validation", error.to_string())
             })
     });
     match result {
@@ -132,9 +128,12 @@ mod tests {
         let mesh = panta_mesh::SurfaceMesh {
             triangles: vec![[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]],
         };
-        let report = diagnose_mesh_display(Box::new(MeshDisplayInput {
-            mesh: Ok((Arc::new(mesh.clone()), 1)),
-        }), &crate::TaskProgress::default());
+        let report = diagnose_mesh_display(
+            Box::new(MeshDisplayInput {
+                mesh: Ok((Arc::new(mesh.clone()), 1)),
+            }),
+            &crate::TaskProgress::default(),
+        );
         let cancelled = crate::TaskProgress::default();
         cancelled.0.cancel();
         let stopped = diagnose_mesh_display(
@@ -150,13 +149,16 @@ mod tests {
         assert_eq!(report.value.hole_count, 1);
         assert!(!report.value.clean);
 
-        let missing = diagnose_mesh_display(Box::new(MeshDisplayInput {
-            mesh: Err(crate::project_response::diagnostic(
-                "project.mesh_not_resident",
-                "state",
-                "x".into(),
-            )),
-        }), &crate::TaskProgress::default());
+        let missing = diagnose_mesh_display(
+            Box::new(MeshDisplayInput {
+                mesh: Err(crate::project_response::diagnostic(
+                    "project.mesh_not_resident",
+                    "state",
+                    "x".into(),
+                )),
+            }),
+            &crate::TaskProgress::default(),
+        );
         assert_eq!(missing.error.code, "project.mesh_not_resident");
     }
 }

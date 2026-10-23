@@ -197,7 +197,10 @@ impl<W: Write> Write for ProgressWriter<'_, W> {
         self.written += count as u64;
         if self.written >> 20 != before {
             if self.progress.is_cancelled() {
-                return Err(io::Error::new(io::ErrorKind::Interrupted, "export cancelled"));
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "export cancelled",
+                ));
             }
             self.progress
                 .report(0.4, 0.99, self.written.min(self.estimate), self.estimate);
@@ -222,7 +225,7 @@ impl IndexedMesh {
         let mut triangles = Vec::with_capacity(mesh.triangles.len());
         let total = mesh.triangles.len() as u64;
         for (position, triangle) in mesh.triangles.iter().enumerate() {
-            if position % PROGRESS_STRIDE == 0 {
+            if position.is_multiple_of(PROGRESS_STRIDE) {
                 if progress.is_cancelled() {
                     return Err(ExportError::Cancelled);
                 }

@@ -89,7 +89,7 @@ pub fn diagnose_surface_with_progress(
 ) -> Result<SurfaceDiagnostics, DiagnosticError> {
     let total = mesh.triangles.len() as u64;
     let checkpoint = |index: usize, start: f64, end: f64| {
-        if index % PROGRESS_STRIDE == 0 {
+        if index.is_multiple_of(PROGRESS_STRIDE) {
             if progress.is_cancelled() {
                 return Err(DiagnosticError::Cancelled);
             }
@@ -293,7 +293,9 @@ mod tests {
             triangles: vec![[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]],
         };
         let progress = Progress::new();
-        assert!(diagnose_surface_with_progress(&mesh, DiagnosticOptions::default(), &progress).is_ok());
+        assert!(
+            diagnose_surface_with_progress(&mesh, DiagnosticOptions::default(), &progress).is_ok()
+        );
         assert_eq!(progress.fraction(), 1.0);
         let cancelled = Progress::new();
         cancelled.cancel();

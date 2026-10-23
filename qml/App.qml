@@ -19,6 +19,8 @@ ApplicationWindow {
     color: Theme.colorPanel
 
     readonly property bool projectOpen: projectModel.currentPath.length > 0
+    readonly property real taskProgress: projectModel.importPending ? projectModel.importProgress : projectModel.exportPending ? projectModel.exportProgress : projectModel.diagnosticsPending ? projectModel.diagnosticsProgress : -1
+    readonly property string taskName: projectModel.importPending ? "导入" : projectModel.exportPending ? "导出" : "诊断"
     readonly property bool busy: projectModel.projectOperationPending || projectModel.importPending || projectModel.exportPending || projectModel.diagnosticsPending
     readonly property bool meshActive: projectModel.activeDocumentId.length > 0
     // 导出 / 截图的一次性结果提示；新的错误或操作会覆盖它。
@@ -355,6 +357,35 @@ ApplicationWindow {
             text: projectModel.error.length > 0 ? projectModel.error : shellWindow.notice.length > 0 ? shellWindow.notice : shellWindow.busy ? "处理中…" : "就绪"
             color: projectModel.error.length > 0 || shellWindow.noticeIsError ? Theme.colorError : Theme.colorTextMuted
             elide: Text.ElideRight
+        }
+        // task 016：当前后台任务的百分比与取消；导入优先，其次导出、诊断。
+        Label {
+            objectName: "taskProgressLabel"
+            visible: shellWindow.taskProgress >= 0
+            text: shellWindow.taskName + " " + Math.round(shellWindow.taskProgress * 100) + "%"
+            color: Theme.colorTextMuted
+        }
+        ProgressBar {
+            objectName: "taskProgressBar"
+            Layout.preferredWidth: 160
+            visible: shellWindow.taskProgress >= 0
+            from: 0
+            to: 1
+            value: Math.max(0, shellWindow.taskProgress)
+        }
+        Button {
+            objectName: "taskCancelButton"
+            Layout.rightMargin: Theme.spacingSmall
+            visible: shellWindow.taskProgress >= 0
+            text: "取消"
+            onClicked: {
+                if (projectModel.importPending)
+                    projectModel.cancelImport();
+                else if (projectModel.exportPending)
+                    projectModel.cancelExport();
+                else
+                    projectModel.cancelDiagnostics();
+            }
         }
     }
 }

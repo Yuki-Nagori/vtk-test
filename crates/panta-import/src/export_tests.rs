@@ -1,6 +1,6 @@
 use super::*;
-use panta_mesh::Progress;
 use crate::formats::{parse_obj, parse_ply, parse_vtk_legacy, parse_vtp, parse_vtu};
+use panta_mesh::Progress;
 
 fn sample() -> SurfaceMesh {
     SurfaceMesh {
@@ -107,8 +107,10 @@ fn export_file_replaces_target_and_rejects_unknown_extensions()
 }
 
 #[test]
-fn progress_export_completes_and_cancel_leaves_no_target() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = std::env::temp_dir().join(format!("panta-export-progress-{}", std::process::id()));
+fn progress_export_completes_and_cancel_leaves_no_target() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory =
+        std::env::temp_dir().join(format!("panta-export-progress-{}", std::process::id()));
     std::fs::create_dir_all(&directory)?;
     let mesh = SurfaceMesh {
         triangles: vec![[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]],

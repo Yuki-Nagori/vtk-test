@@ -28,10 +28,7 @@ pub(super) fn project_service_stl_import_progress(
     service: &crate::ProjectService,
     request: u64,
 ) -> f64 {
-    service
-        .service
-        .stl_import_progress(request)
-        .unwrap_or(-1.0)
+    service.service.stl_import_progress(request).unwrap_or(-1.0)
 }
 
 #[cfg(test)]
