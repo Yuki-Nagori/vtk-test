@@ -193,6 +193,16 @@ impl LengthUnit {
 }
 
 impl ImportOptions {
+    /// 「实体 3D」类型：VTU / 旧版 VTK 按体网格导入（task 021）。
+    pub fn is_solid(&self) -> bool {
+        self.mesh_type == "solid-3d"
+    }
+
+    /// 来源单位到毫米的换算系数。
+    pub fn factor_mm(&self) -> f64 {
+        self.units.factor_mm()
+    }
+
     pub fn new(mesh_type: &str, units: &str, show_import_log: bool) -> Result<Self, ImportError> {
         let mesh_type = MESH_TYPES
             .iter()

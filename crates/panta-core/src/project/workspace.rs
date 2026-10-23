@@ -369,6 +369,10 @@ pub fn project_error_message(code: &str) -> &'static str {
         }
         "project.import_source_changed" => "预览后网格文件已更改，请重新选择。",
         "project.import_parse_failed" => "无法读取所选网格文件。",
+        "project.import_volume_unsupported" => {
+            "体网格首期仅支持线性四面体；文件含其他单元类型或四面体校验失败。"
+        }
+        "project.volume_unavailable" => "当前网格不是体网格。",
         "project.import_asset_write_failed" => "无法将网格资产保存到工程中。",
         "project.export_unsupported_format" => "请选择导出格式：STL、VTU、VTP、VTK、OBJ 或 PLY。",
         "project.export_too_large" => "网格超出所选导出格式的容量上限。",

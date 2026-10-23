@@ -48,6 +48,7 @@ pub use material::default_material_id;
 mod import;
 mod mesh_assets;
 mod preview;
+mod volume;
 
 pub use crate::activation::{ActivationAttempt, Outcome, OutcomeKind};
 

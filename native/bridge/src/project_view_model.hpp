@@ -78,6 +78,11 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     Q_PROPERTY(bool animationPlaying READ animationPlaying NOTIFY animationChanged)
     Q_PROPERTY(int animationFps READ animationFps NOTIFY animationChanged)
     Q_PROPERTY(QString animationStatus READ animationStatus NOTIFY animationChanged)
+    Q_PROPERTY(bool volumeAvailable READ volumeAvailable NOTIFY volumeChanged)
+    Q_PROPERTY(QString volumeInfo READ volumeInfo NOTIFY volumeChanged)
+    Q_PROPERTY(bool sectionActive READ sectionActive NOTIFY volumeChanged)
+    Q_PROPERTY(int sectionAxis READ sectionAxis NOTIFY volumeChanged)
+    Q_PROPERTY(double sectionFraction READ sectionFraction NOTIFY volumeChanged)
 
   public:
     explicit ProjectViewModel(QObject* parent = nullptr);
@@ -224,9 +229,17 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     [[nodiscard]] bool animationPlaying() const { return m_animationPlaying; }
     [[nodiscard]] int animationFps() const { return m_animationFps; }
     [[nodiscard]] QString animationStatus() const;
+    /// 体网格单切面（task 021）：只替换视口显示，不写工程、不生成资产。
+    Q_INVOKABLE bool setSection(bool enabled, int axis, double fraction);
+    [[nodiscard]] bool volumeAvailable() const { return m_volumeAvailable; }
+    [[nodiscard]] QString volumeInfo() const { return m_volumeInfo; }
+    [[nodiscard]] bool sectionActive() const { return m_sectionActive; }
+    [[nodiscard]] int sectionAxis() const { return m_sectionAxis; }
+    [[nodiscard]] double sectionFraction() const { return m_sectionFraction; }
 
   signals:
     void animationChanged();
+    void volumeChanged();
     void errorChanged();
     void projectOperationPendingChanged();
     /// operation 为 create/open/save；成功表示已提交并发布快照。
@@ -321,6 +334,13 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     QTimer m_stlImportPoll;
     QTimer m_taskProgressPoll;
     void tick_animation();
+    void refresh_volume();
+    bool apply_section();
+    bool m_volumeAvailable = false;
+    QString m_volumeInfo;
+    bool m_sectionActive = false;
+    int m_sectionAxis = 2;
+    double m_sectionFraction = 0.5;
     std::optional<rust::Box<panta::ffi::AnimationSequence>> m_animation;
     QTimer m_animationPoll;
     QElapsedTimer m_animationClock;

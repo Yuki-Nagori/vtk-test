@@ -73,9 +73,9 @@ ApplicationWindow {
     readonly property bool canCreateOrOpen: !busy
     readonly property bool canSave: projectOpen && !busy
     readonly property bool canImport: projectOpen && !busy
-    readonly property bool canExport: meshActive && !busy && !projectModel.animationActive && projectModel.activeMeshLodStatus.length === 0
+    readonly property bool canExport: meshActive && !busy && !projectModel.animationActive && !projectModel.sectionActive && projectModel.activeMeshLodStatus.length === 0
     readonly property bool canScreenshot: !busy
-    readonly property bool canDiagnose: meshActive && !busy && !projectModel.animationActive && projectModel.activeMeshLodStatus.length === 0
+    readonly property bool canDiagnose: meshActive && !busy && !projectModel.animationActive && !projectModel.sectionActive && projectModel.activeMeshLodStatus.length === 0
     // 仅当诊断报告属于活动页签时展示，切换页签后需重新诊断。
     readonly property var activeQuality: projectModel.meshQuality.documentId === projectModel.activeDocumentId ? projectModel.meshQuality : ({})
 
@@ -559,6 +559,50 @@ ApplicationWindow {
                     text: projectModel.animationStatus
                     color: Theme.colorTextMuted
                     wrapMode: Text.WrapAnywhere
+                }
+            }
+            // 体网格（task 021）：质量统计与单切面显示；切面只替换视口，不写工程。
+            ColumnLayout {
+                objectName: "volumePanel"
+                Layout.fillWidth: true
+                visible: shellWindow.meshActive && projectModel.volumeAvailable
+                Label {
+                    text: "体网格"
+                    font.bold: true
+                }
+                Label {
+                    objectName: "volumeInfo"
+                    Layout.fillWidth: true
+                    text: projectModel.volumeInfo
+                    color: Theme.colorTextMuted
+                    wrapMode: Text.WrapAnywhere
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    CheckBox {
+                        objectName: "sectionToggle"
+                        text: "切面"
+                        enabled: !projectModel.animationActive
+                        checked: projectModel.sectionActive
+                        onToggled: projectModel.setSection(checked, sectionAxisBox.currentIndex, sectionSlider.value)
+                    }
+                    ComboBox {
+                        id: sectionAxisBox
+                        objectName: "sectionAxisBox"
+                        model: ["X", "Y", "Z"]
+                        currentIndex: projectModel.sectionAxis
+                        onActivated: index => projectModel.setSection(projectModel.sectionActive, index, sectionSlider.value)
+                    }
+                }
+                Slider {
+                    id: sectionSlider
+                    objectName: "sectionSlider"
+                    Layout.fillWidth: true
+                    enabled: projectModel.sectionActive
+                    from: 0
+                    to: 1
+                    value: projectModel.sectionFraction
+                    onMoved: projectModel.setSection(true, sectionAxisBox.currentIndex, value)
                 }
             }
             // 大网格 LOD 提示（task 019）：显示的是简化网格，拾取为近似值，诊断/导出不可用。
