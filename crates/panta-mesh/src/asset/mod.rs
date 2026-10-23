@@ -12,7 +12,10 @@
 //! 而读取端无需先对整个文件做一次串行哈希。LOD 层级与时间步字段在 v3 中必须为 0，
 //! 读取端遇到非 0 值显式拒绝，后续格式版本再赋予语义。
 
+mod stream;
 mod v2;
+
+pub use stream::{SurfaceAssetChunks, Triangle, write_surface_asset_streaming};
 
 use crate::{SurfaceMesh, SurfaceTriangle, TetMesh, Tetrahedron, validate_tet_mesh};
 use sha2::{Digest, Sha256};

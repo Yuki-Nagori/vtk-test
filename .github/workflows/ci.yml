@@ -30,6 +30,9 @@ jobs:
       # 测试目标并执行 qmllint/CTest，不另跑重复的 check/build/test 阶段。
       - name: Build and test Rust, native and QML
         run: cargo test --locked --workspace
+      # task 019：只跑小规模基准，验证流式写入/LOD/整读链路可运行；大规模在本机跑。
+      - name: Small-scale mesh benchmark
+        run: cargo run --locked -p panta-mesh --example scale_bench -- --triangles 300k --budget 50k
       - uses: ./.github/actions/panta-cache-save
 
   quality:
