@@ -22,6 +22,7 @@
 | 016 | [可取消、带百分比的后台任务进度](task/016-background-progress.md) | implemented |
 | 017 | [视口工具：预设视角、复位、拾取与测距](task/017-viewport-tools.md) | implemented |
 | 018 | [工作台交互：拖放导入、最近工程、菜单栏、关闭确认](task/018-workbench-interactions.md) | implemented |
+| 019 | [大网格：流式资产读写、显示 LOD 与规模基准](task/019-large-mesh-lod.md) | implemented |
 
 任务先登记范围与验收，实际验证后同步状态。历史编号不再代表本仓库的待办或已交付能力。
 
