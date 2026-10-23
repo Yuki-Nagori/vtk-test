@@ -4,14 +4,14 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
-use std::io::Read;
+use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError};
 
 use panta_import::ImportError;
-use panta_mesh::{MeshAsset, SurfaceMesh, decode_mesh_asset_with_digest, mesh_asset_encoded_len};
+use panta_mesh::{MeshAsset, MeshAssetError, MeshAssetReader, SurfaceMesh};
 
 pub(crate) const OUTCOME_CAPACITY: usize = 256;
 
@@ -283,26 +283,9 @@ fn load_asset(
                 detail: error.detail(),
             },
         )?;
-    let Some(bytes) = read_mesh_bytes(&asset_path, &cancelled).map_err(|error| {
-        let (code, category, detail) = activation_failure(&error);
-        ActivationFailure {
-            code,
-            category,
-            detail,
-        }
-    })?
-    else {
+    let Some((asset, digest)) = read_mesh_asset(&asset_path, &cancelled)? else {
         return Ok(None);
     };
-    if cancelled() {
-        return Ok(None);
-    }
-    let (asset, digest) =
-        decode_mesh_asset_with_digest(&bytes).map_err(|error| ActivationFailure {
-            code: "project.asset_parse_failed",
-            category: "format",
-            detail: error.to_string(),
-        })?;
     match asset {
         MeshAsset::Surface(mesh) if digest == request.expected_digest => {
             Ok((!cancelled()).then_some(mesh))
@@ -320,74 +303,51 @@ fn load_asset(
     }
 }
 
-/// 先验证头部与声明长度，再分块读取并响应关闭 / 取消；格式不设单文件大小上限。
-fn read_mesh_bytes(
+/// 先验证头部、目录与声明长度，再按数据块批量读取、并行解码并在批次间响应关闭 / 取消；
+/// 峰值内存约为解码结果加一个批次的压缩块。格式不设单文件大小上限。
+fn read_mesh_asset(
     path: &std::path::Path,
     cancelled: impl Fn() -> bool,
-) -> Result<Option<Vec<u8>>, ImportError> {
-    let mut file = File::open(path).map_err(|error| {
+) -> Result<Option<(MeshAsset, String)>, ActivationFailure> {
+    let import_failure = |error: ImportError| {
+        let (code, category, detail) = activation_failure(&error);
+        ActivationFailure {
+            code,
+            category,
+            detail,
+        }
+    };
+    let read_failure = |detail: String| import_failure(ImportError::Read(detail));
+    let file = File::open(path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
-            ImportError::Missing(path.display().to_string())
+            import_failure(ImportError::Missing(path.display().to_string()))
         } else {
-            ImportError::Read(format!("{}: {error}", path.display()))
+            read_failure(format!("{}: {error}", path.display()))
         }
     })?;
     let file_len = file
         .metadata()
-        .map_err(|error| ImportError::Read(format!("{}: {error}", path.display())))?
+        .map_err(|error| read_failure(format!("{}: {error}", path.display())))?
         .len();
-    let mut header = [0_u8; 56];
-    file.read_exact(&mut header)
-        .map_err(|error| ImportError::UnsupportedFormat(format!("{}: {error}", path.display())))?;
-    let expected = mesh_asset_encoded_len(&header)
-        .map_err(|error| ImportError::UnsupportedFormat(format!("{}: {error}", path.display())))?;
-    let expected_u64 = u64::try_from(expected)
-        .map_err(|_| ImportError::UnsupportedFormat(path.display().to_string()))?;
-    if expected_u64 != file_len {
-        return Err(ImportError::UnsupportedFormat(format!(
-            "{}: sidecar length does not match its header",
-            path.display()
-        )));
-    }
+    let reader =
+        MeshAssetReader::open(BufReader::new(file), file_len).map_err(|error| match error {
+            MeshAssetError::Io(kind) => read_failure(format!("{}: {kind}", path.display())),
+            other => import_failure(ImportError::UnsupportedFormat(format!(
+                "{}: {other}",
+                path.display()
+            ))),
+        })?;
     if cancelled() {
         return Ok(None);
     }
-    let mut bytes = Vec::new();
-    bytes.try_reserve_exact(expected).map_err(|error| {
-        ImportError::Read(format!("{}: allocation failed: {error}", path.display()))
-    })?;
-    bytes.extend_from_slice(&header);
-    let mut remaining = expected - header.len();
-    let mut chunk = [0_u8; 256 * 1024];
-    while remaining > 0 {
-        if cancelled() {
-            return Ok(None);
-        }
-        let capacity = remaining.min(chunk.len());
-        let read = file
-            .read(&mut chunk[..capacity])
-            .map_err(|error| ImportError::Read(format!("{}: {error}", path.display())))?;
-        if read == 0 {
-            return Err(ImportError::Read(format!(
-                "{}: sidecar ended before its declared size",
-                path.display()
-            )));
-        }
-        bytes.extend_from_slice(&chunk[..read]);
-        remaining -= read;
-    }
-    let mut trailing = [0_u8; 1];
-    if file
-        .read(&mut trailing)
-        .map_err(|error| ImportError::Read(format!("{}: {error}", path.display())))?
-        != 0
-    {
-        return Err(ImportError::Read(format!(
-            "{}: sidecar grew while being read",
-            path.display()
-        )));
-    }
-    Ok(Some(bytes))
+    reader.read(cancelled).map_err(|error| match error {
+        MeshAssetError::Io(kind) => read_failure(format!("{}: {kind}", path.display())),
+        other => ActivationFailure {
+            code: "project.asset_parse_failed",
+            category: "format",
+            detail: other.to_string(),
+        },
+    })
 }
 
 /// 共享读取通道限制并发；调度失败仍发布结构化诊断。
@@ -467,22 +427,35 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_nanos()
         ));
+        // v3 头部 + 单条目录：一个 2 GiB 的稀疏数据块，偏移按 64 B 对齐到 128。
+        let chunk_len = 2_u64 * 1024 * 1024 * 1024;
+        let mut toc = Vec::new();
+        toc.extend_from_slice(&1_u64.to_le_bytes());
+        let mut entry = [0_u8; 64];
+        entry[0] = 1; // Surface triangles.
+        entry[1] = 1; // Zstandard codec.
+        entry[8..16].copy_from_slice(&128_u64.to_le_bytes());
+        entry[16..24].copy_from_slice(&chunk_len.to_le_bytes());
+        entry[24..32].copy_from_slice(&1_u64.to_le_bytes());
+        toc.extend_from_slice(&entry);
         let mut header = [0_u8; 56];
         header[..8].copy_from_slice(b"PNTMESH\0");
         header[8..12].copy_from_slice(&panta_mesh::MESH_ASSET_FORMAT_VERSION.to_le_bytes());
         header[12] = 1;
         header[13] = 1;
-        header[14] = 1; // Zstandard codec.
-        header[16..24].copy_from_slice(&(2_u64 * 1024 * 1024 * 1024).to_le_bytes());
+        header[16..24].copy_from_slice(&(128 - 56 + chunk_len).to_le_bytes());
+        use sha2::Digest;
+        header[24..56].copy_from_slice(&sha2::Sha256::digest(&toc));
         let file = File::create(&path)?;
         use std::io::Write;
         (&file).write_all(&header)?;
-        file.set_len(2_u64 * 1024 * 1024 * 1024 + header.len() as u64)?;
+        (&file).write_all(&toc)?;
+        file.set_len(128 + chunk_len)?;
         drop(file);
 
-        // Cancellation after header validation proves the read path accepts the size
-        // without allocating or touching the sparse payload.
-        let result = read_mesh_bytes(&path, || true);
+        // Cancellation after header and directory validation proves the read path accepts
+        // the size without allocating or touching the sparse chunk.
+        let result = read_mesh_asset(&path, || true);
         std::fs::remove_file(&path)?;
         assert!(matches!(result, Ok(None)));
         Ok(())

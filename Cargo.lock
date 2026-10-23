@@ -347,6 +347,7 @@ dependencies = [
  "panta-mesh",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

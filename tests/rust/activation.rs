@@ -268,3 +268,57 @@ fn manifest_asset_traversal_is_rejected_at_activation_admission()
     }
     Ok(())
 }
+
+// COMPAT(task 011; remove-task 012): task 011 之前保存的工程登记 v2 sidecar，
+// 升级后仍须原样激活且不改写清单；随 v2 只读路径一起删除。
+#[test]
+fn legacy_v2_sidecar_registered_in_the_manifest_still_activates()
+-> Result<(), Box<dyn std::error::Error>> {
+    const LEGACY_SURFACE: &[u8] =
+        include_bytes!("../../crates/panta-mesh/tests/data/surface-v2.pmesh");
+    const LEGACY_DIGEST: &str =
+        "sha256:217761895c321aab5531d3789be1e21dd2c8b47401adb076778f746f4019d237";
+    let fixture = Fixture::new()?;
+    let mut service = ProjectService::new();
+    service.create(&fixture.root, "Demo")?;
+    let record_id = import_sample_stl(&mut service, &fixture.root)?;
+    let mesh_asset_id = service
+        .imports()?
+        .iter()
+        .find(|record| record.id == record_id)
+        .ok_or("import record not found")?
+        .mesh_asset_id
+        .clone();
+    fs::write(asset_path(&service, &record_id)?, LEGACY_SURFACE)?;
+    let project_path = service.current()?.path.clone();
+    let mut manifest: serde_json::Value = serde_json::from_slice(&fs::read(&project_path)?)?;
+    let asset = manifest["mesh_assets"]
+        .get_mut(&mesh_asset_id)
+        .ok_or("mesh asset index entry missing")?;
+    asset["digest"] = serde_json::Value::from(LEGACY_DIGEST);
+    asset["format_version"] = serde_json::Value::from(2);
+    let persisted_record = manifest["imports"]
+        .as_array_mut()
+        .and_then(|imports| imports.iter_mut().find(|value| value["id"] == record_id))
+        .ok_or("persisted import record missing")?;
+    persisted_record["triangle_count"] = serde_json::Value::from(2);
+    fs::write(&project_path, serde_json::to_vec_pretty(&manifest)?)?;
+    let manifest_before = fs::read(&project_path)?;
+    drop(service);
+
+    let mut reopened = ProjectService::new();
+    reopened.open(&project_path)?;
+    reopened.begin_asset_activation(&record_id)?;
+    let outcome = wait_for_outcome(&mut reopened, Duration::from_secs(10))?;
+    assert_eq!(outcome.kind, OutcomeKind::Succeeded, "{}", outcome.code);
+    assert_eq!(
+        outcome
+            .mesh
+            .ok_or("success must carry mesh")?
+            .triangles
+            .len(),
+        2
+    );
+    assert_eq!(fs::read(&project_path)?, manifest_before);
+    Ok(())
+}

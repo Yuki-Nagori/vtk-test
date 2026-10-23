@@ -44,7 +44,7 @@ Rust 负责工程资产、场景文档、命令、异步操作与序列化，C++
 
 工程清单保留按导入记录 ID 索引的 `analysis_sequences` 覆盖表，缺省为 Fill，非默认值由 Rust 校验并事务保存；当前 QML / Bridge 没有编辑或确认此配置的接口。`imports[].mesh_type` 是用户选择的配置，不表示已生成分析网格。project 在本仓库首先是模型资产与场景载体，独立 Study 和求解执行不属于当前验收范围。
 
-`.panta` 保存元数据与资产索引，Surface / Volume Mesh payload 旁置在可移交工程目录中。索引以稳定 asset ID、revision、摘要和工程内相对路径寻址，显示名称独立于身份。页签激活由 Rust 按需解码验证 Mesh，再通过批量 CXX DTO 创建 VTK 对象；mapper、actor 和 GPU 资源不持久化。来源文件可移动或删除；sidecar v2 保留 f64 顶点、毫米单位及 Zstandard 压缩字节摘要。详见[网格资产边界](mesh.md)与 `crates/panta-mesh/src/asset.rs`。
+`.panta` 保存元数据与资产索引，Surface / Volume Mesh payload 旁置在可移交工程目录中。索引以稳定 asset ID、revision、摘要和工程内相对路径寻址，显示名称独立于身份。页签激活由 Rust 按需解码验证 Mesh，再通过批量 CXX DTO 创建 VTK 对象；mapper、actor 和 GPU 资源不持久化。来源文件可移动或删除；sidecar v3 保留 f64 顶点与毫米单位，分块压缩并逐块校验，资产摘要覆盖目录（含块摘要）；v2 只读兼容。详见[网格资产边界](mesh.md)与 `crates/panta-mesh/src/asset/mod.rs`。
 
 资产文件使用不可变 revision 名称。新导入在写入租约内先创建临时 sidecar、同步并发布文件，再原子提交引用它的新 `.panta`；提交失败会清理本次候选文件并保留旧清单。未引用 sidecar 不会被当作已提交资产。相对路径与符号链接包含性校验使整个工程包可移动且拒绝越出工程根的引用。单文件原子替换不代表多文件断电事务；目录项断电持久性仍不承诺。
 
