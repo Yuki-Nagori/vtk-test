@@ -22,7 +22,7 @@ edition = "2024"
 # 本仓库使用 Rust 1.99 的原子计数 API；最低版本与锁定工具链同步。
 rust-version = "1.99"
 license = "Apache-2.0"
-repository = "https://github.com/Yuki-Nagori/panta"
+repository = "https://github.com/Yuki-Nagori/vtk-test"
 
 [workspace.dependencies]
 libc = "0.2"
