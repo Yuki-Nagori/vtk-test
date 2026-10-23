@@ -11,10 +11,24 @@ use panta_mesh::SurfaceMesh;
 
 use super::cells::CellSurface;
 use super::text::{Scalar, decode_f64_array, decode_index_array, points_from_flat};
-use super::{CellList, FormatError, FormatResult, TriangleSink, finish_mesh};
+use super::{CellList, FormatError, FormatResult, RawGrid, TriangleSink, finish_mesh};
 
 pub fn parse_vtu(bytes: &[u8]) -> FormatResult<SurfaceMesh> {
     parse_xml(bytes, "UnstructuredGrid")
+}
+
+/// VTU 线性四面体体网格的原始节点与单元（task 021）。
+pub fn parse_vtu_grid(bytes: &[u8]) -> FormatResult<RawGrid> {
+    let mut grid = RawGrid::default();
+    read_vtk_xml(
+        bytes,
+        "UnstructuredGrid",
+        &mut SurfaceMesh {
+            triangles: Vec::new(),
+        },
+        Some(&mut grid),
+    )?;
+    Ok(grid)
 }
 
 pub fn parse_vtp(bytes: &[u8]) -> FormatResult<SurfaceMesh> {
@@ -25,7 +39,7 @@ fn parse_xml(bytes: &[u8], dataset: &str) -> FormatResult<SurfaceMesh> {
     let mut mesh = SurfaceMesh {
         triangles: Vec::new(),
     };
-    read_vtk_xml(bytes, dataset, &mut mesh)?;
+    read_vtk_xml(bytes, dataset, &mut mesh, None)?;
     finish_mesh(mesh)
 }
 
@@ -126,6 +140,7 @@ pub(crate) fn read_vtk_xml(
     bytes: &[u8],
     dataset: &str,
     sink: &mut impl TriangleSink,
+    grid: Option<&mut RawGrid>,
 ) -> FormatResult<()> {
     let appended_tag = find(bytes, b"<AppendedData");
     let limit = appended_tag.unwrap_or(bytes.len());
@@ -218,6 +233,20 @@ pub(crate) fn read_vtk_xml(
     let points_tag =
         array("Points", None).ok_or_else(|| FormatError::new("missing Points DataArray"))?;
     let points = points_from_flat(&context.floats(points_tag)?)?;
+    if let Some(grid) = grid {
+        let connectivity = array("Cells", Some("connectivity"))
+            .ok_or_else(|| FormatError::new("missing Cells connectivity"))?;
+        let cells = context.cells(
+            connectivity,
+            array("Cells", Some("offsets"))
+                .ok_or_else(|| FormatError::new("missing Cells offsets"))?,
+        )?;
+        let types = context.indices(
+            array("Cells", Some("types")).ok_or_else(|| FormatError::new("missing Cells types"))?,
+        )?;
+        *grid = RawGrid::new(points, cells, types)?;
+        return Ok(());
+    }
     let mut surface = CellSurface::new(&points);
     if dataset == "UnstructuredGrid" {
         if let Some(connectivity) = array("Cells", Some("connectivity")) {

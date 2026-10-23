@@ -11,6 +11,7 @@ mod diagnostics;
 mod lod;
 mod progress;
 mod synthetic;
+mod volume;
 pub use asset::{
     MESH_ASSET_FORMAT_VERSION, MeshAsset, MeshAssetError, MeshAssetReader, MeshAssetRef,
     SurfaceAssetChunks, Triangle, decode_mesh_asset, decode_mesh_asset_with_digest,
@@ -24,6 +25,10 @@ pub use diagnostics::{
 pub use lod::{DEFAULT_LOD_TRIANGLE_BUDGET, SurfaceLod, build_surface_lod, simplify_surface};
 pub use progress::{PROGRESS_STRIDE, Progress};
 pub use synthetic::SyntheticTorus;
+pub use volume::{
+    POOR_ASPECT_RATIO, POOR_MIN_DIHEDRAL_DEGREES, TetQuality, VolumeError, boundary_faces,
+    boundary_surface, section_surface, tet_mesh_from_cells, tet_quality,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceMesh {

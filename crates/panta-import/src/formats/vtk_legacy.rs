@@ -5,13 +5,15 @@ use panta_mesh::SurfaceMesh;
 
 use super::cells::CellSurface;
 use super::text::{Cursor, Scalar, decode_f64_array, decode_index_array, points_from_flat};
-use super::{CellList, FormatError, FormatResult, IndexedPoints, TriangleSink, finish_mesh};
+use super::{
+    CellList, FormatError, FormatResult, IndexedPoints, RawGrid, TriangleSink, finish_mesh,
+};
 
 pub fn parse_vtk_legacy(bytes: &[u8]) -> FormatResult<SurfaceMesh> {
     let mut mesh = SurfaceMesh {
         triangles: Vec::new(),
     };
-    read_vtk_legacy(bytes, &mut mesh)?;
+    read_vtk_legacy(bytes, &mut mesh, None)?;
     finish_mesh(mesh)
 }
 
@@ -118,7 +120,24 @@ fn expect_keyword(cursor: &mut Cursor<'_>, keyword: &str) -> FormatResult<()> {
     }
 }
 
-pub(crate) fn read_vtk_legacy(bytes: &[u8], sink: &mut impl TriangleSink) -> FormatResult<()> {
+/// 旧版 VTK UNSTRUCTURED_GRID 线性四面体体网格的原始节点与单元（task 021）。
+pub fn parse_vtk_legacy_grid(bytes: &[u8]) -> FormatResult<RawGrid> {
+    let mut grid = RawGrid::default();
+    read_vtk_legacy(
+        bytes,
+        &mut SurfaceMesh {
+            triangles: Vec::new(),
+        },
+        Some(&mut grid),
+    )?;
+    Ok(grid)
+}
+
+pub(crate) fn read_vtk_legacy(
+    bytes: &[u8],
+    sink: &mut impl TriangleSink,
+    grid: Option<&mut RawGrid>,
+) -> FormatResult<()> {
     let mut cursor = Cursor::new(bytes);
     let header = cursor.line()?;
     let version = header
@@ -176,6 +195,15 @@ pub(crate) fn read_vtk_legacy(bytes: &[u8], sink: &mut impl TriangleSink) -> For
         }
     }
     let points = points.ok_or_else(|| FormatError::new("missing POINTS"))?;
+    if let Some(grid) = grid {
+        if dataset != "UNSTRUCTURED_GRID" {
+            return Err(FormatError::new("volume import requires UNSTRUCTURED_GRID"));
+        }
+        let cells = cells.ok_or_else(|| FormatError::new("missing CELLS"))?;
+        let types = cell_types.ok_or_else(|| FormatError::new("missing CELL_TYPES"))?;
+        *grid = RawGrid::new(points, cells, types)?;
+        return Ok(());
+    }
     let indexed = IndexedPoints { points: &points };
     for (kind, list) in &polygons {
         for nodes in list.iter() {

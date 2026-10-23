@@ -389,6 +389,20 @@ pub fn parse_mesh_snapshot_with_progress(
     result
 }
 
+/// 体网格解析入口（task 021）：VTU / 旧版 VTK 的线性四面体，其他格式或单元类型整体拒绝。
+/// 坐标保留来源单位，由调用方按导入选项换算到毫米后再构建 `TetMesh`。
+pub fn parse_volume_snapshot(snapshot: &SourceSnapshot) -> Result<formats::RawGrid, ImportError> {
+    match snapshot.format {
+        ImportFormat::Vtu => formats::parse_vtu_grid(&snapshot.bytes).map_err(ImportError::Format),
+        ImportFormat::VtkLegacy => {
+            formats::parse_vtk_legacy_grid(&snapshot.bytes).map_err(ImportError::Format)
+        }
+        _ => Err(ImportError::UnsupportedFormat(
+            snapshot.path.display().to_string(),
+        )),
+    }
+}
+
 /// 预览与提交共享同一字节快照；提交前重新读取源文件并逐字节比较。
 #[derive(Debug, Default)]
 pub struct StlImportSession {
