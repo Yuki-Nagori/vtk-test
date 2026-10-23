@@ -2,6 +2,7 @@
 //! 当前工程清单契约为 schema 4，撤销 / 重做尚未接入。
 
 mod activation;
+pub mod animation;
 mod execution;
 pub mod path;
 pub mod project;

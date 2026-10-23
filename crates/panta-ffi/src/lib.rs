@@ -47,6 +47,11 @@ use progress::{
     project_service_stl_import_progress, project_service_stl_preview_progress,
     task_progress_cancel, task_progress_fraction, task_progress_new, task_progress_share,
 };
+mod animation;
+use animation::{
+    AnimationSequence, animation_cached_frames, animation_frame, animation_frame_count,
+    animation_frame_name, animation_open, animation_request,
+};
 mod mesh;
 use mesh::{mesh_coordinates, mesh_validate_tet};
 
@@ -257,6 +262,25 @@ pub mod bridge {
     pub struct SurfaceMeshSnapshotResult {
         pub value: SurfaceMeshSnapshot,
         pub error: ProjectDiagnostic,
+    }
+
+    /// 时序动画单帧（task 020）：ready 时 coordinates 为扁平三角面坐标。
+    #[derive(Default)]
+    pub struct AnimationFrameResult {
+        pub ready: bool,
+        pub coordinates: Vec<f64>,
+        pub error: ProjectDiagnostic,
+    }
+
+    extern "Rust" {
+        /// 只读时序序列：后台解析、预取与 LRU 帧缓存，GUI 线程轮询。
+        type AnimationSequence;
+        fn animation_open(path: &str, error: &mut ProjectDiagnostic) -> Box<AnimationSequence>;
+        fn animation_frame_count(sequence: &AnimationSequence) -> u64;
+        fn animation_cached_frames(sequence: &AnimationSequence) -> u64;
+        fn animation_frame_name(sequence: &AnimationSequence, index: u64) -> String;
+        fn animation_request(sequence: &mut AnimationSequence, index: u64);
+        fn animation_frame(sequence: &mut AnimationSequence, index: u64) -> AnimationFrameResult;
     }
 
     extern "Rust" {

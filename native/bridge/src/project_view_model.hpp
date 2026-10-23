@@ -5,6 +5,7 @@
 #pragma once
 
 #include "panta_ffi.h"
+#include <QElapsedTimer>
 #include <QStringList>
 #include <QTimer>
 #include <QUrl>
@@ -70,6 +71,13 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     Q_PROPERTY(double diagnosticsProgress READ diagnosticsProgress NOTIFY taskProgressChanged)
     /// 最近打开/创建的工程路径（新到旧，最多 10 个，已不存在的文件在读取时剔除；task 018）。
     Q_PROPERTY(QStringList recentProjects READ recentProjects NOTIFY recentProjectsChanged)
+    /// 时序动画（task 020）：只读序列播放，不入工程；活动时视口显示序列帧。
+    Q_PROPERTY(bool animationActive READ animationActive NOTIFY animationChanged)
+    Q_PROPERTY(int animationFrameCount READ animationFrameCount NOTIFY animationChanged)
+    Q_PROPERTY(int animationFrame READ animationFrame NOTIFY animationChanged)
+    Q_PROPERTY(bool animationPlaying READ animationPlaying NOTIFY animationChanged)
+    Q_PROPERTY(int animationFps READ animationFps NOTIFY animationChanged)
+    Q_PROPERTY(QString animationStatus READ animationStatus NOTIFY animationChanged)
 
   public:
     explicit ProjectViewModel(QObject* parent = nullptr);
@@ -204,7 +212,21 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     [[nodiscard]] QStringList recentProjects() const;
     static constexpr int kMaxRecentProjects = 10;
 
+    Q_INVOKABLE bool openAnimationUrl(const QUrl& url);
+    Q_INVOKABLE void closeAnimation();
+    Q_INVOKABLE void setAnimationFrame(int frame);
+    Q_INVOKABLE void stepAnimation(int delta);
+    Q_INVOKABLE void setAnimationPlaying(bool playing);
+    Q_INVOKABLE void setAnimationFps(int fps);
+    [[nodiscard]] bool animationActive() const { return m_animation.has_value(); }
+    [[nodiscard]] int animationFrameCount() const { return m_animationFrameCount; }
+    [[nodiscard]] int animationFrame() const { return m_animationDisplayed; }
+    [[nodiscard]] bool animationPlaying() const { return m_animationPlaying; }
+    [[nodiscard]] int animationFps() const { return m_animationFps; }
+    [[nodiscard]] QString animationStatus() const;
+
   signals:
+    void animationChanged();
     void errorChanged();
     void projectOperationPendingChanged();
     /// operation 为 create/open/save；成功表示已提交并发布快照。
@@ -298,6 +320,16 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     QTimer m_importPreviewPoll;
     QTimer m_stlImportPoll;
     QTimer m_taskProgressPoll;
+    void tick_animation();
+    std::optional<rust::Box<panta::ffi::AnimationSequence>> m_animation;
+    QTimer m_animationPoll;
+    QElapsedTimer m_animationClock;
+    int m_animationFrameCount = 0;
+    int m_animationTarget = 0;
+    int m_animationDisplayed = -1;
+    bool m_animationPlaying = false;
+    int m_animationFps = 10;
+    QString m_animationFrameError;
     std::optional<rust::Box<panta::ffi::TaskProgress>> m_exportProgress;
     std::optional<rust::Box<panta::ffi::TaskProgress>> m_diagnosticsProgress;
     quint64 m_previewRequest = 0;
