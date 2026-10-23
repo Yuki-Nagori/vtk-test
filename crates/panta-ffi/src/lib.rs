@@ -44,8 +44,8 @@ use display::{
 mod progress;
 pub use progress::TaskProgress;
 use progress::{
-    project_service_stl_import_progress, task_progress_cancel, task_progress_fraction,
-    task_progress_new, task_progress_share,
+    project_service_stl_import_progress, project_service_stl_preview_progress,
+    task_progress_cancel, task_progress_fraction, task_progress_new, task_progress_share,
 };
 mod mesh;
 use mesh::{mesh_coordinates, mesh_validate_tet};
@@ -274,6 +274,7 @@ pub mod bridge {
         fn task_progress_fraction(progress: &TaskProgress) -> f64;
         fn task_progress_cancel(progress: &TaskProgress);
         fn project_service_stl_import_progress(service: &ProjectService, request: u64) -> f64;
+        fn project_service_stl_preview_progress(service: &ProjectService, request: u64) -> f64;
         fn project_service_begin_operation(
             service: &mut ProjectService,
             input: ProjectOperationInput,

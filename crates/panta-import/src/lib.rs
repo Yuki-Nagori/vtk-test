@@ -4,7 +4,7 @@
 pub mod export;
 pub mod formats;
 
-use panta_mesh::{StlError, SurfaceMesh, SurfaceSummary, parse_stl, surface_mesh_expanded_bytes};
+use panta_mesh::{StlError, SurfaceMesh, SurfaceSummary, surface_mesh_expanded_bytes};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt::{Display, Formatter};
@@ -274,6 +274,15 @@ pub fn read_source_checked(
     path: &Path,
     is_cancelled: impl Fn() -> bool,
 ) -> Result<SourceSnapshot, CheckedReadError> {
+    read_source_with_progress(path, is_cancelled, &|_| {})
+}
+
+/// [`read_source_checked`] 并在每个读取块后上报已读字节占比（0..=1）。
+pub fn read_source_with_progress(
+    path: &Path,
+    is_cancelled: impl Fn() -> bool,
+    on_progress: &dyn Fn(f64),
+) -> Result<SourceSnapshot, CheckedReadError> {
     if !path.is_absolute() || !path.is_file() {
         return Err(CheckedReadError::Failed(ImportError::Missing(
             path.display().to_string(),
@@ -314,6 +323,7 @@ pub fn read_source_checked(
             break;
         }
         bytes.extend_from_slice(&chunk[..read]);
+        on_progress((bytes.len() as f64 / expected.max(1) as f64).min(1.0));
     }
     Ok(SourceSnapshot {
         path: path.to_path_buf(),
@@ -351,9 +361,19 @@ fn reserve_source_bytes(
 
 /// 唯一的表面网格解析入口；STEP / IGES 等几何格式尚无 native backend，不得走此函数。
 pub fn parse_mesh_snapshot(snapshot: &SourceSnapshot) -> Result<SurfaceMesh, ImportError> {
+    parse_mesh_snapshot_with_progress(snapshot, &|_| {})
+}
+
+/// 解析并上报 0..=1 进度：STL 按三角面 / 文本行细粒度上报；其他格式只报完成。
+pub fn parse_mesh_snapshot_with_progress(
+    snapshot: &SourceSnapshot,
+    on_progress: &dyn Fn(f64),
+) -> Result<SurfaceMesh, ImportError> {
     let bytes = &snapshot.bytes;
-    match snapshot.format {
-        ImportFormat::Stl => parse_stl(bytes).map_err(ImportError::Parse),
+    let result = match snapshot.format {
+        ImportFormat::Stl => {
+            panta_mesh::parse_stl_with_progress(bytes, on_progress).map_err(ImportError::Parse)
+        }
         ImportFormat::Vtu => formats::parse_vtu(bytes).map_err(ImportError::Format),
         ImportFormat::Vtp => formats::parse_vtp(bytes).map_err(ImportError::Format),
         ImportFormat::VtkLegacy => formats::parse_vtk_legacy(bytes).map_err(ImportError::Format),
@@ -362,7 +382,11 @@ pub fn parse_mesh_snapshot(snapshot: &SourceSnapshot) -> Result<SurfaceMesh, Imp
         ImportFormat::Step | ImportFormat::Iges => Err(ImportError::UnsupportedFormat(
             snapshot.path.display().to_string(),
         )),
+    };
+    if result.is_ok() {
+        on_progress(1.0);
     }
+    result
 }
 
 /// 预览与提交共享同一字节快照；提交前重新读取源文件并逐字节比较。
@@ -444,9 +468,22 @@ impl StlImportSession {
         path: &Path,
         is_cancelled: impl Fn() -> bool,
     ) -> Result<StlImportPreview, CheckedReadError> {
+        self.preview_with_progress(path, is_cancelled, &|_| {})
+    }
+
+    /// 同 [`Self::preview_checked`]，进度：读取 0–50%，解析 50–100%。
+    pub fn preview_with_progress(
+        &mut self,
+        path: &Path,
+        is_cancelled: impl Fn() -> bool,
+        on_progress: &dyn Fn(f64),
+    ) -> Result<StlImportPreview, CheckedReadError> {
         self.preview = None;
-        let input = read_source_checked(path, &is_cancelled)?;
-        let mesh = parse_mesh_snapshot(&input).map_err(CheckedReadError::Failed)?;
+        let input =
+            read_source_with_progress(path, &is_cancelled, &|value| on_progress(value * 0.5))?;
+        let mesh =
+            parse_mesh_snapshot_with_progress(&input, &|value| on_progress(0.5 + value * 0.5))
+                .map_err(CheckedReadError::Failed)?;
         if is_cancelled() {
             return Err(CheckedReadError::Cancelled(path.display().to_string()));
         }
@@ -480,7 +517,18 @@ impl StlImportSession {
         path: &Path,
         is_cancelled: impl Fn() -> bool,
     ) -> Result<PreparedStl, CheckedReadError> {
-        let input = read_source_checked(path, &is_cancelled)?;
+        self.prepare_with_progress(path, is_cancelled, &|_| {})
+    }
+
+    /// 同 [`Self::prepare_checked`]，进度：复核读取 0–50%，（无缓存时）解析 50–100%。
+    pub fn prepare_with_progress(
+        &mut self,
+        path: &Path,
+        is_cancelled: impl Fn() -> bool,
+        on_progress: &dyn Fn(f64),
+    ) -> Result<PreparedStl, CheckedReadError> {
+        let input =
+            read_source_with_progress(path, &is_cancelled, &|value| on_progress(value * 0.5))?;
         if !input.format.is_surface_mesh() {
             return Err(CheckedReadError::Failed(ImportError::UnsupportedFormat(
                 path.display().to_string(),
@@ -500,7 +548,9 @@ impl StlImportSession {
                 return Ok(confirmed);
             }
         }
-        let mesh = parse_mesh_snapshot(&input).map_err(CheckedReadError::Failed)?;
+        let mesh =
+            parse_mesh_snapshot_with_progress(&input, &|value| on_progress(0.5 + value * 0.5))
+                .map_err(CheckedReadError::Failed)?;
         if is_cancelled() {
             return Err(CheckedReadError::Cancelled(path.display().to_string()));
         }
@@ -563,6 +613,26 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn preview_progress_covers_chunked_read_then_parse() -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = Fixture::new()?;
+        let count = 20_000usize;
+        let mut bytes = vec![0u8; 84 + count * 50];
+        bytes[80..84].copy_from_slice(&u32::try_from(count)?.to_le_bytes());
+        let path = fixture.root.join("progress.stl");
+        fs::write(&path, &bytes)?;
+        let seen = std::cell::RefCell::new(Vec::new());
+        let mut session = StlImportSession::default();
+        session.preview_with_progress(&path, || false, &|value| seen.borrow_mut().push(value))?;
+        let seen = seen.into_inner();
+        assert!(seen.windows(2).all(|pair| pair[0] <= pair[1]));
+        // 1 MB 源按 256 KiB 分块：至少 4 个读取进度点，读取阶段终点为 50%。
+        assert!(seen.iter().filter(|value| **value <= 0.5).count() >= 4);
+        assert!(seen.contains(&0.5));
+        assert_eq!(seen.last(), Some(&1.0));
+        Ok(())
     }
 
     #[test]

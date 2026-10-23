@@ -180,8 +180,9 @@ DialogWindow {
 
             ThemedLabel {
                 Layout.fillWidth: true
-                visible: dialog.projectModel.importPending
-                text: "正在将网格文件添加到工程…"
+                visible: dialog.projectModel.importPending || dialog.projectModel.importPreviewPending
+                // 细粒度进度（task 019）：预检读取 0–50% / 解析 50–100%；导入复核、写资产按块上报。
+                text: dialog.projectModel.importPending ? "正在将网格文件添加到工程… " + Math.round(Math.max(0, dialog.projectModel.importProgress) * 100) + "%" : "正在读取并解析网格… " + Math.round(Math.max(0, dialog.projectModel.importPreviewProgress) * 100) + "%"
                 textSize: Theme.fontSmall
                 textColor: Theme.colorTextMuted
             }
