@@ -372,6 +372,11 @@ impl StlImportSession {
         self.preview = None;
     }
 
+    /// 当前预检解析出的来源坐标网格，供只读诊断复用，避免重复读取与解析。
+    pub fn preview_mesh(&self) -> Option<&SurfaceMesh> {
+        self.preview.as_ref().map(|preview| &preview.mesh)
+    }
+
     pub fn has_preview_for(&self, path: &Path) -> bool {
         self.preview
             .as_ref()

@@ -3,6 +3,7 @@ use super::model::{MeshAssetRef, next_revision};
 use super::{ImportRecord, ProjectError, ProjectService, StlImportPreview, mesh_assets};
 use panta_import::{CheckedReadError, StlImportSession};
 use panta_import::{ImportError, ImportOptions};
+use panta_mesh::{DiagnosticOptions, SurfaceDiagnostics, diagnose_surface};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -356,6 +357,22 @@ impl ProjectService {
         self.import_session
             .preview(source)
             .map_err(map_import_error)
+    }
+
+    /// 预检 STL 并对同一解析结果做只读质量诊断；坐标与容差均为来源单位。
+    pub fn inspect_stl_with_diagnostics(
+        &mut self,
+        source: &Path,
+        options: DiagnosticOptions,
+    ) -> Result<(StlImportPreview, SurfaceDiagnostics), ProjectError> {
+        let preview = self.inspect_stl(source)?;
+        let mesh = self
+            .import_session
+            .preview_mesh()
+            .ok_or_else(|| ProjectError::CommandInvalid("STL preview missing".to_owned()))?;
+        let diagnostics = diagnose_surface(mesh, options)
+            .map_err(|error| ProjectError::CommandInvalid(format!("STL diagnostics: {error}")))?;
+        Ok((preview, diagnostics))
     }
 }
 

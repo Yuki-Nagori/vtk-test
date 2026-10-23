@@ -20,6 +20,7 @@ pub use panta_import::{
     DEFAULT_MESH_TYPE, IMPORT_RECORD_VERSION, ImportRecord, MESH_TYPES, STL_IMPORT_PARSER_VERSION,
     StlImportPreview, default_display_name,
 };
+pub use panta_mesh::{DEFAULT_RELATIVE_WELD_TOLERANCE, DiagnosticOptions, SurfaceDiagnostics};
 pub use service::ProjectService;
 pub(crate) use service::resolve_asset_path;
 pub use workspace::{

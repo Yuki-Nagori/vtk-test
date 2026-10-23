@@ -9,7 +9,7 @@
 | 003 | [Cargo 元数据 repository 指向本仓库](task/003-cargo-repository-metadata.md) | implemented |
 | 004 | [同步文档中的 CI 平台描述](task/004-ci-platform-docs-sync.md) | implemented |
 | 005 | [panta 名称迁移评估](task/005-rename-panta-identifiers.md) | draft |
-| 006 | [STL 修复前置：表面网格质量诊断](task/006-stl-mesh-diagnostics.md) | draft |
+| 006 | [STL 修复前置：表面网格质量诊断](task/006-stl-mesh-diagnostics.md) | done |
 | 007 | [STL 修复管线](task/007-stl-repair-pipeline.md) | planned |
 | 008 | [STEP 接入工程工作流](task/008-step-project-workflow.md) | draft |
 | 009 | [CI 编译产物缓存评估](task/009-ci-build-cache.md) | deferred |
