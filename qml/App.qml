@@ -9,6 +9,40 @@ import Panta.Bridge
 
 ApplicationWindow {
     id: shellWindow
+
+    // 拾取与两点测距（task 017）：保留最近两次命中点，单位与工程一致（mm）。
+    property var pickedPoints: []
+    property bool lastPickMissed: false
+    function recordPick(hit: bool, x: real, y: real, z: real, triangle: int) {
+        if (!hit) {
+            lastPickMissed = true;
+            return;
+        }
+        lastPickMissed = false;
+        const points = pickedPoints.length >= 2 ? [] : pickedPoints.slice();
+        points.push({
+            x: x,
+            y: y,
+            z: z,
+            triangle: triangle
+        });
+        pickedPoints = points;
+    }
+    function formatPoint(p: var): string {
+        return "(" + p.x.toFixed(3) + ", " + p.y.toFixed(3) + ", " + p.z.toFixed(3) + ")";
+    }
+    function formatPick(): string {
+        if (pickedPoints.length === 0)
+            return lastPickMissed ? "未命中模型。" : "左键单击模型拾取点；连续两点显示距离。";
+        const a = pickedPoints[0];
+        let text = "点 A " + formatPoint(a) + " 面 #" + a.triangle;
+        if (pickedPoints.length === 2) {
+            const b = pickedPoints[1];
+            const d = Math.sqrt((b.x - a.x) ** 2 + (b.y - a.y) ** 2 + (b.z - a.z) ** 2);
+            text += "\n点 B " + formatPoint(b) + " 面 #" + b.triangle + "\n距离 " + d.toFixed(3) + " mm";
+        }
+        return text + (lastPickMissed ? "\n（最近一次未命中）" : "");
+    }
     objectName: "workbench"
     minimumWidth: Theme.windowMinimumWidth
     minimumHeight: Theme.windowMinimumHeight
@@ -322,6 +356,45 @@ ApplicationWindow {
                     }
                 }
             }
+            // 视图与测量（task 017）：原生视口覆盖 QML，工具放在侧栏而非浮层。
+            Label {
+                visible: shellWindow.meshActive
+                text: "视图与测量"
+                font.bold: true
+            }
+            GridLayout {
+                objectName: "viewPresetGrid"
+                Layout.fillWidth: true
+                visible: shellWindow.meshActive
+                columns: 4
+                columnSpacing: 2
+                rowSpacing: 2
+                Repeater {
+                    model: [["front", "前"], ["back", "后"], ["left", "左"], ["right", "右"], ["top", "顶"], ["bottom", "底"], ["iso", "轴测"]]
+                    delegate: Button {
+                        required property var modelData
+                        objectName: "viewPreset_" + modelData[0]
+                        Layout.fillWidth: true
+                        text: modelData[1]
+                        onClicked: viewportPane.setViewPreset(modelData[0])
+                    }
+                }
+                Button {
+                    objectName: "resetViewButton"
+                    Layout.fillWidth: true
+                    text: "复位"
+                    onClicked: viewportPane.resetView()
+                }
+            }
+            Label {
+                objectName: "pickReadout"
+                Layout.fillWidth: true
+                visible: shellWindow.meshActive
+                text: shellWindow.formatPick()
+                color: Theme.colorTextMuted
+                font.pixelSize: Theme.fontSmall
+                wrapMode: Text.Wrap
+            }
         }
         Rectangle {
             Layout.fillHeight: true
@@ -337,6 +410,7 @@ ApplicationWindow {
             Layout.fillHeight: true
             meshSource: projectModel
             reducedMotion: Settings.reducedMotion
+            onPointPicked: (hit, x, y, z, triangle) => shellWindow.recordPick(hit, x, y, z, triangle)
         }
     }
 

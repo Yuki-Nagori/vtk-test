@@ -10,6 +10,7 @@
 #pragma once
 
 #include <QImage>
+#include <QString>
 #include <memory>
 
 class QQuickItem;
@@ -31,6 +32,13 @@ class ViewportBackend {
     /// GUI 线程：渲染当前帧并读回像素（原生 surface 不在 scenegraph 中，
     /// 不能用 QQuickWindow::grabWindow）；尚无可用帧时返回空图像。
     virtual QImage capture_image() = 0;
+
+    /// GUI 线程：平滑切换到预设视角（front/back/left/right/top/bottom/iso）；
+    /// 未知名称或尚无场景时返回 false（task 017）。
+    virtual bool set_view_preset(const QString& name) = 0;
+
+    /// GUI 线程：恢复默认等轴测相机并适配模型包围盒。
+    virtual void reset_view() = 0;
 };
 
 /// 后端工厂：更换或新增渲染后端只改此处与对应适配器实现。

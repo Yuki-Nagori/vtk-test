@@ -38,6 +38,8 @@ qt_add_qml_module(
   src/vtk/navigation/viewport_input.hpp
   src/vtk/navigation/viewport_orientation.cpp
   src/vtk/navigation/viewport_orientation.hpp
+  src/vtk/navigation/viewport_tools.cpp
+  src/vtk/navigation/viewport_tools.hpp
   src/vtk/primitive_scene.cpp
   src/vtk/primitive_scene.hpp
   src/vtk/surface_mesh.cpp

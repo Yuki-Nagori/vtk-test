@@ -8,6 +8,7 @@
 #include "navigation/viewport_camera.hpp"
 #include "navigation/viewport_input.hpp"
 #include "navigation/viewport_orientation.hpp"
+#include "navigation/viewport_tools.hpp"
 #include "primitive_scene.hpp"
 #include "vtk_native_surface.hpp"
 #include <QElapsedTimer>
@@ -28,6 +29,7 @@
 #include <QtGlobal>
 #include <QtLogging>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <panta/visualization/render_scene.hpp>
@@ -549,8 +551,6 @@ void VtkViewport::handle_interaction_event(unsigned long event_id,
     if (impl_->cube_pressed) {
         const auto direction = impl_->orientation.cube_direction(x, y, width, height);
         if (direction.has_value()) {
-            const double* center = impl_->primitive_actor->GetCenter();
-            const Vector3 focal_point = {center[0], center[1], center[2]};
             double direction_vector[3] = {0.0, 0.0, 1.0};
             double view_up[3] = {0.0, 0.0, 1.0};
             switch (*direction) {
@@ -580,22 +580,80 @@ void VtkViewport::handle_interaction_event(unsigned long event_id,
                 view_up[2] = 0.0;
                 break;
             }
-            auto* camera = impl_->renderer->GetActiveCamera();
-            const CameraFrame target_frame{
-                {direction_vector[0], direction_vector[1], direction_vector[2]},
-                {view_up[0], view_up[1], view_up[2]}};
-            if (impl_->camera_transition.start(camera, target_frame, focal_point,
-                                               impl_->primitive_actor)) {
-                // 从相机当前实姿态开始采样，连续点击会平滑重定向而不跳帧。
-                impl_->camera_transition_clock.restart();
-                impl_->camera_transition_timer.start();
-            } else {
-                stop_camera_transition();
-            }
+            start_camera_frame(
+                CameraFrame{{direction_vector[0], direction_vector[1], direction_vector[2]},
+                            {view_up[0], view_up[1], view_up[2]}});
         }
+    } else {
+        pick_at(x, y);
     }
     impl_->pointer_dragging = false;
     impl_->cube_pressed = false;
+}
+
+void VtkViewport::start_camera_frame(const CameraFrame& frame) {
+    if (impl_->renderer == nullptr || impl_->primitive_actor == nullptr)
+        return;
+    const double* center = impl_->primitive_actor->GetCenter();
+    const Vector3 focal_point = {center[0], center[1], center[2]};
+    auto* camera = impl_->renderer->GetActiveCamera();
+    if (impl_->camera_transition.start(camera, frame, focal_point, impl_->primitive_actor)) {
+        // 从相机当前实姿态开始采样，连续点击会平滑重定向而不跳帧。
+        impl_->camera_transition_clock.restart();
+        impl_->camera_transition_timer.start();
+    } else {
+        stop_camera_transition();
+    }
+}
+
+bool VtkViewport::set_view_preset(const QString& name) {
+    const auto preset = parse_view_preset(name);
+    if (!preset || impl_->renderer == nullptr || impl_->primitive_actor == nullptr)
+        return false;
+    start_camera_frame(preset_frame(*preset));
+    return true;
+}
+
+void VtkViewport::reset_view() {
+    if (impl_->renderer == nullptr || impl_->primitive_actor == nullptr ||
+        impl_->render_window == nullptr)
+        return;
+    stop_camera_transition();
+    const int* size = impl_->render_window->GetSize();
+    const double aspect =
+        size != nullptr && size[1] > 0 ? static_cast<double>(size[0]) / size[1] : 1.0;
+    configure_default_camera(impl_->renderer, impl_->primitive_actor, aspect,
+                             kModelCameraFitMargin);
+    impl_->orientation.update(impl_->renderer->GetActiveCamera());
+    impl_->scene_dirty = true;
+    schedule_refresh();
+}
+
+void VtkViewport::pick_at(int display_x, int display_y) {
+    const auto mesh = impl_->applied_mesh;
+    if (mesh == nullptr || impl_->renderer == nullptr)
+        return;
+    // 显示坐标反投影到近/远裁剪面得到世界射线；交点在 CPU 三角形汤上求。
+    std::array<Vector3, 2> ends{};
+    for (int index = 0; index < 2; ++index) {
+        impl_->renderer->SetDisplayPoint(display_x, display_y, index == 0 ? 0.0 : 1.0);
+        impl_->renderer->DisplayToWorld();
+        const double* world = impl_->renderer->GetWorldPoint();
+        const double w = world[3] != 0.0 ? world[3] : 1.0;
+        ends[index] = {world[0] / w, world[1] / w, world[2] / w};
+    }
+    Vector3 direction = {ends[1][0] - ends[0][0], ends[1][1] - ends[0][1], ends[1][2] - ends[0][2]};
+    const double length = std::sqrt(direction[0] * direction[0] + direction[1] * direction[1] +
+                                    direction[2] * direction[2]);
+    if (!(length > 0.0))
+        return;
+    for (double& component : direction)
+        component /= length;
+    const auto hit = pick_triangle_soup(*mesh, ends[0], direction);
+    if (hit)
+        emit pointPicked(true, hit->point[0], hit->point[1], hit->point[2], hit->triangle);
+    else
+        emit pointPicked(false, 0.0, 0.0, 0.0, 0);
 }
 
 void VtkViewport::advance_camera_transition() {

@@ -30,10 +30,17 @@ class CaeViewport : public QQuickItem {
     /// 把当前视口帧保存为 PNG（原子替换目标文件）；返回中文错误文案，空串表示成功。
     Q_INVOKABLE QString saveScreenshot(const QUrl& url);
 
+    /// 平滑切换到预设视角：front/back/left/right/top/bottom/iso（task 017）。
+    Q_INVOKABLE bool setViewPreset(const QString& name);
+    /// 恢复默认相机并适配模型。
+    Q_INVOKABLE void resetView();
+
   signals:
     /// 后端完成场景构建后通知 GUI；渲染错误经 qWarning 上报，不静默。
     void sceneReady();
     void meshSourceChanged();
+    /// 左键单击模型区域的拾取结果；x/y/z 为双精度世界坐标（工程单位 mm），未命中 hit=false。
+    void pointPicked(bool hit, double x, double y, double z, quint64 triangle);
 
   protected:
     void componentComplete() override;
