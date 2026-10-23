@@ -14,7 +14,7 @@ ApplicationWindow {
     minimumHeight: Theme.windowMinimumHeight
     width: 1280
     height: 800
-    title: projectOpen ? projectModel.currentName + " · 可视化渲染测试" : "可视化渲染测试"
+    title: projectOpen ? (projectModel.dirty ? "* " : "") + projectModel.currentName + " · 可视化渲染测试" : "可视化渲染测试"
     visible: true
     color: Theme.colorPanel
 
@@ -24,6 +24,21 @@ ApplicationWindow {
     // 导出 / 截图的一次性结果提示；新的错误或操作会覆盖它。
     property string notice: ""
     property bool noticeIsError: false
+
+    // 活动文档的工作区快照条目（含状态与激活诊断）；无活动文档时为空对象。
+    readonly property var activeDocument: {
+        const documents = projectModel.openDocuments;
+        for (let i = 0; i < documents.length; ++i) {
+            if (documents[i].id === projectModel.activeDocumentId)
+                return documents[i];
+        }
+        return ({});
+    }
+    readonly property bool canCreateOrOpen: !busy
+    readonly property bool canSave: projectOpen && !busy
+    readonly property bool canImport: projectOpen && !busy
+    readonly property bool canExport: meshActive && !busy
+    readonly property bool canScreenshot: !busy
 
     function showNotice(text: string, isError: bool) {
         notice = text;
@@ -96,6 +111,38 @@ ApplicationWindow {
         }
     }
 
+    // 全局快捷键；启用条件与工具栏按钮一致，忙碌时不触发。
+    Shortcut {
+        sequences: [StandardKey.New]
+        enabled: shellWindow.canCreateOrOpen
+        onActivated: newProjectDialog.open()
+    }
+    Shortcut {
+        sequences: [StandardKey.Open]
+        enabled: shellWindow.canCreateOrOpen
+        onActivated: openProjectFileDialog.open()
+    }
+    Shortcut {
+        sequences: [StandardKey.Save]
+        enabled: shellWindow.canSave
+        onActivated: projectModel.saveProject()
+    }
+    Shortcut {
+        sequence: "Ctrl+I"
+        enabled: shellWindow.canImport
+        onActivated: importDialog.open()
+    }
+    Shortcut {
+        sequence: "Ctrl+E"
+        enabled: shellWindow.canExport
+        onActivated: exportMeshFileDialog.open()
+    }
+    Shortcut {
+        sequence: "Ctrl+Shift+P"
+        enabled: shellWindow.canScreenshot
+        onActivated: screenshotFileDialog.open()
+    }
+
     header: ToolBar {
         RowLayout {
             anchors.fill: parent
@@ -105,37 +152,55 @@ ApplicationWindow {
             Button {
                 objectName: "newProjectButton"
                 text: "新建工程"
-                enabled: !shellWindow.busy
+                enabled: shellWindow.canCreateOrOpen
+                ToolTip.visible: hovered
+                ToolTip.delay: 500
+                ToolTip.text: "新建工程（Ctrl+N）"
                 onClicked: newProjectDialog.open()
             }
             Button {
                 objectName: "openProjectButton"
                 text: "打开工程"
-                enabled: !shellWindow.busy
+                enabled: shellWindow.canCreateOrOpen
+                ToolTip.visible: hovered
+                ToolTip.delay: 500
+                ToolTip.text: "打开工程（Ctrl+O）"
                 onClicked: openProjectFileDialog.open()
             }
             Button {
                 objectName: "saveProjectButton"
                 text: "保存工程"
-                enabled: shellWindow.projectOpen && !shellWindow.busy
+                enabled: shellWindow.canSave
+                ToolTip.visible: hovered
+                ToolTip.delay: 500
+                ToolTip.text: "保存工程（Ctrl+S）"
                 onClicked: projectModel.saveProject()
             }
             Button {
                 objectName: "importStlButton"
                 text: "导入网格"
-                enabled: shellWindow.projectOpen && !shellWindow.busy
+                enabled: shellWindow.canImport
+                ToolTip.visible: hovered
+                ToolTip.delay: 500
+                ToolTip.text: "导入网格（Ctrl+I）"
                 onClicked: importDialog.open()
             }
             Button {
                 objectName: "exportMeshButton"
                 text: projectModel.exportPending ? "正在导出…" : "导出网格"
-                enabled: shellWindow.meshActive && !shellWindow.busy
+                enabled: shellWindow.canExport
+                ToolTip.visible: hovered
+                ToolTip.delay: 500
+                ToolTip.text: "导出活动网格（Ctrl+E）"
                 onClicked: exportMeshFileDialog.open()
             }
             Button {
                 objectName: "screenshotButton"
                 text: "视口截图"
-                enabled: !shellWindow.busy
+                enabled: shellWindow.canScreenshot
+                ToolTip.visible: hovered
+                ToolTip.delay: 500
+                ToolTip.text: "保存视口 PNG 截图（Ctrl+Shift+P）"
                 onClicked: screenshotFileDialog.open()
             }
             Label {
@@ -191,6 +256,28 @@ ApplicationWindow {
                 }
                 ScrollBar.vertical: ScrollBar {}
             }
+            // 活动网格状态：加载中 / 失败时显示稳定诊断码对应的中文摘要与原始详情。
+            Label {
+                objectName: "activeDocumentStatus"
+                Layout.fillWidth: true
+                visible: shellWindow.meshActive && (shellWindow.activeDocument.message ?? "").length > 0
+                text: shellWindow.activeDocument.message ?? ""
+                color: (shellWindow.activeDocument.diagnostic?.code ?? "").length > 0 ? Theme.colorError : Theme.colorTextMuted
+                wrapMode: Text.Wrap
+            }
+            Label {
+                objectName: "activeDocumentDiagnostic"
+                Layout.fillWidth: true
+                visible: text.length > 0
+                text: {
+                    const diagnostic = shellWindow.activeDocument.diagnostic ?? ({});
+                    const code = diagnostic.code ?? "";
+                    return code.length > 0 ? code + (diagnostic.detail ? "：" + diagnostic.detail : "") : "";
+                }
+                color: Theme.colorTextMuted
+                font.pixelSize: Theme.fontSmall
+                wrapMode: Text.WrapAnywhere
+            }
         }
         Rectangle {
             Layout.fillHeight: true
@@ -209,11 +296,23 @@ ApplicationWindow {
         }
     }
 
-    footer: Label {
-        objectName: "statusMessage"
-        padding: Theme.spacingSmall
-        text: projectModel.error.length > 0 ? projectModel.error : shellWindow.notice.length > 0 ? shellWindow.notice : shellWindow.busy ? "处理中…" : "就绪"
-        color: projectModel.error.length > 0 || shellWindow.noticeIsError ? Theme.colorError : Theme.colorTextMuted
-        elide: Text.ElideRight
+    footer: RowLayout {
+        spacing: Theme.spacingSmall
+        BusyIndicator {
+            objectName: "busyIndicator"
+            Layout.leftMargin: Theme.spacingSmall
+            Layout.preferredWidth: 20
+            Layout.preferredHeight: 20
+            running: shellWindow.busy
+            visible: running
+        }
+        Label {
+            objectName: "statusMessage"
+            Layout.fillWidth: true
+            padding: Theme.spacingSmall
+            text: projectModel.error.length > 0 ? projectModel.error : shellWindow.notice.length > 0 ? shellWindow.notice : shellWindow.busy ? "处理中…" : "就绪"
+            color: projectModel.error.length > 0 || shellWindow.noticeIsError ? Theme.colorError : Theme.colorTextMuted
+            elide: Text.ElideRight
+        }
     }
 }
