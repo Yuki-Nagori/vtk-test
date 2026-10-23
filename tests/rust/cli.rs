@@ -152,9 +152,64 @@ fn stl_inspect_prints_the_shared_preview_for_a_path_with_spaces_and_unicode()
     assert!(stdout.contains("Triangles: 1"), "{stdout}");
     assert!(stdout.contains("Dimensions: 1 × 2 × 0"), "{stdout}");
     assert!(stdout.contains("STL does not encode units"), "{stdout}");
-    assert!(stdout.contains("does not assess mesh quality"), "{stdout}");
+    assert!(stdout.contains("Mesh quality: issues found"), "{stdout}");
+    assert!(
+        stdout.contains("Boundary edges: 3 in 1 hole(s)"),
+        "{stdout}"
+    );
     assert_eq!(std::fs::read(&source)?, original);
     assert_eq!(std::fs::read_dir(&fixture.root)?.count(), 1);
+    Ok(())
+}
+
+fn mesh_fixture(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/mesh")
+        .join(name)
+}
+
+#[test]
+fn stl_inspect_reports_mesh_quality_diagnostics_for_defect_fixtures()
+-> Result<(), Box<dyn std::error::Error>> {
+    let inspect = |name: &str, extra: &[&str]| -> Result<String, Box<dyn std::error::Error>> {
+        let output = panta_cli()
+            .args(["stl", "inspect"])
+            .arg(mesh_fixture(name))
+            .args(extra)
+            .output()?;
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        Ok(String::from_utf8(output.stdout)?)
+    };
+
+    let clean = inspect("clean_tetrahedron.stl", &[])?;
+    assert!(clean.contains("Mesh quality: no issues found"), "{clean}");
+    let open = inspect("open_tetrahedron.stl", &[])?;
+    assert!(open.contains("Boundary edges: 3 in 1 hole(s)"), "{open}");
+    let flipped = inspect("flipped_tetrahedron.stl", &[])?;
+    assert!(
+        flipped.contains("Inconsistently oriented edges: 3"),
+        "{flipped}"
+    );
+    let fins = inspect("non_manifold_fins.stl", &[])?;
+    assert!(fins.contains("Non-manifold edges: 1"), "{fins}");
+    let degenerate = inspect("degenerate_faces.stl", &[])?;
+    assert!(
+        degenerate.contains("Degenerate triangles: 2"),
+        "{degenerate}"
+    );
+    let welded = inspect("unwelded_tetrahedron.stl", &[])?;
+    assert!(welded.contains("(1 near-duplicate)"), "{welded}");
+    let strict = inspect("unwelded_tetrahedron.stl", &["--weld-tolerance", "0"])?;
+    assert!(strict.contains("Weld tolerance: 0"), "{strict}");
+    assert!(strict.contains("Vertices: 5 welded"), "{strict}");
+
+    let invalid = panta_cli()
+        .args(["stl", "inspect"])
+        .arg(mesh_fixture("clean_tetrahedron.stl"))
+        .args(["--weld-tolerance", "-1"])
+        .output()?;
+    assert_eq!(invalid.status.code(), Some(2), "{invalid:?}");
+    assert!(invalid.stdout.is_empty());
     Ok(())
 }
 

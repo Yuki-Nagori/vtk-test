@@ -14,7 +14,7 @@ const USAGE: &str = concat!(
     "用法：panta-cli ",
     "project inspect <工程文件.panta> | ",
     "project create <父目录> <工程名> | ",
-    "stl inspect <文件.stl> | ",
+    "stl inspect <文件.stl> [--weld-tolerance <相对比例>] | ",
     "stl import <工程文件.panta> <文件.stl> ",
     "[--mesh-type <id>] [--units <unit>]"
 );
@@ -25,7 +25,10 @@ enum CommandOutput {
         imports: Vec<panta_core::project::ImportRecord>,
     },
     ProjectCreate(ProjectSnapshot),
-    StlInspect(panta_core::project::StlImportPreview),
+    StlInspect(
+        panta_core::project::StlImportPreview,
+        panta_core::project::SurfaceDiagnostics,
+    ),
     StlImport(panta_core::project::ImportRecord),
 }
 
@@ -58,7 +61,7 @@ pub fn run_process() -> ExitCode {
             println!("Revision: {}", project.revision);
             ExitCode::SUCCESS
         }
-        Ok(CommandOutput::StlInspect(preview)) => {
+        Ok(CommandOutput::StlInspect(preview, diagnostics)) => {
             println!("STL: {}", preview.source_name);
             println!("Triangles: {}", preview.triangle_count);
             println!(
@@ -66,8 +69,9 @@ pub fn run_process() -> ExitCode {
                 preview.dimensions[0], preview.dimensions[1], preview.dimensions[2]
             );
             println!(
-                "Note: STL does not encode units; dimensions use source coordinates. Parsing does not assess mesh quality."
+                "Note: STL does not encode units; dimensions and weld tolerance use source coordinates."
             );
+            print_diagnostics(&diagnostics);
             ExitCode::SUCCESS
         }
         Ok(CommandOutput::StlImport(record)) => {
@@ -92,6 +96,32 @@ pub fn run_process() -> ExitCode {
     }
 }
 
+fn print_diagnostics(report: &panta_core::project::SurfaceDiagnostics) {
+    println!(
+        "Mesh quality: {}",
+        if report.is_clean() {
+            "no issues found"
+        } else {
+            "issues found"
+        }
+    );
+    println!("Weld tolerance: {}", report.weld_tolerance);
+    println!(
+        "Vertices: {} welded from {} references ({} near-duplicate)",
+        report.welded_vertex_count, report.raw_vertex_count, report.near_duplicate_vertex_count
+    );
+    println!("Degenerate triangles: {}", report.degenerate_triangle_count);
+    println!(
+        "Boundary edges: {} in {} hole(s)",
+        report.boundary_edge_count, report.hole_count
+    );
+    println!("Non-manifold edges: {}", report.non_manifold_edge_count);
+    println!(
+        "Inconsistently oriented edges: {}",
+        report.inconsistent_orientation_edge_count
+    );
+}
+
 fn run(arguments: &[OsString]) -> Result<CommandOutput, String> {
     let current_directory =
         std::env::current_dir().map_err(|error| format!("无法读取当前目录：{error}"))?;
@@ -109,9 +139,11 @@ fn run(arguments: &[OsString]) -> Result<CommandOutput, String> {
                 .ok_or_else(|| "工程名必须是有效 UTF-8".to_owned())?;
             project::create(&mut service, location, name).map(CommandOutput::ProjectCreate)
         }
-        [command, operation, path] if command == "stl" && operation == "inspect" => {
+        [command, operation, path, options @ ..] if command == "stl" && operation == "inspect" => {
+            let options = stl::parse_inspect_options(options)?;
             let path = resolve_project_path(PathBuf::from(path), &current_directory);
-            stl::inspect(&mut service, path).map(CommandOutput::StlInspect)
+            stl::inspect(&mut service, path, options)
+                .map(|(preview, diagnostics)| CommandOutput::StlInspect(preview, diagnostics))
         }
         [command, operation, project_path, source_path, options @ ..]
             if command == "stl" && operation == "import" =>

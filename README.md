@@ -37,7 +37,7 @@ Cargo 会按锁定清单自动获取 CMake、Ninja、Qt 和 native SDK 到 `targ
 | `cargo run --locked` | 启动桌面窗口并转发程序参数与退出码。 |
 | `cargo run --locked -p panta-cli -- project inspect <工程文件.panta>` | 读取工程清单并输出名称、路径、修订号及已导入资产 ID、显示名和来源摘要；与 GUI 共用 Rust 打开工程命令。 |
 | `cargo run --locked -p panta-cli -- project create <父目录> <工程名>` | 创建 `<父目录>/<工程名>/<工程名>.panta`；复用 GUI 工程服务的名称校验和冲突保护。 |
-| `cargo run --locked -p panta-cli -- stl inspect <文件.stl>` | 只读预检 STL 并输出来源名、面片数和尺寸；解析规则与 GUI 导入预检共用，尺寸沿用来源坐标（STL 不记录单位），不评估网格质量。 |
+| `cargo run --locked -p panta-cli -- stl inspect <文件.stl> [--weld-tolerance <相对比例>]` | 只读预检 STL 并输出来源名、面片数、尺寸和表面网格质量诊断（近重复/未焊接顶点、退化面、孔、非流形边、法向不一致）；解析规则与 GUI 导入预检共用，尺寸沿用来源坐标（STL 不记录单位）。焊接容差默认为包围盒对角线 × 1e-6，可用 `--weld-tolerance` 调整。 |
 | `cargo run --locked -p panta-cli -- stl import <工程文件.panta> <文件.stl> [--mesh-type <id>] [--units <unit>]` | 将 STL 导入现有工程，默认网格类型沿用领域设置、单位为毫米；来源 STL 不复制进工程，展开 Mesh 估算超过 2 GiB 时提醒但仍允许导入。 |
 | `cargo panta-package` | 生成当前 profile 的可搬迁安装目录，默认位于 `target/package/<profile>`。 |
 | `cargo panta-package /path/to/output` | 将安装目录写到指定路径。macOS 输出 `panta.app`，Windows/Linux 输出 `bin/panta[.exe]`。 |

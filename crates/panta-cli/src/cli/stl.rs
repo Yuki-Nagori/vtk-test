@@ -4,7 +4,8 @@ use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
 use panta_core::project::{
-    DEFAULT_MESH_TYPE, ImportRecord, ProjectCommand, ProjectService, StlImportPreview,
+    DEFAULT_MESH_TYPE, DiagnosticOptions, ImportRecord, ProjectCommand, ProjectService,
+    StlImportPreview, SurfaceDiagnostics,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -13,10 +14,37 @@ pub struct ImportOptions {
     units: String,
 }
 
-pub fn inspect(service: &mut ProjectService, path: PathBuf) -> Result<StlImportPreview, String> {
+pub fn inspect(
+    service: &mut ProjectService,
+    path: PathBuf,
+    options: DiagnosticOptions,
+) -> Result<(StlImportPreview, SurfaceDiagnostics), String> {
     service
-        .inspect_stl(&path)
+        .inspect_stl_with_diagnostics(&path, options)
         .map_err(|error| error.to_string())
+}
+
+/// 解析 `stl inspect` 选项；`--weld-tolerance` 为相对包围盒对角线的有限非负比例。
+pub(super) fn parse_inspect_options(arguments: &[OsString]) -> Result<DiagnosticOptions, String> {
+    let mut options = DiagnosticOptions::default();
+    match arguments {
+        [] => {}
+        [option, value] if option == OsStr::new("--weld-tolerance") => {
+            let ratio = value
+                .to_str()
+                .and_then(|value| value.parse::<f64>().ok())
+                .filter(|ratio| ratio.is_finite() && *ratio >= 0.0)
+                .ok_or_else(|| {
+                    format!(
+                        "--weld-tolerance 需要有限非负数：{}",
+                        value.to_string_lossy()
+                    )
+                })?;
+            options.relative_weld_tolerance = ratio;
+        }
+        _ => return Err("stl inspect 仅接受 --weld-tolerance <相对比例>".to_owned()),
+    }
+    Ok(options)
 }
 
 pub fn import(
@@ -72,7 +100,7 @@ pub(super) fn parse_import_options(arguments: &[OsString]) -> Result<ImportOptio
 
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_MESH_TYPE, ImportOptions, parse_import_options};
+    use super::{DEFAULT_MESH_TYPE, ImportOptions, parse_import_options, parse_inspect_options};
     use std::ffi::OsString;
 
     #[test]
@@ -102,5 +130,25 @@ mod tests {
         );
         assert!(parse_import_options(&[OsString::from("--unknown"), OsString::from("x")]).is_err());
         assert!(parse_import_options(&[OsString::from("--units")]).is_err());
+    }
+
+    #[test]
+    fn inspect_options_default_and_validate_the_relative_tolerance() {
+        let default = parse_inspect_options(&[]).map(|options| options.relative_weld_tolerance);
+        assert_eq!(
+            default,
+            Ok(panta_core::project::DEFAULT_RELATIVE_WELD_TOLERANCE)
+        );
+        let explicit =
+            parse_inspect_options(&[OsString::from("--weld-tolerance"), OsString::from("1e-4")])
+                .map(|options| options.relative_weld_tolerance);
+        assert_eq!(explicit, Ok(1e-4));
+        for bad in ["-1", "NaN", "inf", "abc"] {
+            assert!(
+                parse_inspect_options(&[OsString::from("--weld-tolerance"), OsString::from(bad)])
+                    .is_err()
+            );
+        }
+        assert!(parse_inspect_options(&[OsString::from("--weld-tolerance")]).is_err());
     }
 }
