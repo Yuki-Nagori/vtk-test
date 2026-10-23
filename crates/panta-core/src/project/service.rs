@@ -159,7 +159,7 @@ impl ProjectService {
                 ProjectError::ManifestInvalid("mesh asset index entry is missing".to_owned())
             })?;
         if asset_ref.revision == 0
-            || asset_ref.format_version != panta_mesh::MESH_ASSET_FORMAT_VERSION
+            || !panta_mesh::is_readable_mesh_asset_version(asset_ref.format_version)
             || asset_ref.kind != "surface"
             || asset_ref.source_revision != record.source_digest
         {
@@ -494,7 +494,7 @@ pub(super) fn validate_schema_four_mesh_assets(
     for (id, asset) in mesh_assets {
         if id != &asset.id
             || asset.revision == 0
-            || asset.format_version != panta_mesh::MESH_ASSET_FORMAT_VERSION
+            || !panta_mesh::is_readable_mesh_asset_version(asset.format_version)
             || !is_sha256_digest(&asset.digest)
             || asset.units != "millimeters"
             || !matches!(asset.kind.as_str(), "surface" | "volume")

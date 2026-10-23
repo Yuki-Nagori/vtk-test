@@ -14,6 +14,8 @@
 | 008 | [STEP 接入工程工作流](task/008-step-project-workflow.md) | draft |
 | 009 | [CI 编译产物缓存评估](task/009-ci-build-cache.md) | deferred |
 | 010 | [多格式网格导入（VTU / VTP / VTK / OBJ / PLY）](task/010-multi-format-import.md) | done |
+| 011 | [Mesh 资产分块存储（sidecar v3）](task/011-mesh-asset-chunked-storage.md) | done |
+| 012 | [移除 Mesh sidecar v2 只读兼容](task/012-mesh-asset-v2-removal.md) | planned |
 
 任务先登记范围与验收，实际验证后同步状态。历史编号不再代表本仓库的待办或已交付能力。
 
