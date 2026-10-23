@@ -57,7 +57,7 @@ use animation::{
     animation_frame_name, animation_open, animation_request,
 };
 mod mesh;
-use mesh::{mesh_coordinates, mesh_validate_tet};
+use mesh::{mesh_coordinates, mesh_tet_export_vtu, mesh_tet_quality, mesh_validate_tet};
 
 // unsafe 仅由 CXX 宏生成；共享 DTO 与 opaque Rust 类型由生成胶水校验。
 // 崩溃设施的手写 unsafe 留在 panta-foundation::crash。
@@ -425,6 +425,9 @@ pub mod bridge {
 
         fn project_service_drain_workspace_activations(service: &mut ProjectService);
         fn mesh_validate_tet(data: TetMeshData) -> TetMeshValidation;
+        /// Netgen 体网格与导入体网格共用质量统计 / VTU 导出（task 021 子项 5）。
+        fn mesh_tet_quality(data: TetMeshData) -> VolumeInfoResult;
+        fn mesh_tet_export_vtu(data: TetMeshData, path: &str) -> ProjectDiagnostic;
 
         /// QML 服务销毁、事件循环退出后等待已接受写入；禁止在写入 worker 调用。
         fn finish_background_writes();

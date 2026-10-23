@@ -103,6 +103,17 @@ TEST(NetgenMesher, BoxYieldsValidTetMeshWithExpectedVolumeAndGroups) {
         EXPECT_LT(triangle.group, result.mesh.boundary_group_face_ids.size());
     EXPECT_EQ(validate_native_mesh_with_rust(result.mesh).ok, true);
 
+    // Netgen 结果与导入体网格共用质量统计与 VTU 导出（task 021 子项 5）。
+    const auto quality = panta::mesh::volume_quality_with_rust(result.mesh);
+    EXPECT_TRUE(quality.error_code.empty());
+    EXPECT_EQ(quality.tet_count, result.mesh.tets.size());
+    EXPECT_GT(quality.min_dihedral_degrees, 0.0);
+    EXPECT_GE(quality.max_aspect_ratio, 1.0 - 1e-9);
+    const auto vtu = std::filesystem::temp_directory_path() / "panta-netgen-box.vtu";
+    EXPECT_TRUE(panta::mesh::export_native_mesh_vtu_with_rust(result.mesh, vtu.string()).empty());
+    EXPECT_TRUE(std::filesystem::is_regular_file(vtu));
+    std::filesystem::remove(vtu);
+
     // 名义体积 10×20×30 = 6000 mm³；面网格贴合平面，断言容差 1%。
     EXPECT_NEAR(result.volume_mm3, 6000.0, 60.0);
 }

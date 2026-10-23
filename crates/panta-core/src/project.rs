@@ -49,6 +49,7 @@ mod import;
 mod mesh_assets;
 mod preview;
 mod volume;
+pub use volume::export_tet_mesh_vtu;
 
 pub use crate::activation::{ActivationAttempt, Outcome, OutcomeKind};
 
