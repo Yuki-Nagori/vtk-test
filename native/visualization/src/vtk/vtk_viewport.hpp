@@ -15,6 +15,7 @@ class vtkRenderWindowInteractor;
 namespace panta::visualization {
 
 class ViewportInteractionCommand;
+struct CameraFrame;
 class ViewportTestAccess;
 
 class VtkViewport final : public QQuickItem, public ViewportBackend {
@@ -27,10 +28,14 @@ class VtkViewport final : public QQuickItem, public ViewportBackend {
     QQuickItem* item() override;
     void apply_state(const RenderScene& state) override;
     QImage capture_image() override;
+    bool set_view_preset(const QString& name) override;
+    void reset_view() override;
 
   signals:
     /// 原生 surface 与最小 VTK 场景已建立。
     void sceneInitialized();
+    /// 左键在模型区域（非方向立方体）单击后的拾取结果；未命中时 hit=false。
+    void pointPicked(bool hit, double x, double y, double z, quint64 triangle);
 
   protected:
     void geometryChange(const QRectF& new_geometry, const QRectF& old_geometry) override;
@@ -48,6 +53,8 @@ class VtkViewport final : public QQuickItem, public ViewportBackend {
     void handle_interaction_event(unsigned long event_id, vtkRenderWindowInteractor* interactor);
     void advance_camera_transition();
     void stop_camera_transition();
+    void start_camera_frame(const CameraFrame& frame);
+    void pick_at(int display_x, int display_y);
     /// 排队刷新时同步原生区域，仅状态/像素尺寸改变或恢复显示时提交帧。
     void sync_native_surface();
     void destroy_render_window();

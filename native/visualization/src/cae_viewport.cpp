@@ -37,6 +37,7 @@ CaeViewport::CaeViewport(QQuickItem* parent) : QQuickItem(parent), impl_(std::ma
         if (auto* viewport = qobject_cast<VtkViewport*>(item)) {
             QObject::connect(viewport, &VtkViewport::sceneInitialized, this,
                              &CaeViewport::sceneReady);
+            QObject::connect(viewport, &VtkViewport::pointPicked, this, &CaeViewport::pointPicked);
         }
     }
 }
@@ -79,6 +80,12 @@ QString CaeViewport::saveScreenshot(const QUrl& url) {
         return QStringLiteral("无法保存视口截图。");
     return {};
 }
+
+bool CaeViewport::setViewPreset(const QString& name) {
+    return impl_->backend->set_view_preset(name);
+}
+
+void CaeViewport::resetView() { impl_->backend->reset_view(); }
 
 void CaeViewport::refresh_mesh() {
     impl_->scene.mesh = impl_->mesh_source ? impl_->mesh_source->mesh_snapshot() : nullptr;

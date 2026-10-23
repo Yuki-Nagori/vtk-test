@@ -1,6 +1,7 @@
 // 视口导航的无窗口行为测试；1e-8 容差覆盖双精度姿态转换的舍入误差。
 #include "navigation/viewport_camera.hpp"
 #include "navigation/viewport_input.hpp"
+#include "navigation/viewport_tools.hpp"
 #include <QtCore/qtmetamacros.h>
 #include <QtTest/qtest.h>
 #include <QtTest/qtestcase.h>
@@ -202,6 +203,41 @@ class ViewportNavigationTest final : public QObject {
             QVERIFY(std::isfinite(camera->GetDistance()));
             QVERIFY(camera->GetDistance() > 0);
         }
+    }
+
+    void parses_presets_and_builds_orthonormal_frames() {
+        using panta::visualization::parse_view_preset;
+        using panta::visualization::preset_frame;
+        using panta::visualization::ViewPreset;
+        QVERIFY(!parse_view_preset(QStringLiteral("diagonal")).has_value());
+        for (const char* name : {"front", "back", "left", "right", "top", "bottom", "iso"}) {
+            const auto preset = parse_view_preset(QString::fromLatin1(name));
+            QVERIFY(preset.has_value());
+            const auto frame = preset_frame(*preset);
+            const auto& b = frame.backward;
+            const auto& u = frame.view_up;
+            QVERIFY(std::abs(b[0] * b[0] + b[1] * b[1] + b[2] * b[2] - 1.0) < 1e-8);
+            QVERIFY(std::abs(u[0] * u[0] + u[1] * u[1] + u[2] * u[2] - 1.0) < 1e-8);
+            QVERIFY(std::abs(b[0] * u[0] + b[1] * u[1] + b[2] * u[2]) < 1e-8);
+        }
+        QCOMPARE(preset_frame(ViewPreset::Front).backward[1], -1.0);
+        QVERIFY(preset_frame(ViewPreset::Isometric).view_up[2] > 0.0);
+    }
+
+    void picks_the_nearest_triangle_along_a_ray() {
+        panta::visualization::SurfaceMeshSnapshot mesh;
+        // 两个平行于 XY 的三角形，z=0 与 z=2；射线从 z=5 向下。
+        mesh.vertices = {{0, 0, 0}, {2, 0, 0}, {0, 2, 0}, {0, 0, 2}, {2, 0, 2}, {0, 2, 2}};
+        const auto hit =
+            panta::visualization::pick_triangle_soup(mesh, {0.5, 0.5, 5.0}, {0.0, 0.0, -1.0});
+        QVERIFY(hit.has_value());
+        QCOMPARE(hit->triangle, std::uint64_t{1});
+        QVERIFY(std::abs(hit->point[2] - 2.0) < 1e-8);
+        QVERIFY(std::abs(hit->distance - 3.0) < 1e-8);
+        QVERIFY(!panta::visualization::pick_triangle_soup(mesh, {5.0, 5.0, 5.0}, {0.0, 0.0, -1.0})
+                     .has_value());
+        QVERIFY(!panta::visualization::pick_triangle_soup(mesh, {0.5, 0.5, 5.0}, {0.0, 0.0, 1.0})
+                     .has_value());
     }
 };
 

@@ -20,6 +20,7 @@
 | 014 | [工作台 UI/UX 优化（保守版）](task/014-ui-ux.md) | done |
 | 015 | [GUI 网格质量诊断面板](task/015-mesh-quality-panel.md) | implemented |
 | 016 | [可取消、带百分比的后台任务进度](task/016-background-progress.md) | implemented |
+| 017 | [视口工具：预设视角、复位、拾取与测距](task/017-viewport-tools.md) | implemented |
 
 任务先登记范围与验收，实际验证后同步状态。历史编号不再代表本仓库的待办或已交付能力。
 

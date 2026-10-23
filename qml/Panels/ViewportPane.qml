@@ -14,6 +14,15 @@ PanelSurface {
     function saveScreenshot(url: url): string {
         return viewport.saveScreenshot(url);
     }
+    // 视图工具（task 017）：预设视角与复位转发到原生视口。
+    function setViewPreset(name: string): bool {
+        return viewport.setViewPreset(name);
+    }
+    function resetView() {
+        viewport.resetView();
+    }
+
+    signal pointPicked(bool hit, real x, real y, real z, int triangle)
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
@@ -27,6 +36,7 @@ PanelSurface {
                 objectName: "caeViewport"
                 anchors.fill: parent
                 meshSource: panel.meshSource
+                onPointPicked: (hit, x, y, z, triangle) => panel.pointPicked(hit, x, y, z, triangle)
             }
         }
 
