@@ -1,6 +1,6 @@
 # 013 — 网格导出与视口截图
 
-- 状态：implemented
+- 状态：done（PR #9）
 - 阶段：数据交换
 - 依赖：[010](010-multi-format-import.md)、[011](011-mesh-asset-chunked-storage.md)
 - 优先级：P1

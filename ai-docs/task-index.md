@@ -16,7 +16,8 @@
 | 010 | [多格式网格导入（VTU / VTP / VTK / OBJ / PLY）](task/010-multi-format-import.md) | done |
 | 011 | [Mesh 资产分块存储（sidecar v3）](task/011-mesh-asset-chunked-storage.md) | done |
 | 012 | [移除 Mesh sidecar v2 只读兼容](task/012-mesh-asset-v2-removal.md) | planned |
-| 013 | [网格导出与视口截图](task/013-mesh-export.md) | implemented |
+| 013 | [网格导出与视口截图](task/013-mesh-export.md) | done |
+| 014 | [工作台 UI/UX 优化（保守版）](task/014-ui-ux.md) | implemented |
 
 任务先登记范围与验收，实际验证后同步状态。历史编号不再代表本仓库的待办或已交付能力。
 
