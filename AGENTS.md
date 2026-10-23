@@ -30,7 +30,7 @@
 ## 构建、测试与窗口验收
 
 - 本地日常开发按改动选择 `cargo test --locked -p <package>`；涉及跨语言、共享构建或影响无法安全缩小时，运行 `cargo test --locked --workspace`，聚合完整 Rust/native/QML 行为测试。修改后和评审修复后先重跑直接受影响的测试，再完成适用验收。
-- 常规构建和质量检查使用 `cargo build --locked`、`cargo format --check`、`cargo lint <tool> --check`；`cargo quality` 提供手动完整质量入口。格式入口仅覆盖 Rust、C++ 和 QML；CMake 语法及行为由实际 configure/build/CTest 验证。CI 在三平台构建并运行完整行为测试，单一 Ubuntu quality job 检查格式、Clippy 和 qmllint。
+- 常规构建和质量检查使用 `cargo build --locked`、`cargo format --check`、`cargo lint <tool> --check`；`cargo quality` 提供手动完整质量入口。格式入口仅覆盖 Rust、C++ 和 QML；CMake 语法及行为由实际 configure/build/CTest 验证。PR 与 main 推送的 CI 只在 Linux 构建并运行完整行为测试，macOS 与 Windows 完整行为测试由 nightly 定时或手动触发运行；单一 Ubuntu quality job 检查格式、Clippy 和 qmllint。
 - 新增或迁移 Cargo package、CMake target、QML 模块或测试支持目录时，同一改动更新实际 Cargo/CMake 注册、依赖与格式/lint 输入，并验证新测试确实被发现和执行；必要时同步任务与架构文档。测试范围依据真实消费关系显式选择，不维护自动变更范围选择器。
 - 当前不保留性能、覆盖率、Miri 或 sanitizer 的专属入口和门禁。确有诊断需求时另建任务，明确问题、工具、输入及验收后再接入。
 - 需要真实窗口验收时先运行 `cargo build --locked`。macOS 绑定 `target/native/debug/app/panta.app`，或启动其 `Contents/MacOS/panta`；Windows/Linux 启动 `target/native/debug/app/panta.exe` 或 `target/native/debug/app/panta`。macOS 用 `cua.getApp` 绑定 `.app` 并调用 `getAXStateAndScreenshot()` 检查真实窗口。每次 UI 操作后刷新 `getAXState()`，按最新状态定位控件。

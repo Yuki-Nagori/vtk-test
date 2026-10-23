@@ -7,7 +7,7 @@
 | 001 | [最小可视化渲染测试仓库整理](task/001-minimal-vtk-repository.md) | implemented |
 | 002 | [Netgen 销毁兼容处理退出条件](task/002-netgen-cleanup-compatibility.md) | deferred |
 | 003 | [Cargo 元数据 repository 指向本仓库](task/003-cargo-repository-metadata.md) | implemented |
-| 004 | [同步文档中的 CI 平台描述](task/004-ci-platform-docs-sync.md) | ready |
+| 004 | [同步文档中的 CI 平台描述](task/004-ci-platform-docs-sync.md) | implemented |
 | 005 | [panta 名称迁移评估](task/005-rename-panta-identifiers.md) | draft |
 | 006 | [STL 修复前置：表面网格质量诊断](task/006-stl-mesh-diagnostics.md) | draft |
 | 007 | [STL 修复管线](task/007-stl-repair-pipeline.md) | planned |
