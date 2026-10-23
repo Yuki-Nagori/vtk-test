@@ -23,7 +23,7 @@
 | 017 | [视口工具：预设视角、复位、拾取与测距](task/017-viewport-tools.md) | implemented |
 | 018 | [工作台交互：拖放导入、最近工程、菜单栏、关闭确认](task/018-workbench-interactions.md) | implemented |
 | 019 | [大网格：流式资产读写、显示 LOD 与规模基准](task/019-large-mesh-lod.md) | implemented |
-| 020 | [时序动画：序列加载、预取缓存与播放](task/020-time-series-animation.md) | ready |
+| 020 | [时序动画：序列加载、预取缓存与播放](task/020-time-series-animation.md) | done |
 | 021 | [体网格：导入、显示/切片、导出、质量诊断、与 Netgen 体网格打通](task/021-volume-mesh.md) | ready |
 
 任务先登记范围与验收，实际验证后同步状态。历史编号不再代表本仓库的待办或已交付能力。
