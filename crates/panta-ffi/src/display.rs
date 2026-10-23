@@ -60,10 +60,15 @@ pub(super) fn prepare_mesh_display(
 pub(super) fn export_mesh_display(
     input: Box<MeshDisplayInput>,
     path: &str,
+    progress: &crate::TaskProgress,
 ) -> bridge::ProjectDiagnostic {
     match input.mesh {
         Ok((mesh, _)) => {
-            match panta_core::project::export_mesh_file(&mesh, std::path::Path::new(path)) {
+            match panta_core::project::export_mesh_file_with_progress(
+                &mesh,
+                std::path::Path::new(path),
+                &progress.0,
+            ) {
                 Ok(_) => bridge::ProjectDiagnostic::default(),
                 Err(error) => error.into(),
             }
@@ -76,9 +81,10 @@ pub(super) fn export_mesh_display(
 #[expect(clippy::boxed_local, reason = "诊断输入由 CXX Box 独占移交后台线程")]
 pub(super) fn diagnose_mesh_display(
     input: Box<MeshDisplayInput>,
+    progress: &crate::TaskProgress,
 ) -> bridge::MeshQualityReportResult {
     let result = input.mesh.and_then(|(mesh, _)| {
-        panta_mesh::diagnose_surface(&mesh, Default::default())
+        panta_mesh::diagnose_surface_with_progress(&mesh, Default::default(), &progress.0)
             .map(|report| bridge::MeshQualityReport {
                 clean: report.is_clean(),
                 weld_tolerance: report.weld_tolerance,
@@ -93,11 +99,12 @@ pub(super) fn diagnose_mesh_display(
                 inconsistent_orientation_edge_count: report.inconsistent_orientation_edge_count,
             })
             .map_err(|error| {
-                crate::project_response::diagnostic(
-                    "project.diagnostics_failed",
-                    "validation",
-                    error.to_string(),
-                )
+                let code = if error == panta_mesh::DiagnosticError::Cancelled {
+                    "project.diagnostics_cancelled"
+                } else {
+                    "project.diagnostics_failed"
+                };
+                crate::project_response::diagnostic(code, "validation", error.to_string())
             })
     });
     match result {
@@ -121,22 +128,37 @@ mod tests {
         let mesh = panta_mesh::SurfaceMesh {
             triangles: vec![[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]],
         };
-        let report = diagnose_mesh_display(Box::new(MeshDisplayInput {
-            mesh: Ok((Arc::new(mesh), 1)),
-        }));
+        let report = diagnose_mesh_display(
+            Box::new(MeshDisplayInput {
+                mesh: Ok((Arc::new(mesh.clone()), 1)),
+            }),
+            &crate::TaskProgress::default(),
+        );
+        let cancelled = crate::TaskProgress::default();
+        cancelled.0.cancel();
+        let stopped = diagnose_mesh_display(
+            Box::new(MeshDisplayInput {
+                mesh: Ok((Arc::new(mesh), 1)),
+            }),
+            &cancelled,
+        );
+        assert_eq!(stopped.error.code, "project.diagnostics_cancelled");
         assert!(report.error.code.is_empty());
         assert_eq!(report.value.triangle_count, 1);
         assert_eq!(report.value.boundary_edge_count, 3);
         assert_eq!(report.value.hole_count, 1);
         assert!(!report.value.clean);
 
-        let missing = diagnose_mesh_display(Box::new(MeshDisplayInput {
-            mesh: Err(crate::project_response::diagnostic(
-                "project.mesh_not_resident",
-                "state",
-                "x".into(),
-            )),
-        }));
+        let missing = diagnose_mesh_display(
+            Box::new(MeshDisplayInput {
+                mesh: Err(crate::project_response::diagnostic(
+                    "project.mesh_not_resident",
+                    "state",
+                    "x".into(),
+                )),
+            }),
+            &crate::TaskProgress::default(),
+        );
         assert_eq!(missing.error.code, "project.mesh_not_resident");
     }
 }

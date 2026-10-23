@@ -572,7 +572,17 @@ pub fn export_mesh_file(
     mesh: &SurfaceMesh,
     target: &Path,
 ) -> Result<panta_import::export::ExportFormat, ProjectError> {
-    panta_import::export::export_surface_mesh(mesh, target).map_err(export_error)
+    export_mesh_file_with_progress(mesh, target, &panta_mesh::Progress::new())
+}
+
+/// 同 [`export_mesh_file`]，向 `progress` 报告进度并响应其取消请求。
+pub fn export_mesh_file_with_progress(
+    mesh: &SurfaceMesh,
+    target: &Path,
+    progress: &panta_mesh::Progress,
+) -> Result<panta_import::export::ExportFormat, ProjectError> {
+    panta_import::export::export_surface_mesh_with_progress(mesh, target, progress)
+        .map_err(export_error)
 }
 
 fn export_error(error: panta_import::export::ExportError) -> ProjectError {
@@ -580,6 +590,7 @@ fn export_error(error: panta_import::export::ExportError) -> ProjectError {
     match error {
         ExportError::UnsupportedFormat(path) => ProjectError::ExportUnsupportedFormat(path),
         ExportError::TooLarge(limit) => ProjectError::ExportTooLarge(limit.to_owned()),
+        ExportError::Cancelled => ProjectError::ExportCancelled,
         ExportError::Io(error) => ProjectError::ExportWriteFailed(error.to_string()),
     }
 }

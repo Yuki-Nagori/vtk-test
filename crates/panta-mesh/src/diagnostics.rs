@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use crate::SurfaceMesh;
+use crate::{PROGRESS_STRIDE, Progress, SurfaceMesh};
 
 /// 默认焊接容差：模型包围盒对角线长度乘以该相对比例。
 pub const DEFAULT_RELATIVE_WELD_TOLERANCE: f64 = 1e-6;
@@ -27,6 +27,8 @@ impl Default for DiagnosticOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiagnosticError {
     InvalidTolerance,
+    /// 宿主经 [`Progress::cancel`] 请求取消。
+    Cancelled,
 }
 
 impl std::fmt::Display for DiagnosticError {
@@ -75,6 +77,26 @@ pub fn diagnose_surface(
     mesh: &SurfaceMesh,
     options: DiagnosticOptions,
 ) -> Result<SurfaceDiagnostics, DiagnosticError> {
+    diagnose_surface_with_progress(mesh, options, &Progress::new())
+}
+
+/// 同 [`diagnose_surface`]，并在焊接（0–60%）与边统计（60–95%）阶段报告进度、
+/// 每 [`PROGRESS_STRIDE`] 个三角形查询一次取消。
+pub fn diagnose_surface_with_progress(
+    mesh: &SurfaceMesh,
+    options: DiagnosticOptions,
+    progress: &Progress,
+) -> Result<SurfaceDiagnostics, DiagnosticError> {
+    let total = mesh.triangles.len() as u64;
+    let checkpoint = |index: usize, start: f64, end: f64| {
+        if index.is_multiple_of(PROGRESS_STRIDE) {
+            if progress.is_cancelled() {
+                return Err(DiagnosticError::Cancelled);
+            }
+            progress.report(start, end, index as u64, total);
+        }
+        Ok(())
+    };
     let relative = options.relative_weld_tolerance;
     if !relative.is_finite() || relative < 0.0 {
         return Err(DiagnosticError::InvalidTolerance);
@@ -93,14 +115,16 @@ pub fn diagnose_surface(
 
     let mut welder = Welder::new(tolerance);
     let mut indexed = Vec::with_capacity(mesh.triangles.len());
-    for triangle in &mesh.triangles {
+    for (index, triangle) in mesh.triangles.iter().enumerate() {
+        checkpoint(index, 0.0, 0.6)?;
         indexed.push(triangle.map(|point| welder.insert(point)));
     }
 
     let mut degenerate = 0_u64;
     // 键为有序无向边，值为 (使用次数, 正向次数)；正向指 a<b 时按 a→b 使用。
     let mut edges: HashMap<(u32, u32), (u32, u32)> = HashMap::new();
-    for (triangle, nodes) in mesh.triangles.iter().zip(&indexed) {
+    for (index, (triangle, nodes)) in mesh.triangles.iter().zip(&indexed).enumerate() {
+        checkpoint(index, 0.6, 0.95)?;
         if nodes[0] == nodes[1]
             || nodes[1] == nodes[2]
             || nodes[0] == nodes[2]
@@ -144,6 +168,7 @@ pub fn diagnose_surface(
     roots.sort_unstable();
     roots.dedup();
 
+    progress.set_fraction(1.0);
     Ok(SurfaceDiagnostics {
         weld_tolerance: tolerance,
         triangle_count: mesh.triangles.len() as u64,
@@ -260,7 +285,25 @@ impl DisjointSet {
 #[cfg(test)]
 mod tests {
     use super::{DiagnosticError, DiagnosticOptions, SurfaceDiagnostics, diagnose_surface};
-    use crate::{SurfaceMesh, parse_stl};
+    use crate::{Progress, SurfaceMesh, diagnose_surface_with_progress, parse_stl};
+
+    #[test]
+    fn progress_reaches_completion_and_cancel_stops_diagnosis() {
+        let mesh = SurfaceMesh {
+            triangles: vec![[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]],
+        };
+        let progress = Progress::new();
+        assert!(
+            diagnose_surface_with_progress(&mesh, DiagnosticOptions::default(), &progress).is_ok()
+        );
+        assert_eq!(progress.fraction(), 1.0);
+        let cancelled = Progress::new();
+        cancelled.cancel();
+        assert_eq!(
+            diagnose_surface_with_progress(&mesh, DiagnosticOptions::default(), &cancelled),
+            Err(DiagnosticError::Cancelled)
+        );
+    }
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 

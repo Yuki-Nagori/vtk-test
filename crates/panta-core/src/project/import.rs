@@ -3,7 +3,7 @@ use super::model::{MeshAssetRef, next_revision};
 use super::{ImportRecord, ProjectError, ProjectService, StlImportPreview, mesh_assets};
 use panta_import::{CheckedReadError, StlImportSession};
 use panta_import::{ImportError, ImportOptions};
-use panta_mesh::{DiagnosticOptions, SurfaceDiagnostics, diagnose_surface};
+use panta_mesh::{DiagnosticOptions, Progress, SurfaceDiagnostics, diagnose_surface};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -18,6 +18,7 @@ const IMPORT_COMMITTED: u8 = 3;
 pub(super) struct PendingImport {
     request: u64,
     phase: Arc<AtomicU8>,
+    progress: Arc<Progress>,
     receiver: Receiver<
         Result<(super::ProjectState, ImportRecord, panta_mesh::SurfaceMesh), ProjectError>,
     >,
@@ -98,6 +99,8 @@ impl ProjectService {
         let worker_session = Arc::clone(&session);
         let phase = Arc::new(AtomicU8::new(IMPORT_RUNNING));
         let worker_phase = Arc::clone(&phase);
+        let progress = Arc::new(Progress::new());
+        let worker_progress = Arc::clone(&progress);
         let source = source.to_path_buf();
         let (sender, receiver) = mpsc::channel();
         let submitted = self.execution.writes.submit(move || {
@@ -113,6 +116,7 @@ impl ProjectService {
                     options,
                     import_number,
                     &worker_phase,
+                    &worker_progress,
                 ),
                 None => Err(ProjectError::Io(
                     "STL import session unavailable".to_owned(),
@@ -135,6 +139,7 @@ impl ProjectService {
         self.pending_import = Some(PendingImport {
             request,
             phase,
+            progress,
             receiver,
         });
         Ok(request)
@@ -167,6 +172,14 @@ impl ProjectService {
         Ok(Some(record))
     }
 
+    /// 导入进度（0..=1，按阶段估算）；请求不匹配或已结束时返回 `None`。
+    pub fn stl_import_progress(&self, request: u64) -> Option<f64> {
+        self.pending_import
+            .as_ref()
+            .filter(|pending| pending.request == request)
+            .map(|pending| pending.progress.fraction())
+    }
+
     /// 取消只在 manifest 替换前接受；到达提交阶段后调用方必须消费结果。
     pub fn cancel_stl_import(&mut self, request: u64) -> bool {
         let Some(pending) = self
@@ -191,7 +204,10 @@ fn commit_import(
     options: ImportOptions,
     import_number: usize,
     phase: &AtomicU8,
+    progress: &Progress,
 ) -> Result<(super::ProjectState, ImportRecord, panta_mesh::SurfaceMesh), ProjectError> {
+    // 阶段式进度：复核读取/解析 5–50%，缩放 60%，资产写出 90%，清单提交 100%。
+    progress.set_fraction(0.05);
     let mut prepared = session
         .prepare_checked(source, || phase.load(Ordering::Acquire) == IMPORT_CANCELLED)
         .map_err(|error| match error {
@@ -199,9 +215,11 @@ fn commit_import(
             CheckedReadError::Cancelled(_) => import_cancelled(),
         })?;
     ensure_import_running(phase)?;
+    progress.set_fraction(0.5);
     let mut record = prepared.record(import_number, options);
     drop(std::mem::take(&mut prepared.bytes));
     prepared.scale_mesh_mm(options).map_err(map_import_error)?;
+    progress.set_fraction(0.6);
     let lease = super::repository::WriteLease::acquire(candidate)?;
     let project_root = candidate
         .path
@@ -209,6 +227,7 @@ fn commit_import(
         .ok_or_else(|| ProjectError::Io("project has no package directory".to_owned()))?;
     let (asset_reference, asset_path, created) =
         write_import_mesh_asset(project_root, &mut record, &prepared.mesh, Some(phase))?;
+    progress.set_fraction(0.9);
     candidate
         .mesh_assets
         .insert(asset_reference.id.clone(), asset_reference);
@@ -232,6 +251,7 @@ fn commit_import(
     commit_result?;
     asset.committed = true;
     phase.store(IMPORT_COMMITTED, Ordering::Release);
+    progress.set_fraction(1.0);
     Ok((candidate.clone(), record, prepared.mesh))
 }
 
@@ -344,6 +364,7 @@ impl ProjectService {
             options,
             import_number,
             &phase,
+            &Progress::new(),
         )?;
         self.current = Some(candidate);
         self.latest_mesh_id = Some(record.id.clone());
@@ -686,7 +707,11 @@ mod tests {
         service.execution.writes = Arc::clone(&executor);
 
         let request = service.begin_stl_import(&source, "solid-3d", "millimeters", false)?;
+        // 排队中的导入尚未开始：进度可查询且为 0。
+        assert_eq!(service.stl_import_progress(request), Some(0.0));
+        assert_eq!(service.stl_import_progress(request + 1), None);
         assert!(service.cancel_stl_import(request));
+        assert_eq!(service.stl_import_progress(request), None);
         assert!(service.finish_stl_import(request).is_err());
         release.send(())?;
         executor.close_and_wait();
@@ -724,6 +749,7 @@ mod tests {
         let pending = PendingImport {
             request: 1,
             phase,
+            progress: Arc::default(),
             receiver: mpsc::channel().1,
         };
         assert!(!pending.request_cancel());

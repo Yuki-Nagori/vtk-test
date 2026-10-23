@@ -41,6 +41,12 @@ use display::{
     diagnose_mesh_display, export_mesh_display, prepare_mesh_display,
     project_service_mesh_display_input,
 };
+mod progress;
+pub use progress::TaskProgress;
+use progress::{
+    project_service_stl_import_progress, task_progress_cancel, task_progress_fraction,
+    task_progress_new, task_progress_share,
+};
 mod mesh;
 use mesh::{mesh_coordinates, mesh_validate_tet};
 
@@ -259,6 +265,13 @@ pub mod bridge {
         type ProjectOperationRequest;
         type ProjectOperationCompletion;
         type MeshDisplayInput;
+        /// 后台任务进度与协作式取消句柄（共享 Arc，可跨线程）。
+        type TaskProgress;
+        fn task_progress_new() -> Box<TaskProgress>;
+        fn task_progress_share(progress: &TaskProgress) -> Box<TaskProgress>;
+        fn task_progress_fraction(progress: &TaskProgress) -> f64;
+        fn task_progress_cancel(progress: &TaskProgress);
+        fn project_service_stl_import_progress(service: &ProjectService, request: u64) -> f64;
         fn project_service_begin_operation(
             service: &mut ProjectService,
             input: ProjectOperationInput,
@@ -276,8 +289,15 @@ pub mod bridge {
             import_id: &str,
         ) -> Box<MeshDisplayInput>;
         fn prepare_mesh_display(input: Box<MeshDisplayInput>) -> SurfaceMeshSnapshotResult;
-        fn diagnose_mesh_display(input: Box<MeshDisplayInput>) -> MeshQualityReportResult;
-        fn export_mesh_display(input: Box<MeshDisplayInput>, path: &str) -> ProjectDiagnostic;
+        fn diagnose_mesh_display(
+            input: Box<MeshDisplayInput>,
+            progress: &TaskProgress,
+        ) -> MeshQualityReportResult;
+        fn export_mesh_display(
+            input: Box<MeshDisplayInput>,
+            path: &str,
+            progress: &TaskProgress,
+        ) -> ProjectDiagnostic;
 
         fn project_service_new() -> Box<ProjectService>;
         #[rust_name = "project_service_execute_response"]

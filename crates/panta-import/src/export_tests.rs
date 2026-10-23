@@ -1,5 +1,6 @@
 use super::*;
 use crate::formats::{parse_obj, parse_ply, parse_vtk_legacy, parse_vtp, parse_vtu};
+use panta_mesh::Progress;
 
 fn sample() -> SurfaceMesh {
     SurfaceMesh {
@@ -62,7 +63,7 @@ fn binary_stl_round_trips_at_f32_precision() -> Result<(), Box<dyn std::error::E
 
 #[test]
 fn indexed_formats_share_bitwise_identical_points() -> Result<(), ExportError> {
-    let indexed = IndexedMesh::new(&sample())?;
+    let indexed = IndexedMesh::new(&sample(), &Progress::new())?;
     // -0.0 与 0.0 合并；共 5 个不同点。
     assert_eq!(indexed.points.len(), 5);
     assert_eq!(indexed.triangles[2][0], indexed.triangles[0][0]);
@@ -102,5 +103,34 @@ fn export_file_replaces_target_and_rejects_unknown_extensions()
     let leftovers = fs::read_dir(&directory)?.count();
     assert_eq!(leftovers, 1);
     fs::remove_dir_all(&directory)?;
+    Ok(())
+}
+
+#[test]
+fn progress_export_completes_and_cancel_leaves_no_target() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory =
+        std::env::temp_dir().join(format!("panta-export-progress-{}", std::process::id()));
+    std::fs::create_dir_all(&directory)?;
+    let mesh = SurfaceMesh {
+        triangles: vec![[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]],
+    };
+    let done = Progress::new();
+    let target = directory.join("ok.vtp");
+    export_surface_mesh_with_progress(&mesh, &target, &done)?;
+    assert_eq!(done.fraction(), 1.0);
+    assert!(target.is_file());
+
+    let cancelled = Progress::new();
+    cancelled.cancel();
+    let target = directory.join("cancelled.stl");
+    assert!(matches!(
+        export_surface_mesh_with_progress(&mesh, &target, &cancelled),
+        Err(ExportError::Cancelled)
+    ));
+    assert!(!target.exists());
+    let leftovers = std::fs::read_dir(&directory)?.count();
+    assert_eq!(leftovers, 1, "只剩成功导出的文件，没有 .partial");
+    std::fs::remove_dir_all(&directory)?;
     Ok(())
 }
