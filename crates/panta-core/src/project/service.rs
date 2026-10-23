@@ -142,6 +142,21 @@ impl ProjectService {
         &mut self,
         import_id: &str,
     ) -> Result<ActivationAttempt, ProjectError> {
+        let request = self.activation_request(import_id)?;
+        let import_id = import_id.to_owned();
+        let attempt = self
+            .activation
+            .begin(&import_id, request, Arc::clone(&self.execution.reads))
+            .map_err(|detail| ProjectError::CommandInvalid(detail.to_owned()))?;
+        self.activation_attempts.insert(import_id, attempt.attempt);
+        Ok(attempt)
+    }
+
+    /// 已提交 Surface 资产的读取请求；校验清单索引但不访问文件系统。
+    fn activation_request(
+        &self,
+        import_id: &str,
+    ) -> Result<crate::activation::ActivationRequest, ProjectError> {
         let state = self.current.as_ref().ok_or(ProjectError::NoProject)?;
         let record = state
             .imports
@@ -170,21 +185,36 @@ impl ProjectService {
         let project_root = root.to_owned();
         let relative_path = asset_ref.relative_path.clone();
         let expected_digest = asset_ref.digest.clone();
-        let import_id = record.id.clone();
-        let attempt = self
-            .activation
-            .begin(
-                &import_id,
-                crate::activation::ActivationRequest {
-                    project_root,
-                    relative_path,
-                    expected_digest,
-                },
-                Arc::clone(&self.execution.reads),
-            )
-            .map_err(|detail| ProjectError::CommandInvalid(detail.to_owned()))?;
-        self.activation_attempts.insert(import_id, attempt.attempt);
-        Ok(attempt)
+        Ok(crate::activation::ActivationRequest {
+            project_root,
+            relative_path,
+            expected_digest,
+        })
+    }
+
+    /// 把导入记录的网格导出到 `target`（格式由扩展名决定，坐标为毫米）。
+    /// 已驻留时直接使用缓存，否则同步读取并校验 sidecar；不改变工程状态。
+    pub fn export_import_mesh(
+        &self,
+        import_id: &str,
+        target: &Path,
+    ) -> Result<panta_import::export::ExportFormat, ProjectError> {
+        panta_import::export::detect_export_format(target).map_err(export_error)?;
+        let loaded;
+        let mesh = match self.mesh_for_import(import_id) {
+            Some(mesh) => mesh,
+            None => {
+                let request = self.activation_request(import_id)?;
+                loaded = crate::activation::load_committed_surface(request).map_err(|failure| {
+                    ProjectError::ExportSourceUnavailable(format!(
+                        "{}: {}",
+                        failure.code, failure.detail
+                    ))
+                })?;
+                &loaded
+            }
+        };
+        export_mesh_file(mesh, target)
     }
 
     /// 仅投影已提交 sidecar 的相对路径，不访问文件系统或构成资产身份。
@@ -534,5 +564,22 @@ impl Drop for ProjectService {
         self.clear_stl_preview();
         self.activation.advance_generation();
         self.activation.drain();
+    }
+}
+
+/// 把任意表面网格写到导出文件；GUI 后台线程对共享快照调用，不访问服务状态。
+pub fn export_mesh_file(
+    mesh: &SurfaceMesh,
+    target: &Path,
+) -> Result<panta_import::export::ExportFormat, ProjectError> {
+    panta_import::export::export_surface_mesh(mesh, target).map_err(export_error)
+}
+
+fn export_error(error: panta_import::export::ExportError) -> ProjectError {
+    use panta_import::export::ExportError;
+    match error {
+        ExportError::UnsupportedFormat(path) => ProjectError::ExportUnsupportedFormat(path),
+        ExportError::TooLarge(limit) => ProjectError::ExportTooLarge(limit.to_owned()),
+        ExportError::Io(error) => ProjectError::ExportWriteFailed(error.to_string()),
     }
 }

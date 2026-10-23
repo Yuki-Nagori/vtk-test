@@ -16,7 +16,8 @@ const USAGE: &str = concat!(
     "project create <父目录> <工程名> | ",
     "mesh inspect <网格文件> [--weld-tolerance <相对比例>] | ",
     "mesh import <工程文件.panta> <网格文件> ",
-    "[--mesh-type <id>] [--units <unit>]"
+    "[--mesh-type <id>] [--units <unit>] | ",
+    "mesh export <工程文件.panta> <导入 ID> <输出文件.stl|vtu|vtp|vtk|obj|ply>"
 );
 
 enum CommandOutput {
@@ -30,6 +31,10 @@ enum CommandOutput {
         panta_core::project::SurfaceDiagnostics,
     ),
     StlImport(panta_core::project::ImportRecord),
+    MeshExport {
+        format: &'static str,
+        target: PathBuf,
+    },
 }
 
 pub fn run_process() -> ExitCode {
@@ -87,6 +92,12 @@ pub fn run_process() -> ExitCode {
                     .as_deref()
                     .unwrap_or("SHA-256 unavailable")
             );
+            ExitCode::SUCCESS
+        }
+        Ok(CommandOutput::MeshExport { format, target }) => {
+            println!("Exported: {}", target.display());
+            println!("Format: {format}");
+            println!("Units: millimeters");
             ExitCode::SUCCESS
         }
         Err(message) => {
@@ -156,6 +167,26 @@ fn run(arguments: &[OsString]) -> Result<CommandOutput, String> {
             let source_path = resolve_project_path(PathBuf::from(source_path), &current_directory);
             stl::import(&mut service, project_path, source_path, options)
                 .map(CommandOutput::StlImport)
+        }
+        [command, operation, project_path, import_id, target]
+            if is_mesh_command(command) && operation == "export" =>
+        {
+            let project_path =
+                resolve_project_path(PathBuf::from(project_path), &current_directory);
+            let target = resolve_project_path(PathBuf::from(target), &current_directory);
+            let import_id = import_id
+                .to_str()
+                .ok_or_else(|| "导入 ID 必须是有效 UTF-8".to_owned())?;
+            service
+                .execute(panta_core::project::ProjectCommand::Open { path: project_path })
+                .map_err(|error| error.to_string())?;
+            let format = service
+                .export_import_mesh(import_id, &target)
+                .map_err(|error| error.to_string())?;
+            Ok(CommandOutput::MeshExport {
+                format: format.id(),
+                target,
+            })
         }
         _ => Err(USAGE.to_owned()),
     }

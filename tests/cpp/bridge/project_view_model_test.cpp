@@ -1033,3 +1033,45 @@ TEST(ProjectViewModelTest, FailedLoadRetainsTabAndCloseReleasesActivationState) 
     EXPECT_TRUE(
         reopened.openDocuments()[0].toMap().value(QStringLiteral("diagnostic")).toMap().isEmpty());
 }
+
+TEST(ProjectViewModelTest, ExportsTheActiveMeshInTheBackgroundAndReportsFailures) {
+    QTemporaryDir fixture;
+    ASSERT_TRUE(fixture.isValid());
+    const QString sourcePath = QDir(fixture.path()).filePath(QStringLiteral("sample.stl"));
+    QFile source(sourcePath);
+    ASSERT_TRUE(source.open(QIODevice::WriteOnly | QIODevice::Text));
+    ASSERT_GT(source.write("solid sample\nfacet normal 0 0 1\n outer loop\n"
+                           "  vertex 0 0 0\n  vertex 1 0 0\n  vertex 0 1 0\n"
+                           " endloop\nendfacet\nendsolid sample\n"),
+              0);
+    source.close();
+
+    ProjectViewModel view_model;
+    ASSERT_TRUE(finish_project_operation(
+        view_model, view_model.createProject(QStringLiteral("Export"), fixture.path())));
+    // 没有活动网格时拒绝导出，不启动后台任务。
+    EXPECT_FALSE(view_model.beginExportActiveMeshUrl(
+        QUrl::fromLocalFile(QDir(fixture.path()).filePath(QStringLiteral("none.stl")))));
+    EXPECT_EQ(view_model.errorCode(), QStringLiteral("project.mesh_not_resident"));
+    EXPECT_FALSE(view_model.exportPending());
+
+    ASSERT_TRUE(view_model.importStl(sourcePath, QStringLiteral("dual-domain"),
+                                     QStringLiteral("millimeters"), false));
+    ASSERT_TRUE(wait_for_active_mesh(view_model, view_model.activeDocumentId()));
+
+    QSignalSpy finished(&view_model, &ProjectViewModel::exportFinished);
+    const QString target = QDir(fixture.path()).filePath(QStringLiteral("导出.vtp"));
+    ASSERT_TRUE(view_model.beginExportActiveMeshUrl(QUrl::fromLocalFile(target)));
+    EXPECT_TRUE(view_model.exportPending());
+    ASSERT_TRUE(finished.wait(10000));
+    EXPECT_TRUE(finished.takeFirst().at(1).toBool());
+    EXPECT_FALSE(view_model.exportPending());
+    EXPECT_TRUE(view_model.error().isEmpty());
+    EXPECT_GT(QFileInfo(target).size(), 0);
+
+    ASSERT_TRUE(view_model.beginExportActiveMeshUrl(
+        QUrl::fromLocalFile(QDir(fixture.path()).filePath(QStringLiteral("out.3mf")))));
+    ASSERT_TRUE(finished.wait(10000));
+    EXPECT_FALSE(finished.takeFirst().at(1).toBool());
+    EXPECT_EQ(view_model.errorCode(), QStringLiteral("project.export_unsupported_format"));
+}

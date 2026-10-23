@@ -608,3 +608,53 @@ fn mesh_import_accepts_vtu_and_records_the_source_format() -> Result<(), Box<dyn
     assert_eq!(records[0].triangle_count, 64);
     Ok(())
 }
+
+#[test]
+fn mesh_export_writes_every_format_from_a_saved_import() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = temp_directory::Fixture::new()?;
+    let mut creator = ProjectService::new();
+    let created = creator.create(&fixture.root, "CLI export")?;
+    let record = creator.import_stl(
+        &mesh_fixture("clean_tetrahedron.stl"),
+        panta_core::project::DEFAULT_MESH_TYPE,
+        "millimeters",
+        false,
+    )?;
+    creator.save()?;
+
+    for extension in ["stl", "vtu", "vtp", "vtk", "obj", "ply"] {
+        let target = fixture.root.join(format!("导出 out.{extension}"));
+        let output = panta_cli()
+            .args(["mesh", "export"])
+            .arg(&created.path)
+            .arg(&record.id)
+            .arg(&target)
+            .output()?;
+        assert!(
+            output.status.success(),
+            "{extension}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout)?;
+        assert!(stdout.contains(&format!("Format: {extension}")));
+        assert!(std::fs::metadata(&target)?.len() > 0);
+    }
+
+    let rejected = panta_cli()
+        .args(["mesh", "export"])
+        .arg(&created.path)
+        .arg(&record.id)
+        .arg(fixture.root.join("out.3mf"))
+        .output()?;
+    assert_eq!(rejected.status.code(), Some(2));
+    assert!(String::from_utf8(rejected.stderr)?.contains("project.export_unsupported_format"));
+
+    let missing = panta_cli()
+        .args(["mesh", "export"])
+        .arg(&created.path)
+        .arg("no-such-import")
+        .arg(fixture.root.join("out.stl"))
+        .output()?;
+    assert!(String::from_utf8(missing.stderr)?.contains("project.import_record_missing"));
+    Ok(())
+}

@@ -8,6 +8,8 @@
 
 #include <QPointer>
 #include <QQuickItem>
+#include <QString>
+#include <QUrl>
 #include <memory>
 #include <panta/visualization/mesh_source.hpp>
 
@@ -24,6 +26,9 @@ class CaeViewport : public QQuickItem {
 
     [[nodiscard]] QObject* meshSource() const;
     void setMeshSource(QObject* source);
+
+    /// 把当前视口帧保存为 PNG（原子替换目标文件）；返回中文错误文案，空串表示成功。
+    Q_INVOKABLE QString saveScreenshot(const QUrl& url);
 
   signals:
     /// 后端完成场景构建后通知 GUI；渲染错误经 qWarning 上报，不静默。

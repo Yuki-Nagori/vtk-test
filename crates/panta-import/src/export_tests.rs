@@ -1,0 +1,106 @@
+use super::*;
+use crate::formats::{parse_obj, parse_ply, parse_vtk_legacy, parse_vtp, parse_vtu};
+
+fn sample() -> SurfaceMesh {
+    SurfaceMesh {
+        triangles: vec![
+            [[0.0, 0.0, 0.0], [1.5, 0.0, 0.0], [0.0, 2.25, -3.0]],
+            [[1.5, 0.0, 0.0], [0.1, 0.2, 0.3], [0.0, 2.25, -3.0]],
+            [[-0.0, 0.0, 0.0], [0.0, 2.25, -3.0], [1e-300, 7.0, 1.0e10]],
+        ],
+    }
+}
+
+fn written(format: ExportFormat) -> Result<Vec<u8>, ExportError> {
+    let mut bytes = Vec::new();
+    write_surface_mesh(&sample(), format, &mut bytes)?;
+    Ok(bytes)
+}
+
+fn assert_exact(mesh: &SurfaceMesh) {
+    let expected = sample();
+    assert_eq!(mesh.triangles.len(), expected.triangles.len());
+    for (actual, expected) in mesh.triangles.iter().zip(&expected.triangles) {
+        for (a, e) in actual.iter().flatten().zip(expected.iter().flatten()) {
+            assert_eq!(*a, *e + 0.0);
+        }
+    }
+}
+
+#[test]
+fn lossless_formats_round_trip_through_the_import_parsers() -> Result<(), Box<dyn std::error::Error>>
+{
+    assert_exact(&parse_obj(&written(ExportFormat::Obj)?)?);
+    assert_exact(&parse_ply(&written(ExportFormat::Ply)?)?);
+    assert_exact(&parse_vtk_legacy(&written(ExportFormat::VtkLegacy)?)?);
+    assert_exact(&parse_vtp(&written(ExportFormat::Vtp)?)?);
+    // VTU 三角形单元按表面单元导入，结果与 VTP 一致。
+    assert_exact(&parse_vtu(&written(ExportFormat::Vtu)?)?);
+    Ok(())
+}
+
+#[test]
+fn binary_stl_round_trips_at_f32_precision() -> Result<(), Box<dyn std::error::Error>> {
+    let bytes = written(ExportFormat::Stl)?;
+    assert_eq!(bytes.len(), 84 + 50 * 3);
+    let mesh = panta_mesh::parse_stl(&bytes)?;
+    assert_eq!(mesh.triangles.len(), 3);
+    assert_eq!(mesh.triangles[0][2], [0.0, 2.25, -3.0]);
+    let normal: [f32; 3] = std::array::from_fn(|axis| {
+        let start = 84 + axis * 4;
+        f32::from_le_bytes([
+            bytes[start],
+            bytes[start + 1],
+            bytes[start + 2],
+            bytes[start + 3],
+        ])
+    });
+    let length = normal.iter().map(|v| v * v).sum::<f32>().sqrt();
+    assert!((length - 1.0).abs() < 1e-6);
+    Ok(())
+}
+
+#[test]
+fn indexed_formats_share_bitwise_identical_points() -> Result<(), ExportError> {
+    let indexed = IndexedMesh::new(&sample())?;
+    // -0.0 与 0.0 合并；共 5 个不同点。
+    assert_eq!(indexed.points.len(), 5);
+    assert_eq!(indexed.triangles[2][0], indexed.triangles[0][0]);
+    Ok(())
+}
+
+#[test]
+fn base64_matches_reference_vectors() {
+    for (input, expected) in [
+        (&b""[..], &b""[..]),
+        (b"f", b"Zg=="),
+        (b"fo", b"Zm8="),
+        (b"foo", b"Zm9v"),
+        (b"foobar", b"Zm9vYmFy"),
+    ] {
+        assert_eq!(base64(input), expected);
+    }
+}
+
+#[test]
+fn export_file_replaces_target_and_rejects_unknown_extensions()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = std::env::temp_dir().join(format!("panta-export-{}", std::process::id()));
+    fs::create_dir_all(&directory)?;
+    let target = directory.join("part.obj");
+    fs::write(&target, b"old")?;
+    assert_eq!(export_surface_mesh(&sample(), &target)?, ExportFormat::Obj);
+    assert_exact(&parse_obj(&fs::read(&target)?)?);
+    assert!(matches!(
+        export_surface_mesh(&sample(), &directory.join("part.step")),
+        Err(ExportError::UnsupportedFormat(_))
+    ));
+    assert!(matches!(
+        export_surface_mesh(&sample(), &directory.join("missing/part.stl")),
+        Err(ExportError::Io(_))
+    ));
+    let leftovers = fs::read_dir(&directory)?.count();
+    assert_eq!(leftovers, 1);
+    fs::remove_dir_all(&directory)?;
+    Ok(())
+}

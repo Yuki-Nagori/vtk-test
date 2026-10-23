@@ -9,6 +9,7 @@
 /// - 渲染错误经 qWarning 上报，不得静默表现为“已成功”。
 #pragma once
 
+#include <QImage>
 #include <memory>
 
 class QQuickItem;
@@ -26,6 +27,10 @@ class ViewportBackend {
 
     /// GUI 线程：提交最新场景状态（含修订号），同一事件轮的更新可合并为一帧。
     virtual void apply_state(const RenderScene& state) = 0;
+
+    /// GUI 线程：渲染当前帧并读回像素（原生 surface 不在 scenegraph 中，
+    /// 不能用 QQuickWindow::grabWindow）；尚无可用帧时返回空图像。
+    virtual QImage capture_image() = 0;
 };
 
 /// 后端工厂：更换或新增渲染后端只改此处与对应适配器实现。

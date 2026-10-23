@@ -12,6 +12,7 @@
 #include "vtk_native_surface.hpp"
 #include <QElapsedTimer>
 #include <QGuiApplication>
+#include <QImage>
 #include <QList>
 #include <QLoggingCategory>
 #include <QMetaObject>
@@ -50,6 +51,7 @@
 #endif
 #include <vtkRenderWindowInteractor.h>
 #include <vtkSmartPointer.h>
+#include <vtkUnsignedCharArray.h>
 #include <vtkWeakPointer.h>
 #include <vtkWebGPURenderWindow.h>
 #include <vtkWebGPURenderer.h>
@@ -191,6 +193,28 @@ VtkViewport::~VtkViewport() {
 }
 
 QQuickItem* VtkViewport::item() { return this; }
+
+QImage VtkViewport::capture_image() {
+    if (!impl_->render_window || !impl_->applied_pixel_size.isValid() ||
+        impl_->applied_pixel_size.isEmpty())
+        return {};
+    const int width = impl_->applied_pixel_size.width();
+    const int height = impl_->applied_pixel_size.height();
+    impl_->render_window->Render();
+    vtkNew<vtkUnsignedCharArray> pixels;
+    // front=0 读离屏颜色附件；VTK 行序自下而上，转换后垂直翻转。
+    // WebGPU 实现成功时返回值个数，数据已按组件映射转换为 RGBA。
+    const int values =
+        impl_->render_window->GetRGBACharPixelData(0, 0, width - 1, height - 1, 0, pixels);
+    if (values != width * height * 4 || pixels->GetPointer(0) == nullptr ||
+        pixels->GetNumberOfTuples() != static_cast<vtkIdType>(width) * height ||
+        pixels->GetNumberOfComponents() != 4) {
+        qWarning() << "VtkViewport: failed to read back viewport pixels";
+        return {};
+    }
+    const QImage view(pixels->GetPointer(0), width, height, width * 4, QImage::Format_RGBA8888);
+    return view.mirrored(false, true);
+}
 
 const void* VtkViewport::test_actor_identity() const { return impl_->primitive_actor.GetPointer(); }
 

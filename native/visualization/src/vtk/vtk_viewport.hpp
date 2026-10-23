@@ -26,6 +26,7 @@ class VtkViewport final : public QQuickItem, public ViewportBackend {
 
     QQuickItem* item() override;
     void apply_state(const RenderScene& state) override;
+    QImage capture_image() override;
 
   signals:
     /// 原生 surface 与最小 VTK 场景已建立。

@@ -54,3 +54,20 @@ pub(super) fn prepare_mesh_display(
     });
     result.into()
 }
+
+/// 在宿主后台线程把共享网格快照写成导出文件；成功返回空诊断。
+#[expect(clippy::boxed_local, reason = "导出输入由 CXX Box 独占移交后台线程")]
+pub(super) fn export_mesh_display(
+    input: Box<MeshDisplayInput>,
+    path: &str,
+) -> bridge::ProjectDiagnostic {
+    match input.mesh {
+        Ok((mesh, _)) => {
+            match panta_core::project::export_mesh_file(&mesh, std::path::Path::new(path)) {
+                Ok(_) => bridge::ProjectDiagnostic::default(),
+                Err(error) => error.into(),
+            }
+        }
+        Err(diagnostic) => diagnostic,
+    }
+}

@@ -58,10 +58,12 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     Q_PROPERTY(QVariantList openDocuments READ openDocuments NOTIFY documentsChanged)
     Q_PROPERTY(QString activeDocumentId READ activeDocumentId NOTIFY activeDocumentChanged)
     Q_PROPERTY(QString activeDocumentTitle READ activeDocumentTitle NOTIFY activeDocumentChanged)
+    Q_PROPERTY(bool exportPending READ exportPending NOTIFY exportPendingChanged)
 
   public:
     explicit ProjectViewModel(QObject* parent = nullptr);
     [[nodiscard]] bool projectOperationPending() const { return m_projectOperationPending; }
+    [[nodiscard]] bool exportPending() const { return m_exportPending; }
     [[nodiscard]] bool importPreviewLargeMeshWarning() const {
         return m_importPreviewLargeMeshWarning;
     }
@@ -164,6 +166,10 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     /// 拖拽重排的提交入口；from/to 为 openDocuments 下标。
     Q_INVOKABLE void moveDocument(int fromIndex, int toIndex);
 
+    /// 把活动页签的已驻留网格导出到本地文件（格式由扩展名决定，坐标为毫米）。
+    /// 写盘在后台线程执行；返回准入结果，完成后发出 exportFinished。
+    Q_INVOKABLE bool beginExportActiveMeshUrl(const QUrl& url);
+
   signals:
     void errorChanged();
     void projectOperationPendingChanged();
@@ -182,6 +188,8 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     void importPreviewFinished(quint64 requestId, bool succeeded);
     void documentsChanged();
     void activeDocumentChanged();
+    void exportPendingChanged();
+    void exportFinished(const QString& path, bool succeeded);
 
   protected:
     /// 启动只等待独占 Rust 请求的线程；启动失败抛 system_error，调用方尚未准入领域任务。
@@ -220,6 +228,7 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     bool m_dirty = false;
     bool m_projectOperationPending = false;
     bool m_meshPreparationPending = false;
+    bool m_exportPending = false;
     quint64 m_meshSelection = 0;
     bool m_importPreviewLargeMeshWarning = false;
     quint64 m_importPreviewExpandedBytes = 0;
