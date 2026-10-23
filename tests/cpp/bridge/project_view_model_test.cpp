@@ -10,6 +10,7 @@
 #include <QIODevice>
 #include <QPair>
 #include <QSignalSpy>
+#include <QStandardPaths>
 #include <QString>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -658,8 +659,51 @@ TEST(ProjectViewModelTest, PreviewNotificationsCanReplaceOrCancelTheCompletedReq
 
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
+    // 最近工程写入用户配置目录；测试模式把它重定向到隔离目录。
+    QStandardPaths::setTestModeEnabled(true);
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
+}
+
+TEST(ProjectViewModelTest, RemembersRecentProjectsAndClassifiesDrops) {
+    QTemporaryDir fixture;
+    ASSERT_TRUE(fixture.isValid());
+    ProjectViewModel model;
+    model.clearRecentProjects();
+    EXPECT_TRUE(model.recentProjects().isEmpty());
+    QSignalSpy recent(&model, &ProjectViewModel::recentProjectsChanged);
+
+    const QString location = QDir(fixture.path()).absolutePath();
+    ASSERT_TRUE(
+        finish_project_operation(model, model.createProject(QStringLiteral("A"), location)));
+    const QString first = model.currentPath();
+    ASSERT_TRUE(
+        finish_project_operation(model, model.createProject(QStringLiteral("B"), location)));
+    const QString second = model.currentPath();
+    EXPECT_GE(recent.count(), 2);
+    ASSERT_EQ(model.recentProjects().size(), 2);
+    EXPECT_EQ(model.recentProjects().front(), QFileInfo(second).absoluteFilePath());
+
+    ProjectViewModel other;
+    ASSERT_TRUE(finish_project_operation(other, other.openProject(first)));
+    EXPECT_EQ(model.recentProjects().front(), QFileInfo(first).absoluteFilePath());
+    EXPECT_EQ(model.recentProjects().size(), 2);
+
+    // 已删除的工程不再出现在列表中。
+    ASSERT_TRUE(QFile::remove(second));
+    EXPECT_EQ(model.recentProjects(), QStringList{QFileInfo(first).absoluteFilePath()});
+
+    EXPECT_EQ(model.classifyDroppedUrl(QUrl::fromLocalFile(QStringLiteral("/x/a.PANTA"))),
+              QStringLiteral("project"));
+    EXPECT_EQ(model.classifyDroppedUrl(QUrl::fromLocalFile(QStringLiteral("/x/a.stl"))),
+              QStringLiteral("mesh"));
+    EXPECT_EQ(model.classifyDroppedUrl(QUrl::fromLocalFile(QStringLiteral("/x/a.Ply"))),
+              QStringLiteral("mesh"));
+    EXPECT_TRUE(
+        model.classifyDroppedUrl(QUrl::fromLocalFile(QStringLiteral("/x/a.txt"))).isEmpty());
+    EXPECT_TRUE(model.classifyDroppedUrl(QUrl(QStringLiteral("https://e.com/a.stl"))).isEmpty());
+    model.clearRecentProjects();
+    EXPECT_TRUE(model.recentProjects().isEmpty());
 }
 
 TEST(ProjectViewModelTest, DocumentTabsFollowImportAndClose) {

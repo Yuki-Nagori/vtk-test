@@ -79,6 +79,45 @@ ApplicationWindow {
     // 仅当诊断报告属于活动页签时展示，切换页签后需重新诊断。
     readonly property var activeQuality: projectModel.meshQuality.documentId === projectModel.activeDocumentId ? projectModel.meshQuality : ({})
 
+    // 关闭确认（task 018）：有未保存修改或后台任务时先询问。
+    property bool closeConfirmed: false
+    property bool quitAfterSave: false
+    onClosing: close => {
+        if (closeConfirmed || (!projectModel.dirty && !busy))
+            return;
+        close.accepted = false;
+        closeConfirmDialog.open();
+    }
+    function confirmClose() {
+        projectModel.cancelImport();
+        projectModel.cancelExport();
+        projectModel.cancelDiagnostics();
+        closeConfirmed = true;
+        shellWindow.close();
+    }
+
+    // 拖放：.panta 打开工程，网格文件进入导入对话框；忙碌或无工程时给出提示。
+    function handleDrop(urls: list<url>) {
+        if (urls.length === 0)
+            return;
+        const kind = projectModel.classifyDroppedUrl(urls[0]);
+        if (kind === "project") {
+            if (!canCreateOrOpen)
+                showNotice("后台任务进行中，稍后再打开工程。", true);
+            else
+                projectModel.openProjectUrl(urls[0]);
+        } else if (kind === "mesh") {
+            if (!canImport)
+                showNotice(projectOpen ? "后台任务进行中，稍后再导入。" : "请先新建或打开工程，再拖入网格。", true);
+            else
+                importDialog.openWithFile(projectModel.localPath(urls[0]));
+        } else {
+            showNotice("不支持的文件类型：仅支持 .panta 工程与 STL/VTU/VTP/VTK/OBJ/PLY 网格。", true);
+        }
+        if (urls.length > 1)
+            showNotice("一次只处理一个文件，已使用第一个。", false);
+    }
+
     function showNotice(text: string, isError: bool) {
         notice = text;
         noticeIsError = isError;
@@ -111,8 +150,31 @@ ApplicationWindow {
         onAccepted: projectModel.openProjectUrl(selectedFile)
     }
 
+    MessageDialog {
+        id: closeConfirmDialog
+        objectName: "closeConfirmDialog"
+        title: "退出确认"
+        text: projectModel.dirty ? "工程有未保存的修改。" : "后台任务仍在进行。"
+        informativeText: shellWindow.busy ? "退出将取消正在进行的导入/导出/诊断。" : "是否在退出前保存？"
+        buttons: projectModel.dirty && !shellWindow.busy ? (MessageDialog.Save | MessageDialog.Discard | MessageDialog.Cancel) : (MessageDialog.Discard | MessageDialog.Cancel)
+        onButtonClicked: (button, role) => {
+            if (button === MessageDialog.Save) {
+                shellWindow.quitAfterSave = projectModel.saveProject();
+            } else if (button === MessageDialog.Discard) {
+                shellWindow.confirmClose();
+            }
+        }
+    }
+
     Connections {
         target: projectModel
+        function onProjectOperationPendingChanged() {
+            if (!shellWindow.quitAfterSave || projectModel.projectOperationPending)
+                return;
+            shellWindow.quitAfterSave = false;
+            if (!projectModel.dirty)
+                shellWindow.confirmClose();
+        }
         function onExportFinished(path: string, succeeded: bool) {
             shellWindow.showNotice(succeeded ? "已导出：" + path : "", false);
         }
@@ -187,6 +249,100 @@ ApplicationWindow {
         onActivated: screenshotFileDialog.open()
     }
 
+    // 菜单栏（task 018）：Menu 使用独立窗口弹出，避免被原生视口表面遮挡。
+    menuBar: MenuBar {
+        Menu {
+            title: "文件(&F)"
+            popupType: Popup.Window
+            Action {
+                text: "新建工程…"
+                enabled: shellWindow.canCreateOrOpen
+                onTriggered: newProjectDialog.open()
+            }
+            Action {
+                text: "打开工程…"
+                enabled: shellWindow.canCreateOrOpen
+                onTriggered: openProjectFileDialog.open()
+            }
+            Menu {
+                id: recentMenuItems
+                objectName: "recentProjectsMenu"
+                title: "最近工程"
+                popupType: Popup.Window
+                enabled: shellWindow.canCreateOrOpen
+                Instantiator {
+                    model: projectModel.recentProjects
+                    delegate: MenuItem {
+                        required property string modelData
+                        text: modelData
+                        onTriggered: projectModel.openProject(modelData)
+                    }
+                    onObjectAdded: (index, object) => recentMenuItems.insertItem(index, object)
+                    onObjectRemoved: (index, object) => recentMenuItems.removeItem(object)
+                }
+                MenuSeparator {}
+                Action {
+                    text: projectModel.recentProjects.length > 0 ? "清空列表" : "（无）"
+                    enabled: projectModel.recentProjects.length > 0
+                    onTriggered: projectModel.clearRecentProjects()
+                }
+            }
+            Action {
+                text: "保存工程"
+                enabled: shellWindow.canSave
+                onTriggered: projectModel.saveProject()
+            }
+            MenuSeparator {}
+            Action {
+                text: "导入网格…"
+                enabled: shellWindow.canImport
+                onTriggered: importDialog.open()
+            }
+            Action {
+                text: "导出网格…"
+                enabled: shellWindow.canExport
+                onTriggered: exportMeshFileDialog.open()
+            }
+            Action {
+                text: "视口截图…"
+                enabled: shellWindow.canScreenshot
+                onTriggered: screenshotFileDialog.open()
+            }
+            MenuSeparator {}
+            Action {
+                text: "退出"
+                onTriggered: shellWindow.close()
+            }
+        }
+        Menu {
+            title: "视图(&V)"
+            popupType: Popup.Window
+            Repeater {
+                model: [["front", "前视图"], ["back", "后视图"], ["left", "左视图"], ["right", "右视图"], ["top", "顶视图"], ["bottom", "底视图"], ["iso", "轴测图"]]
+                delegate: MenuItem {
+                    required property var modelData
+                    text: modelData[1]
+                    enabled: shellWindow.meshActive
+                    onTriggered: viewportPane.setViewPreset(modelData[0])
+                }
+            }
+            MenuItem {
+                text: "复位视图"
+                enabled: shellWindow.meshActive
+                onTriggered: viewportPane.resetView()
+            }
+        }
+        Menu {
+            title: "网格(&M)"
+            popupType: Popup.Window
+            Action {
+                text: "质量诊断"
+                enabled: shellWindow.canDiagnose
+                onTriggered: projectModel.beginDiagnoseActiveMesh()
+            }
+        }
+    }
+
     header: ToolBar {
         RowLayout {
             anchors.fill: parent
@@ -254,6 +410,18 @@ ApplicationWindow {
                 elide: Text.ElideMiddle
                 text: shellWindow.projectOpen ? projectModel.currentName : "可视化渲染测试"
             }
+        }
+    }
+
+    DropArea {
+        objectName: "fileDropArea"
+        anchors.fill: parent
+        keys: ["text/uri-list"]
+        onDropped: drop => {
+            if (!drop.hasUrls)
+                return;
+            drop.acceptProposedAction();
+            shellWindow.handleDrop(drop.urls);
         }
     }
 

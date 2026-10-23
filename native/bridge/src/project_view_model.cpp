@@ -11,6 +11,7 @@
 #include <QMetaType>
 #include <QObject>
 #include <QPromise>
+#include <QSettings>
 #include <QString>
 #include <QUrl>
 #include <QVariantMap>
@@ -734,14 +735,76 @@ bool ProjectViewModel::fail(const QString& code, const QString& category, const 
     return false;
 }
 
+QString ProjectViewModel::recentProjectsFile() {
+    // 独立 ini 文件，避免依赖 QCoreApplication 组织名；测试启用 QStandardPaths 测试模式隔离。
+    const QString directory =
+        panta::qt_adapter::standard_location(panta::qt_adapter::StandardLocation::UserConfig);
+    return directory.isEmpty() ? QString()
+                               : QDir(directory).filePath(QStringLiteral("recent-projects.ini"));
+}
+
+QStringList ProjectViewModel::recentProjects() const {
+    const QString file = recentProjectsFile();
+    if (file.isEmpty())
+        return {};
+    const QSettings settings(file, QSettings::IniFormat);
+    QStringList result;
+    for (const QString& path : settings.value(QStringLiteral("recent/paths")).toStringList()) {
+        if (!path.isEmpty() && QFileInfo::exists(path) && !result.contains(path))
+            result.append(path);
+    }
+    return result;
+}
+
+void ProjectViewModel::rememberRecentProject(const QString& path) {
+    const QString file = recentProjectsFile();
+    if (file.isEmpty())
+        return;
+    const QString absolute = QFileInfo(path).absoluteFilePath();
+    QStringList paths = recentProjects();
+    paths.removeAll(absolute);
+    paths.prepend(absolute);
+    while (paths.size() > kMaxRecentProjects)
+        paths.removeLast();
+    QSettings settings(file, QSettings::IniFormat);
+    settings.setValue(QStringLiteral("recent/paths"), paths);
+    settings.sync();
+    emit recentProjectsChanged();
+}
+
+void ProjectViewModel::clearRecentProjects() {
+    const QString file = recentProjectsFile();
+    if (file.isEmpty())
+        return;
+    QSettings settings(file, QSettings::IniFormat);
+    settings.remove(QStringLiteral("recent"));
+    settings.sync();
+    emit recentProjectsChanged();
+}
+
+QString ProjectViewModel::classifyDroppedUrl(const QUrl& url) const {
+    if (!url.isLocalFile())
+        return {};
+    const QString suffix = QFileInfo(url.toLocalFile()).suffix().toLower();
+    if (suffix == QLatin1String("panta"))
+        return QStringLiteral("project");
+    static const QStringList mesh_suffixes = {QStringLiteral("stl"), QStringLiteral("vtu"),
+                                              QStringLiteral("vtp"), QStringLiteral("vtk"),
+                                              QStringLiteral("obj"), QStringLiteral("ply")};
+    return mesh_suffixes.contains(suffix) ? QStringLiteral("mesh") : QString();
+}
+
 bool ProjectViewModel::applySnapshot(const panta::ffi::ProjectSnapshot& snapshot) {
     const QString path = QString::fromUtf8(snapshot.path);
     const QString name = QString::fromUtf8(snapshot.name);
     const bool changed =
         m_currentPath != path || m_currentName != name || m_dirty != snapshot.dirty;
+    const bool path_changed = m_currentPath != path;
     m_currentPath = path;
     m_currentName = name;
     m_dirty = snapshot.dirty;
+    if (path_changed && !path.isEmpty())
+        rememberRecentProject(path);
     if (changed) {
         emit projectChanged();
     }

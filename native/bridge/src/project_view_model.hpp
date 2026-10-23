@@ -66,6 +66,8 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     Q_PROPERTY(double importProgress READ importProgress NOTIFY taskProgressChanged)
     Q_PROPERTY(double exportProgress READ exportProgress NOTIFY taskProgressChanged)
     Q_PROPERTY(double diagnosticsProgress READ diagnosticsProgress NOTIFY taskProgressChanged)
+    /// 最近打开/创建的工程路径（新到旧，最多 10 个，已不存在的文件在读取时剔除；task 018）。
+    Q_PROPERTY(QStringList recentProjects READ recentProjects NOTIFY recentProjectsChanged)
 
   public:
     explicit ProjectViewModel(QObject* parent = nullptr);
@@ -191,6 +193,12 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     /// 完成信号仍会到达，结果为 project.export_cancelled / project.diagnostics_cancelled。
     Q_INVOKABLE bool cancelExport();
     Q_INVOKABLE bool cancelDiagnostics();
+    /// 清空最近工程列表。
+    Q_INVOKABLE void clearRecentProjects();
+    /// 拖放分类：返回 "project"（.panta）、"mesh"（可导入网格扩展名）或空串（不支持）。
+    Q_INVOKABLE QString classifyDroppedUrl(const QUrl& url) const;
+    [[nodiscard]] QStringList recentProjects() const;
+    static constexpr int kMaxRecentProjects = 10;
 
   signals:
     void errorChanged();
@@ -198,6 +206,7 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     /// operation 为 create/open/save；成功表示已提交并发布快照。
     void projectOperationFinished(const QString& operation, bool succeeded);
     void projectChanged();
+    void recentProjectsChanged();
     void projectCreated(const QString& path);
     void projectOpened(const QString& path);
     void projectSaved(const QString& path);
@@ -222,6 +231,8 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     virtual void startBackgroundWaiter(std::function<void()> work);
 
   private:
+    void rememberRecentProject(const QString& path);
+    [[nodiscard]] static QString recentProjectsFile();
     bool beginProjectOperation(panta::ffi::ProjectOperationInput input, const QString& operation);
     void prepareActiveMesh();
     bool fail(const panta::ffi::ProjectDiagnostic& diagnostic);

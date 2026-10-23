@@ -45,6 +45,15 @@ DialogWindow {
         requestActivate();
     }
 
+    // 拖放导入（task 018）：打开对话框并预填源文件，仍需用户确认网格类型与单位。
+    function openWithFile(path: string) {
+        open();
+        if (!path)
+            return;
+        sourcePath = path;
+        projectModel.inspectStl(path);
+    }
+
     function chooseFile() {
         fileDialog.open();
     }
