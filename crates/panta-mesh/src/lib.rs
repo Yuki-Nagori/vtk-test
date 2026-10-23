@@ -75,6 +75,17 @@ impl std::error::Error for StlError {}
 /// 优先识别长度精确匹配的 binary STL，其余输入按严格 UTF-8 ASCII STL
 /// 读取。ASCII 的 vertex 行必须恰好有三个数值字段；至少包含一个完整三角形。
 pub fn parse_stl(bytes: &[u8]) -> Result<SurfaceMesh, StlError> {
+    parse_stl_with_progress(bytes, &|_| {})
+}
+
+/// 解析进度上报间隔（三角面或文本行）。
+const PARSE_PROGRESS_STRIDE: usize = 1 << 16;
+
+/// 与 [`parse_stl`] 相同，另按 [`PARSE_PROGRESS_STRIDE`] 间隔上报 0..=1 的解析进度。
+pub fn parse_stl_with_progress(
+    bytes: &[u8],
+    on_progress: &dyn Fn(f64),
+) -> Result<SurfaceMesh, StlError> {
     if bytes.is_empty() {
         return Err(StlError::Empty);
     }
@@ -86,12 +97,12 @@ pub fn parse_stl(bytes: &[u8]) -> Result<SurfaceMesh, StlError> {
         ) as usize;
         let expected = binary_size(count)?;
         if count > 0 && expected == bytes.len() {
-            parse_binary(bytes, count)?
+            parse_binary(bytes, count, on_progress)?
         } else {
-            parse_ascii(bytes)?
+            parse_ascii(bytes, on_progress)?
         }
     } else {
-        parse_ascii(bytes)?
+        parse_ascii(bytes, on_progress)?
     };
     if mesh
         .summary()
@@ -119,9 +130,16 @@ fn checked_point(point: [f64; 3]) -> Result<[f64; 3], StlError> {
     }
 }
 
-fn parse_binary(bytes: &[u8], count: usize) -> Result<SurfaceMesh, StlError> {
+fn parse_binary(
+    bytes: &[u8],
+    count: usize,
+    on_progress: &dyn Fn(f64),
+) -> Result<SurfaceMesh, StlError> {
     let mut triangles = Vec::with_capacity(count);
     for triangle in 0..count {
+        if triangle.is_multiple_of(PARSE_PROGRESS_STRIDE) {
+            on_progress(triangle as f64 / count as f64);
+        }
         let base = 84 + triangle * 50 + 12;
         let mut points = [[0.0; 3]; 3];
         for (vertex, point) in points.iter_mut().enumerate() {
@@ -137,15 +155,22 @@ fn parse_binary(bytes: &[u8], count: usize) -> Result<SurfaceMesh, StlError> {
         }
         triangles.push(points);
     }
+    on_progress(1.0);
     Ok(SurfaceMesh { triangles })
 }
 
-fn parse_ascii(bytes: &[u8]) -> Result<SurfaceMesh, StlError> {
+fn parse_ascii(bytes: &[u8], on_progress: &dyn Fn(f64)) -> Result<SurfaceMesh, StlError> {
     let text = std::str::from_utf8(bytes).map_err(|_| StlError::InvalidEncoding)?;
     let mut triangles = Vec::new();
     let mut triangle = [[0.0; 3]; 3];
     let mut vertex = 0;
-    for line in text.lines() {
+    let total = text.len().max(1) as f64;
+    for (index, line) in text.lines().enumerate() {
+        if index.is_multiple_of(PARSE_PROGRESS_STRIDE) {
+            // 行切片指向原文本，偏移即已消费字节数。
+            let consumed = line.as_ptr() as usize - text.as_ptr() as usize;
+            on_progress(consumed as f64 / total);
+        }
         let mut fields = line.split_whitespace();
         if !fields
             .next()
@@ -174,6 +199,7 @@ fn parse_ascii(bytes: &[u8]) -> Result<SurfaceMesh, StlError> {
     if triangles.is_empty() || vertex != 0 {
         return Err(StlError::InvalidData);
     }
+    on_progress(1.0);
     Ok(SurfaceMesh { triangles })
 }
 
@@ -409,6 +435,21 @@ fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binary_and_ascii_parse_report_monotonic_progress_to_completion() -> Result<(), StlError> {
+        let count = 70_000usize;
+        let mut bytes = vec![0u8; 84 + count * 50];
+        bytes[80..84].copy_from_slice(&(count as u32).to_le_bytes());
+        let seen = std::cell::RefCell::new(Vec::new());
+        parse_stl_with_progress(&bytes, &|value| seen.borrow_mut().push(value))?;
+        let ascii = "solid x\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 2 0\nendsolid\n";
+        parse_stl_with_progress(ascii.as_bytes(), &|value| seen.borrow_mut().push(value))?;
+        let seen = seen.into_inner();
+        assert_eq!(&seen[..3], &[0.0, 65_536.0 / 70_000.0, 1.0]);
+        assert_eq!(&seen[3..], &[0.0, 1.0]);
+        Ok(())
+    }
 
     #[test]
     fn ascii_accepts_exact_vertices_and_reports_bounds() -> Result<(), StlError> {

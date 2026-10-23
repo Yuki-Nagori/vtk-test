@@ -13,6 +13,7 @@ static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
 pub(super) fn write_surface_mesh_asset_or_reuse(
     path: &Path,
     mesh: &SurfaceMesh,
+    on_progress: &dyn Fn(f64),
 ) -> Result<Option<(String, bool)>, ProjectError> {
     let (bytes, digest) = encode_mesh_asset_ref(MeshAssetRef::Surface(mesh)).map_err(|error| {
         ProjectError::ImportAssetWriteFailed(format!("encode mesh asset: {error}"))
@@ -30,11 +31,18 @@ pub(super) fn write_surface_mesh_asset_or_reuse(
         }
         return Ok(None);
     }
-    publish_mesh_bytes(path, &bytes)?;
+    publish_mesh_bytes(path, &bytes, &|value| on_progress(0.2 + value * 0.8))?;
     Ok(Some((digest, true)))
 }
 
-fn publish_mesh_bytes(path: &Path, bytes: &[u8]) -> Result<(), ProjectError> {
+/// 暂存写入按 4 MiB 块上报进度。
+const WRITE_PROGRESS_CHUNK: usize = 4 * 1024 * 1024;
+
+fn publish_mesh_bytes(
+    path: &Path,
+    bytes: &[u8],
+    on_progress: &dyn Fn(f64),
+) -> Result<(), ProjectError> {
     let parent = path
         .parent()
         .ok_or_else(|| ProjectError::Io("mesh asset has no parent directory".to_owned()))?;
@@ -50,7 +58,16 @@ fn publish_mesh_bytes(path: &Path, bytes: &[u8]) -> Result<(), ProjectError> {
         .file
         .as_mut()
         .ok_or_else(|| ProjectError::Io("mesh staging file closed".to_owned()))?;
-    file.write_all(bytes)
+    let total = bytes.len().max(1) as f64;
+    let mut written = 0usize;
+    bytes
+        .chunks(WRITE_PROGRESS_CHUNK)
+        .try_for_each(|chunk| {
+            file.write_all(chunk)?;
+            written += chunk.len();
+            on_progress(written as f64 / total);
+            Ok(())
+        })
         .and_then(|()| file.sync_all())
         .map_err(|error| ProjectError::Io(format!("{}: {error}", guard.path.display())))?;
     drop(guard.file.take());

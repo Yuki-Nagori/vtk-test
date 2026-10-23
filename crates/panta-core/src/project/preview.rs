@@ -10,6 +10,7 @@ use std::{path::Path, sync::Arc};
 pub(super) struct PendingPreview {
     request: u64,
     cancelled: Arc<AtomicBool>,
+    progress: Arc<panta_mesh::Progress>,
     receiver: Receiver<Result<(StlImportSession, StlImportPreview), ProjectError>>,
 }
 
@@ -30,14 +31,19 @@ impl ProjectService {
         self.clear_stl_preview();
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancelled = Arc::clone(&cancelled);
+        let progress = Arc::new(panta_mesh::Progress::new());
+        let worker_progress = Arc::clone(&progress);
         let source = source.to_path_buf();
         let (sender, receiver) = mpsc::channel();
         self.execution
             .reads
             .submit(move || {
                 let mut session = StlImportSession::default();
-                let result =
-                    session.preview_checked(&source, || worker_cancelled.load(Ordering::Acquire));
+                let result = session.preview_with_progress(
+                    &source,
+                    || worker_cancelled.load(Ordering::Acquire),
+                    &|value| worker_progress.set_fraction(value),
+                );
                 let result = match result {
                     Ok(preview) => Ok((session, preview)),
                     Err(CheckedReadError::Failed(error)) => Err(import::map_import_error(error)),
@@ -54,9 +60,18 @@ impl ProjectService {
         self.pending_preview = Some(PendingPreview {
             request,
             cancelled,
+            progress,
             receiver,
         });
         Ok(request)
+    }
+
+    /// 预检进度 0..=1（读取 0–50%，解析 50–100%）；无匹配进行中请求时为 None。
+    pub fn stl_preview_progress(&self, request: u64) -> Option<f64> {
+        self.pending_preview
+            .as_ref()
+            .filter(|pending| pending.request == request)
+            .map(|pending| pending.progress.fraction())
     }
 
     /// 拉取指定请求：None 表示尚未完成；成功会保存同一来源快照供确认导入。
@@ -125,8 +140,11 @@ mod tests {
         service.pending_preview = Some(PendingPreview {
             request: 2,
             cancelled: Arc::clone(&cancelled),
+            progress: Arc::default(),
             receiver,
         });
+        assert_eq!(service.stl_preview_progress(2), Some(0.0));
+        assert_eq!(service.stl_preview_progress(1), None);
         assert!(service.finish_stl_preview(2)?.is_none());
         assert!(service.finish_stl_preview(1).is_err());
         sender.send(Ok((
@@ -159,6 +177,7 @@ mod tests {
         service.pending_preview = Some(PendingPreview {
             request: 1,
             cancelled: Arc::new(AtomicBool::new(false)),
+            progress: Arc::default(),
             receiver,
         });
         assert_eq!(

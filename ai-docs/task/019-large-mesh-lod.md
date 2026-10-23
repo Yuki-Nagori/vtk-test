@@ -91,3 +91,9 @@ cargo run --release -p panta-mesh --example scale_bench -- --triangles 1B --dir 
 - 侧栏显示“大网格：显示简化 LOD N 面 / 源 M 面…”提示；拾取沿用显示三角形，因此在 LOD 上直接可用，坐标为近似值。
 - 需真机/GPU 验证：大资产实际显示、帧率、LOD 上拾取精度。
 - 导入解析的细粒度进度另开 PR。
+
+## 后续：导入解析细粒度进度（PR feat/import-progress）
+
+- 预检：读取按 256 KiB 块上报（0–50%），STL 解析按 65536 三角面 / 文本行上报（50–100%）；其他格式解析只报完成（保守，后续可逐格式补）。
+- 确认导入：复核读取/解析 5–50%，缩放 60%，资产写入 60–90%（编码完成 20%，暂存写入按 4 MiB 块），清单提交 100%。资产格式与摘要不变。
+- FFI `project_service_stl_preview_progress`；`importPreviewProgress` 属性；导入窗口显示百分比。

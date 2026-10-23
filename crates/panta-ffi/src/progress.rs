@@ -31,6 +31,17 @@ pub(super) fn project_service_stl_import_progress(
     service.service.stl_import_progress(request).unwrap_or(-1.0)
 }
 
+/// 导入预检进度 0..=1；没有匹配的进行中预检时返回 -1。
+pub(super) fn project_service_stl_preview_progress(
+    service: &crate::ProjectService,
+    request: u64,
+) -> f64 {
+    service
+        .service
+        .stl_preview_progress(request)
+        .unwrap_or(-1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

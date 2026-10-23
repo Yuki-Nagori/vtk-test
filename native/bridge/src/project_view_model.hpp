@@ -65,6 +65,7 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     Q_PROPERTY(QVariantMap meshQuality READ meshQuality NOTIFY meshQualityChanged)
     /// 后台任务进度 0..=1；没有对应任务进行时为 -1（task 016）。
     Q_PROPERTY(double importProgress READ importProgress NOTIFY taskProgressChanged)
+    Q_PROPERTY(double importPreviewProgress READ importPreviewProgress NOTIFY taskProgressChanged)
     Q_PROPERTY(double exportProgress READ exportProgress NOTIFY taskProgressChanged)
     Q_PROPERTY(double diagnosticsProgress READ diagnosticsProgress NOTIFY taskProgressChanged)
     /// 最近打开/创建的工程路径（新到旧，最多 10 个，已不存在的文件在读取时剔除；task 018）。
@@ -116,6 +117,7 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     [[nodiscard]] const QString& importedDimensions() const;
     [[nodiscard]] quint64 importedTriangleCount() const;
     [[nodiscard]] QString activeMeshLodStatus() const;
+    [[nodiscard]] double importPreviewProgress() const;
     [[nodiscard]] bool importPreviewPending() const;
     [[nodiscard]] bool importPreviewReady() const;
     [[nodiscard]] const QString& importPreviewName() const;

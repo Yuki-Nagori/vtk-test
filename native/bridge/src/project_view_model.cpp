@@ -73,7 +73,8 @@ ProjectViewModel::ProjectViewModel(QObject* parent)
     m_taskProgressPoll.setInterval(100);
     connect(&m_taskProgressPoll, &QTimer::timeout, this, [this] {
         emit taskProgressChanged();
-        if (!m_importPending && !m_exportProgress && !m_diagnosticsProgress)
+        if (!m_importPending && !m_importPreviewPending && !m_exportProgress &&
+            !m_diagnosticsProgress)
             m_taskProgressPoll.stop();
     });
     reset_documents();
@@ -686,6 +687,7 @@ bool ProjectViewModel::inspectStl(const QString& rawPath) {
     m_previewRequest = result.value;
     m_importPreviewPending = true;
     m_importPreviewPoll.start();
+    m_taskProgressPoll.start();
     emit importPreviewChanged();
     return true;
 }
@@ -997,4 +999,10 @@ QString panta::bridge::ProjectViewModel::activeMeshLodStatus() const {
                "大网格：显示简化 LOD %1 面 / 源 %2 面；拾取坐标为近似值，诊断与导出不可用")
         .arg(m_activeMeshTriangles)
         .arg(m_activeLodSourceTriangles);
+}
+
+double panta::bridge::ProjectViewModel::importPreviewProgress() const {
+    if (!m_importPreviewPending || m_previewRequest == 0)
+        return -1.0;
+    return panta::ffi::project_service_stl_preview_progress(*m_service, m_previewRequest);
 }

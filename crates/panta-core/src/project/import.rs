@@ -207,10 +207,15 @@ fn commit_import(
     phase: &AtomicU8,
     progress: &Progress,
 ) -> Result<(super::ProjectState, ImportRecord, panta_mesh::SurfaceMesh), ProjectError> {
-    // 阶段式进度：复核读取/解析 5–50%，缩放 60%，资产写出 90%，清单提交 100%。
+    // 细粒度进度：复核读取/解析 5–50%（按字节 / 三角面），缩放 60%，资产写出 60–90%（按块），
+    // 清单提交 100%。
     progress.set_fraction(0.05);
     let mut prepared = session
-        .prepare_checked(source, || phase.load(Ordering::Acquire) == IMPORT_CANCELLED)
+        .prepare_with_progress(
+            source,
+            || phase.load(Ordering::Acquire) == IMPORT_CANCELLED,
+            &|value| progress.set_fraction(0.05 + value * 0.45),
+        )
         .map_err(|error| match error {
             CheckedReadError::Failed(error) => map_import_error(error),
             CheckedReadError::Cancelled(_) => import_cancelled(),
@@ -226,8 +231,13 @@ fn commit_import(
         .path
         .parent()
         .ok_or_else(|| ProjectError::Io("project has no package directory".to_owned()))?;
-    let (asset_reference, asset_path, created) =
-        write_import_mesh_asset(project_root, &mut record, &prepared.mesh, Some(phase))?;
+    let (asset_reference, asset_path, created) = write_import_mesh_asset(
+        project_root,
+        &mut record,
+        &prepared.mesh,
+        Some(phase),
+        &|value| progress.set_fraction(0.6 + value * 0.3),
+    )?;
     progress.set_fraction(0.9);
     candidate
         .mesh_assets
@@ -275,6 +285,7 @@ fn write_import_mesh_asset(
     record: &mut ImportRecord,
     mesh: &panta_mesh::SurfaceMesh,
     phase: Option<&AtomicU8>,
+    on_progress: &dyn Fn(f64),
 ) -> Result<(MeshAssetRef, std::path::PathBuf, bool), ProjectError> {
     let base_id = record.mesh_asset_id.clone();
     for attempt in 0..32 {
@@ -291,8 +302,9 @@ fn write_import_mesh_asset(
         let asset_path =
             super::service::resolve_asset_path(project_root, &asset_reference.relative_path)
                 .map_err(|error| ProjectError::ImportAssetWriteFailed(error.to_string()))?;
-        let write_result = mesh_assets::write_surface_mesh_asset_or_reuse(&asset_path, mesh)
-            .map_err(|error| ProjectError::ImportAssetWriteFailed(error.to_string()))?;
+        let write_result =
+            mesh_assets::write_surface_mesh_asset_or_reuse(&asset_path, mesh, on_progress)
+                .map_err(|error| ProjectError::ImportAssetWriteFailed(error.to_string()))?;
         if let Some((digest, created)) = write_result {
             asset_reference.digest = digest;
             return Ok((asset_reference, asset_path, created));
