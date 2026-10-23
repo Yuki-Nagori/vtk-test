@@ -52,10 +52,10 @@ pub struct Outcome {
 }
 
 /// 资产读取、校验或后台调度的失败诊断。
-struct ActivationFailure {
-    code: &'static str,
-    category: &'static str,
-    detail: String,
+pub(crate) struct ActivationFailure {
+    pub(crate) code: &'static str,
+    pub(crate) category: &'static str,
+    pub(crate) detail: String,
 }
 
 struct AttemptEntry {
@@ -266,6 +266,17 @@ fn run_attempt(
 ) {
     let result = load_asset(request, || cancel_requested.load(Ordering::SeqCst));
     coordinator.complete(attempt, result);
+}
+
+/// 同步读取已提交 Surface 资产（导出等只读命令复用激活的校验路径，不可取消）。
+pub(crate) fn load_committed_surface(
+    request: ActivationRequest,
+) -> Result<SurfaceMesh, ActivationFailure> {
+    load_asset(request, || false)?.ok_or(ActivationFailure {
+        code: "project.asset_read_failed",
+        category: "io",
+        detail: "asset read did not complete".to_owned(),
+    })
 }
 
 fn load_asset(

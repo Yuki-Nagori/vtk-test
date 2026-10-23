@@ -1,6 +1,7 @@
 //! 格式识别和来源快照；格式专属算法由对应领域后端执行。
 //! STEP / IGES 的几何读取由后续 OCCT adapter 接入。
 
+pub mod export;
 pub mod formats;
 
 use panta_mesh::{StlError, SurfaceMesh, SurfaceSummary, parse_stl, surface_mesh_expanded_bytes};

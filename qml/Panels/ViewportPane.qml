@@ -9,6 +9,11 @@ PanelSurface {
 
     property var meshSource: null
     property bool reducedMotion: false
+
+    // 截图由原生视口读回当前帧；返回中文错误文案，空串表示成功。
+    function saveScreenshot(url: url): string {
+        return viewport.saveScreenshot(url);
+    }
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
@@ -18,6 +23,7 @@ PanelSurface {
             Layout.fillHeight: true
 
             CaeViewport {
+                id: viewport
                 objectName: "caeViewport"
                 anchors.fill: parent
                 meshSource: panel.meshSource

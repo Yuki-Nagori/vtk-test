@@ -424,6 +424,18 @@ mod tests {
                 context,
             ),
             (
+                ProjectError::ExportUnsupportedFormat(context.into()),
+                "project.export_unsupported_format",
+                "format",
+                context,
+            ),
+            (
+                ProjectError::ExportWriteFailed(context.into()),
+                "project.export_write_failed",
+                "io",
+                context,
+            ),
+            (
                 ProjectError::Io(context.into()),
                 "project.io",
                 "io",

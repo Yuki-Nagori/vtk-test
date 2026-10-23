@@ -370,6 +370,11 @@ pub fn project_error_message(code: &str) -> &'static str {
         "project.import_source_changed" => "预览后网格文件已更改，请重新选择。",
         "project.import_parse_failed" => "无法读取所选网格文件。",
         "project.import_asset_write_failed" => "无法将网格资产保存到工程中。",
+        "project.export_unsupported_format" => "请选择导出格式：STL、VTU、VTP、VTK、OBJ 或 PLY。",
+        "project.export_too_large" => "网格超出所选导出格式的容量上限。",
+        "project.export_source_unavailable" => "无法读取要导出的网格资产。",
+        "project.export_write_failed" => "无法写入导出文件。",
+        "project.mesh_not_resident" => "请先打开要导出的网格。",
         _ => "无法完成工程操作。",
     }
 }

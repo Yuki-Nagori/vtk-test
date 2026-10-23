@@ -2,10 +2,13 @@
 /// 适配层驱动渲染；第三方实现细节全部在 src/vtk/。
 #include "mesh_source.hpp"
 #include "vtk/vtk_viewport.hpp"
+#include <QFileInfo>
+#include <QImage>
 #include <QObject>
 #include <QPointF>
 #include <QPointer>
 #include <QRectF>
+#include <QSaveFile>
 #include <QtCore/qtmetamacros.h>
 #include <algorithm>
 #include <memory>
@@ -60,6 +63,21 @@ void CaeViewport::setMeshSource(QObject* source) {
     }
     refresh_mesh();
     emit meshSourceChanged();
+}
+
+QString CaeViewport::saveScreenshot(const QUrl& url) {
+    if (!url.isLocalFile())
+        return QStringLiteral("请选择此设备上的保存位置。");
+    const QString path = url.toLocalFile();
+    if (QFileInfo(path).suffix().compare(QStringLiteral("png"), Qt::CaseInsensitive) != 0)
+        return QStringLiteral("视口截图仅支持 PNG 格式。");
+    const QImage image = impl_->backend->capture_image();
+    if (image.isNull())
+        return QStringLiteral("视口尚未就绪，无法截图。");
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly) || !image.save(&file, "PNG") || !file.commit())
+        return QStringLiteral("无法保存视口截图。");
+    return {};
 }
 
 void CaeViewport::refresh_mesh() {

@@ -21,8 +21,8 @@ pub use panta_import::{
     StlImportPreview, default_display_name,
 };
 pub use panta_mesh::{DEFAULT_RELATIVE_WELD_TOLERANCE, DiagnosticOptions, SurfaceDiagnostics};
-pub use service::ProjectService;
 pub(crate) use service::resolve_asset_path;
+pub use service::{ProjectService, export_mesh_file};
 pub use workspace::{
     ActivationRequest as WorkspaceActivationRequest, ActivationResultKind, CloseDocumentResult,
     DocumentDiagnostic, DocumentKind, DocumentState, DocumentWorkspace, WorkspaceDocument,

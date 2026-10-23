@@ -37,7 +37,7 @@ use project_operation::{
 };
 mod display;
 pub use display::MeshDisplayInput;
-use display::{prepare_mesh_display, project_service_mesh_display_input};
+use display::{export_mesh_display, prepare_mesh_display, project_service_mesh_display_input};
 mod mesh;
 use mesh::{mesh_coordinates, mesh_validate_tet};
 
@@ -250,6 +250,7 @@ pub mod bridge {
             import_id: &str,
         ) -> Box<MeshDisplayInput>;
         fn prepare_mesh_display(input: Box<MeshDisplayInput>) -> SurfaceMeshSnapshotResult;
+        fn export_mesh_display(input: Box<MeshDisplayInput>, path: &str) -> ProjectDiagnostic;
 
         fn project_service_new() -> Box<ProjectService>;
         #[rust_name = "project_service_execute_response"]

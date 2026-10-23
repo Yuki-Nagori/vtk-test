@@ -359,6 +359,63 @@ void ProjectViewModel::prepareActiveMesh() {
         *m_service, m_activeDocumentId.toStdString()));
 }
 
+bool ProjectViewModel::beginExportActiveMeshUrl(const QUrl& url) {
+    clearError();
+    if (m_exportPending)
+        return fail(QStringLiteral("project.command_invalid"), QStringLiteral("state"),
+                    QStringLiteral("export already pending"));
+    const QString path = localPath(url);
+    if (path.isEmpty())
+        return fail(QStringLiteral("project.export_write_failed"), QStringLiteral("io"),
+                    url.toString());
+    std::string boundaryPath;
+    QString conversionError;
+    if (!toBoundaryText(path, &boundaryPath, &conversionError))
+        return fail(conversionError);
+    if (m_activeDocumentId.isEmpty())
+        return fail(QStringLiteral("project.mesh_not_resident"), QStringLiteral("state"));
+    using Input = rust::Box<panta::ffi::MeshDisplayInput>;
+    using Result = std::shared_ptr<panta::ffi::ProjectDiagnostic>;
+    using Watcher = QFutureWatcher<Result>;
+    // 共享快照在 GUI 线程捕获（只增加引用计数），写盘与编码在后台线程完成。
+    const auto input =
+        std::make_shared<std::optional<Input>>(panta::ffi::project_service_mesh_display_input(
+            *m_service, m_activeDocumentId.toStdString()));
+    const auto result = std::make_shared<QPromise<Result>>();
+    auto watcher = std::make_unique<Watcher>();
+    result->start();
+    watcher->setFuture(result->future());
+    connect(watcher.get(), &Watcher::finished, watcher.get(), &QObject::deleteLater);
+    connect(
+        watcher.get(), &Watcher::finished, this,
+        [this, future = result->future(), path] {
+            m_exportPending = false;
+            emit exportPendingChanged();
+            const auto diagnostic = future.result();
+            const bool succeeded = diagnostic && diagnostic->code.empty();
+            if (!succeeded && diagnostic)
+                fail(*diagnostic);
+            emit exportFinished(path, succeeded);
+        },
+        Qt::QueuedConnection);
+    try {
+        startBackgroundWaiter([input, result, boundaryPath] {
+            auto diagnostic = std::make_shared<panta::ffi::ProjectDiagnostic>(
+                panta::ffi::export_mesh_display(std::move(input->value()), boundaryPath));
+            input->reset();
+            result->addResult(diagnostic);
+            result->finish();
+        });
+    } catch (const std::system_error& error) {
+        return fail(QStringLiteral("project.io"), QStringLiteral("io"),
+                    QString::fromUtf8(error.what()));
+    }
+    watcher.release()->setParent(this);
+    m_exportPending = true;
+    emit exportPendingChanged();
+    return true;
+}
+
 bool ProjectViewModel::renameProject(const QString& name) {
     clearError();
     std::string boundaryName;
