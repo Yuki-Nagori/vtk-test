@@ -52,4 +52,19 @@ struct RustMeshValidationResult {
 /// 将 native DTO 编码并交给 Rust 领域校验；诊断顺序保持确定。
 RustMeshValidationResult validate_native_mesh_with_rust(const NativeTetMeshDto& mesh);
 
+/// 与导入体网格共用的 Rust 质量统计（task 021 子项 5）；`error_code` 为空表示成功。
+struct RustVolumeQuality {
+    std::string error_code;
+    std::uint64_t tet_count = 0;
+    double min_dihedral_degrees = 0.0;
+    double max_aspect_ratio = 0.0;
+    double mean_aspect_ratio = 0.0;
+    std::uint64_t poor_count = 0;
+};
+
+RustVolumeQuality volume_quality_with_rust(const NativeTetMeshDto& mesh);
+
+/// 与导入体网格共用的 VTU 体网格导出；返回稳定错误码，空串表示成功。
+std::string export_native_mesh_vtu_with_rust(const NativeTetMeshDto& mesh, const std::string& path);
+
 } // namespace panta::mesh

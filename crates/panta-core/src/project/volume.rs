@@ -49,9 +49,14 @@ impl ProjectService {
     /// 体网格导出 VTU（原始节点与四面体单元）；表面格式仍走现有导出（外表面）。
     pub fn export_volume_vtu(&self, import_id: &str, path: &Path) -> Result<(), ProjectError> {
         let volume = self.require_volume(import_id)?;
-        panta_import::export::export_tet_mesh_vtu(&volume, path)
-            .map_err(|error| ProjectError::ExportWriteFailed(error.to_string()))
+        export_tet_mesh_vtu(&volume, path)
     }
+}
+
+/// 与工程无关的体网格 VTU 导出（Netgen 生成结果复用同一写出路径）。
+pub fn export_tet_mesh_vtu(volume: &TetMesh, path: &Path) -> Result<(), ProjectError> {
+    panta_import::export::export_tet_mesh_vtu(volume, path)
+        .map_err(|error| ProjectError::ExportWriteFailed(error.to_string()))
 }
 
 pub fn section_along_axis(
