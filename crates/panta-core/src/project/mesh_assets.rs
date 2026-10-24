@@ -18,6 +18,26 @@ pub(super) fn write_mesh_asset_or_reuse(
     let (bytes, digest) = encode_mesh_asset_ref(mesh).map_err(|error| {
         ProjectError::ImportAssetWriteFailed(format!("encode mesh asset: {error}"))
     })?;
+    publish_or_reuse(path, &bytes, digest, on_progress)
+}
+
+/// 结果场 sidecar（task 029）与 Mesh 资产同样不可变：同内容复用，不同内容让调用方换路径。
+pub(super) fn write_result_asset_or_reuse(
+    path: &Path,
+    results: &panta_mesh::ResultSet,
+) -> Result<Option<(String, bool)>, ProjectError> {
+    let (bytes, digest) = panta_mesh::encode_result_asset(results).map_err(|error| {
+        ProjectError::ImportAssetWriteFailed(format!("encode result asset: {error}"))
+    })?;
+    publish_or_reuse(path, &bytes, digest, &|_| {})
+}
+
+fn publish_or_reuse(
+    path: &Path,
+    bytes: &[u8],
+    digest: String,
+    on_progress: &dyn Fn(f64),
+) -> Result<Option<(String, bool)>, ProjectError> {
     if path.exists() {
         let existing_len = fs::metadata(path)
             .map_err(|error| ProjectError::Io(format!("{}: {error}", path.display())))?
@@ -31,7 +51,7 @@ pub(super) fn write_mesh_asset_or_reuse(
         }
         return Ok(None);
     }
-    publish_mesh_bytes(path, &bytes, &|value| on_progress(0.2 + value * 0.8))?;
+    publish_mesh_bytes(path, bytes, &|value| on_progress(0.2 + value * 0.8))?;
     Ok(Some((digest, true)))
 }
 

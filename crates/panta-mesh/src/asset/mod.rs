@@ -12,9 +12,14 @@
 //! 而读取端无需先对整个文件做一次串行哈希。LOD 层级与时间步字段在 v3 中必须为 0，
 //! 读取端遇到非 0 值显式拒绝，后续格式版本再赋予语义。
 
+mod result;
 mod stream;
 mod v2;
 
+pub use result::{
+    FieldAssociation, FieldSummary, RESULT_ASSET_FORMAT_VERSION, ResultAssetReader, ResultField,
+    ResultSet, encode_result_asset,
+};
 pub use stream::{
     SurfaceAssetChunks, Triangle, VolumeAssetChunks, VolumeSource, VolumeStreamCounts,
     write_surface_asset_streaming, write_volume_asset_streaming,
@@ -40,6 +45,8 @@ const CHUNK_RAW_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 const ZSTD_LEVEL: i32 = 3;
 const SURFACE_KIND: u8 = 1;
 const TET_KIND: u8 = 2;
+/// 结果场 sidecar（task 029）：与网格共用容器格式，但网格读取端一律拒绝该类型。
+const RESULT_KIND: u8 = 3;
 const MILLIMETERS: u8 = 1;
 
 const CODEC_NONE: u8 = 0;
@@ -59,6 +66,10 @@ enum Stream {
     VolumeTets = 4,
     /// 边界三角形：3 × u32 节点 + u32 group。
     VolumeBoundary = 5,
+    /// 结果场表（task 029）：字节流，内容见 `result.rs`。
+    ResultTable = 6,
+    /// 结果场数值（task 029）：f64，按字段顺序排列，块不跨字段。
+    ResultValues = 7,
 }
 
 impl Stream {
@@ -69,6 +80,8 @@ impl Stream {
             3 => Self::VolumeNodes,
             4 => Self::VolumeTets,
             5 => Self::VolumeBoundary,
+            6 => Self::ResultTable,
+            7 => Self::ResultValues,
             _ => return None,
         })
     }
@@ -80,6 +93,8 @@ impl Stream {
             Self::VolumeNodes => 24,
             Self::VolumeTets => 20,
             Self::VolumeBoundary => 16,
+            Self::ResultTable => 1,
+            Self::ResultValues => 8,
         }
     }
 
@@ -249,7 +264,7 @@ fn encode_volume_records(
                 raw.extend_from_slice(&triangle.group.to_le_bytes());
             }
         }
-        Stream::SurfaceTriangles => {}
+        Stream::SurfaceTriangles | Stream::ResultTable | Stream::ResultValues => {}
     }
 }
 
@@ -373,12 +388,25 @@ pub fn is_readable_mesh_asset_version(version: u32) -> bool {
 
 /// 从完整固定长度头部验证格式并返回总字节长度，以便流式读取端先拒绝异常文件。
 pub fn mesh_asset_encoded_len(header: &[u8]) -> Result<usize, MeshAssetError> {
+    container_encoded_len(header, false)
+}
+
+/// 容器头部校验；`result` 为 true 时只接受结果场类型，否则只接受网格类型。
+fn container_encoded_len(header: &[u8], result: bool) -> Result<usize, MeshAssetError> {
     if header.len() != HEADER_SIZE || &header[..8] != MAGIC {
         return Err(MeshAssetError::InvalidHeader);
     }
     let version = read_u32_at(header, 8);
-    if !matches!(header[12], SURFACE_KIND | TET_KIND) {
+    let kind_allowed = if result {
+        header[12] == RESULT_KIND
+    } else {
+        matches!(header[12], SURFACE_KIND | TET_KIND)
+    };
+    if !kind_allowed {
         return Err(MeshAssetError::UnsupportedKind(header[12]));
+    }
+    if result && version != MESH_ASSET_FORMAT_VERSION {
+        return Err(MeshAssetError::UnsupportedVersion(version));
     }
     if header[13] != MILLIMETERS {
         return Err(MeshAssetError::UnsupportedUnits(header[13]));
@@ -439,7 +467,9 @@ fn parse_layout(header: &[u8], toc: &[u8], total_len: u64) -> Result<Layout, Mes
         let stream = Stream::from_byte(entry[0]).ok_or(MeshAssetError::UnsupportedLayout)?;
         let stream_allowed = match kind {
             SURFACE_KIND => stream == Stream::SurfaceTriangles,
-            _ => stream != Stream::SurfaceTriangles,
+            TET_KIND => (Stream::VolumeCounts..=Stream::VolumeBoundary).contains(&stream),
+            RESULT_KIND => matches!(stream, Stream::ResultTable | Stream::ResultValues),
+            _ => false,
         };
         if !stream_allowed || previous_stream.is_some_and(|previous| previous > stream) {
             return Err(MeshAssetError::UnsupportedLayout);

@@ -36,7 +36,7 @@ Rust 负责工程资产、场景文档、命令、异步操作与序列化，C++
 
 ## 存储契约
 
-完整工程容器尚未定型。工程服务的最小契约使用 `Documents/panta/<name>/<name>.panta` 目录包；当前 schema 4 将工程元数据、ImportRecord v4 和 `mesh_assets` 索引写入 `.panta`，Mesh payload 独立保存于 `assets/meshes/`。导入记录保存来源路径、名称、格式、源字节 SHA-256、mtime 与 size 作为诊断快照，不保留原始 STL 副本，也不在重开工程或加载 Mesh 时访问来源路径。当前开发阶段只支持 schema 4；schema 1–3 明确拒绝且不修改工程文件，实际迁移需求单独登记设计。工程保存通过写入租约及同目录临时文件替换主清单。该实现仍是最小工程契约，不代表完整工程格式。
+完整工程容器尚未定型。工程服务的最小契约使用 `Documents/panta/<name>/<name>.panta` 目录包；当前 schema 4 将工程元数据、ImportRecord v4 和 `mesh_assets` 索引写入 `.panta`，Mesh payload 独立保存于 `assets/meshes/`，体网格导入携带的结果场保存于 `assets/results/`（task 029）。导入记录保存来源路径、名称、格式、源字节 SHA-256、mtime 与 size 作为诊断快照，不保留原始 STL 副本，也不在重开工程或加载 Mesh 时访问来源路径。当前开发阶段只支持 schema 4；schema 1–3 明确拒绝且不修改工程文件，实际迁移需求单独登记设计。工程保存通过写入租约及同目录临时文件替换主清单。该实现仍是最小工程契约，不代表完整工程格式。
 
 工程写入由 Rust repository 租约协调，使用 fs4 文件锁覆盖同一工程的跨进程写入。争用返回 `project.command_invalid`，锁文件保持稳定。租约与清单替换前核对磁盘 revision，过期服务保留候选与旧磁盘内容；显式 unlock 后关闭句柄。该协议只协调遵守它的写入者，不拦截外部文件修改。
 

@@ -50,6 +50,7 @@ mod generated;
 mod import;
 mod mesh_assets;
 mod preview;
+mod results;
 mod volume;
 pub use volume::{
     StreamedAsset, StreamedKind, export_streamed_surface, export_streamed_volume_vtu,
@@ -306,6 +307,7 @@ mod tests {
             triangle_count: 1,
             dimensions: [1.0, 1.0, 0.0],
             generation: None,
+            skipped_result_fields: Vec::new(),
         });
         state.mesh_assets.insert(
             "mesh-overflow".to_owned(),
@@ -318,6 +320,7 @@ mod tests {
                 digest: "sha256:test".to_owned(),
                 units: "millimeters".to_owned(),
                 source_revision: None,
+                results: None,
             },
         );
 
@@ -390,6 +393,7 @@ mod tests {
                 triangle_count: 0,
                 dimensions: [0.0; 3],
                 generation: None,
+                skipped_result_fields: Vec::new(),
             });
         }
         assert!(service.workspace.open_import("import-2", "model_a"));
@@ -432,6 +436,7 @@ mod tests {
             triangle_count: 1,
             dimensions: [1.0, 1.0, 0.0],
             generation: None,
+            skipped_result_fields: Vec::new(),
         });
         state.mesh_assets.insert(
             "mesh-saved-import".to_owned(),
@@ -444,6 +449,7 @@ mod tests {
                 digest: "sha256:test".to_owned(),
                 units: "millimeters".to_owned(),
                 source_revision: None,
+                results: None,
             },
         );
 
@@ -489,6 +495,7 @@ mod tests {
             triangle_count: 1,
             dimensions: [1.0, 1.0, 0.0],
             generation: None,
+            skipped_result_fields: Vec::new(),
         });
         state.mesh_assets.insert(
             "mesh-invalid-saved-import".to_owned(),
@@ -501,6 +508,7 @@ mod tests {
                 digest: "sha256:test".to_owned(),
                 units: "millimeters".to_owned(),
                 source_revision: None,
+                results: None,
             },
         );
 

@@ -21,10 +21,15 @@ pub use vtk_xml::{parse_vtp, parse_vtu, parse_vtu_grid};
 
 /// 体网格导入的原始数据：首期只接受线性四面体（VTK 单元类型 10），
 /// 任何其他单元类型整体拒绝，不做部分导入。
+///
+/// `fields` 为来源中的节点 / 单元结果场（task 029），下标与 `points` / `tets` 一一对应；
+/// 不支持的数组不阻止网格导入，原因记入 `skipped_fields`。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RawGrid {
     pub points: Vec<[f64; 3]>,
     pub tets: Vec<[u32; 4]>,
+    pub fields: Vec<panta_mesh::ResultField>,
+    pub skipped_fields: Vec<String>,
 }
 
 impl RawGrid {
@@ -64,7 +69,67 @@ impl RawGrid {
         for point in &points {
             checked_point(*point)?;
         }
-        Ok(Self { points, tets })
+        Ok(Self {
+            points,
+            tets,
+            fields: Vec::new(),
+            skipped_fields: Vec::new(),
+        })
+    }
+
+    /// 收下一个来源数组：首期只接受 1 或 3 分量、个数与节点 / 单元数一致的数组；
+    /// 名称非法、重复或不受支持时跳过并记录原因，不影响网格本身。
+    /// 非有限值（NaN / ±inf）原样保留，作为缺失值统计，不替换为 0。
+    pub(crate) fn offer_field(
+        &mut self,
+        name: &str,
+        association: panta_mesh::FieldAssociation,
+        components: usize,
+        values: FormatResult<Vec<f64>>,
+    ) {
+        let label = format!("{name} ({})", association.as_str());
+        let tuples = match association {
+            panta_mesh::FieldAssociation::Node => self.points.len(),
+            panta_mesh::FieldAssociation::Cell => self.tets.len(),
+        };
+        let reason = if name.is_empty() || name.len() > 255 || name.chars().any(char::is_control) {
+            Some("invalid array name".to_owned())
+        } else if !matches!(components, 1 | 3) {
+            Some(format!("{components} components are not supported"))
+        } else if self
+            .fields
+            .iter()
+            .any(|field| field.name == name && field.association == association)
+        {
+            Some("duplicate array name".to_owned())
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            self.skipped_fields.push(format!("{label}: {reason}"));
+            return;
+        }
+        let values = match values {
+            Ok(values) => values,
+            Err(error) => {
+                self.skipped_fields.push(format!("{label}: {error}"));
+                return;
+            }
+        };
+        if Some(values.len()) != tuples.checked_mul(components) {
+            self.skipped_fields.push(format!(
+                "{label}: {} values, expected {tuples} x {components}",
+                values.len()
+            ));
+            return;
+        }
+        self.fields.push(panta_mesh::ResultField {
+            name: name.to_owned(),
+            association,
+            components: components as u8,
+            units: String::new(),
+            values,
+        });
     }
 }
 
@@ -258,6 +323,22 @@ mod fixture_tests {
                 continue;
             }
             let grid = result.map_err(|error| format!("{name}: {error}"))?;
+            // 四种编码的夹具都带同一个节点法向数组，作为 3 分量节点结果场保留（task 029）。
+            assert!(
+                grid.skipped_fields.is_empty(),
+                "{name}: {:?}",
+                grid.skipped_fields
+            );
+            assert_eq!(grid.fields.len(), 1, "{name}");
+            let normals = &grid.fields[0];
+            assert_eq!(normals.name, "Normals", "{name}");
+            assert_eq!(normals.association, panta_mesh::FieldAssociation::Node);
+            assert_eq!(normals.components, 3);
+            assert_eq!(normals.values.len(), grid.points.len() * 3);
+            let summary = normals.summary();
+            assert_eq!(summary.missing, 0, "{name}");
+            let [low, high] = summary.range.ok_or("normals range missing")?;
+            assert!(low > 0.99 && high < 1.01, "{name}: {low}..{high}");
             let mesh = panta_mesh::tet_mesh_from_cells(grid.points, grid.tets)?;
             assert_eq!(mesh.boundary.len(), 64, "{name}");
         }

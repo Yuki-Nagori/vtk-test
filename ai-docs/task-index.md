@@ -32,6 +32,7 @@
 | 026 | [大网格阈值（表面 LOD / 体网格流式）设为用户设置](task/026-lod-user-settings.md) | done |
 | 027 | [单机 out-of-core 分块体网格：最小原型与切面延迟实测](task/027-out-of-core-block-prototype.md) | done |
 | 028 | [out-of-core 铺开：只读映射块读取、接入应用与大网格设置](task/028-out-of-core-rollout.md) | done |
+| 029 | [结果场：导入、存储、分块携带、切面插值与视口上色](task/029-result-fields.md) | in-progress |
 
 任务先登记范围与验收，实际验证后同步状态。历史编号不再代表本仓库的待办或已交付能力。
 

@@ -245,6 +245,25 @@ pub(crate) fn read_vtk_xml(
             array("Cells", Some("types")).ok_or_else(|| FormatError::new("missing Cells types"))?,
         )?;
         *grid = RawGrid::new(points, cells, types)?;
+        for (section, tag) in &arrays {
+            let association = match section.as_str() {
+                "PointData" => panta_mesh::FieldAssociation::Node,
+                "CellData" => panta_mesh::FieldAssociation::Cell,
+                _ => continue,
+            };
+            let name = tag.attributes.get("Name").map_or("", String::as_str);
+            let components = tag
+                .attributes
+                .get("NumberOfComponents")
+                .map_or(Some(1), |value| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            let values = if matches!(components, 1 | 3) {
+                context.floats(tag)
+            } else {
+                Ok(Vec::new())
+            };
+            grid.offer_field(name, association, components, values);
+        }
         return Ok(());
     }
     let mut surface = CellSurface::new(&points);
@@ -571,6 +590,55 @@ mod tests {
 </VTKFile>"#,
         )?;
         assert_eq!(mesh.triangles.len(), 4);
+        Ok(())
+    }
+
+    #[test]
+    fn vtu_point_and_cell_arrays_become_result_fields() -> Result<(), super::FormatError> {
+        use panta_mesh::FieldAssociation;
+        let grid = super::parse_vtu_grid(
+            br#"<?xml version="1.0"?>
+<VTKFile type="UnstructuredGrid" version="1.0" byte_order="LittleEndian">
+ <UnstructuredGrid><Piece NumberOfPoints="4" NumberOfCells="1">
+  <PointData Scalars="p">
+   <DataArray type="Float64" Name="p" format="ascii">1 nan 3 4</DataArray>
+   <DataArray type="Float32" Name="uv" NumberOfComponents="2" format="ascii">0 0 0 0 0 0 0 0</DataArray>
+   <DataArray type="Float32" Name="short" format="ascii">1 2</DataArray>
+  </PointData>
+  <CellData>
+   <DataArray type="Float32" Name="U" NumberOfComponents="3" format="ascii">3 4 0</DataArray>
+   <DataArray type="Int32" Name="material" format="ascii">7</DataArray>
+   <DataArray type="String" Name="label" format="ascii">x</DataArray>
+  </CellData>
+  <Points><DataArray type="Float32" NumberOfComponents="3" format="ascii">0 0 0 1 0 0 0 1 0 0 0 1</DataArray></Points>
+  <Cells>
+   <DataArray type="Int64" Name="connectivity" format="ascii">0 1 2 3</DataArray>
+   <DataArray type="Int64" Name="offsets" format="ascii">4</DataArray>
+   <DataArray type="UInt8" Name="types" format="ascii">10</DataArray>
+  </Cells>
+ </Piece></UnstructuredGrid>
+</VTKFile>"#,
+        )?;
+        let names: Vec<(&str, FieldAssociation, u8)> = grid
+            .fields
+            .iter()
+            .map(|field| (field.name.as_str(), field.association, field.components))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("p", FieldAssociation::Node, 1),
+                ("U", FieldAssociation::Cell, 3),
+                ("material", FieldAssociation::Cell, 1),
+            ]
+        );
+        assert!(grid.fields[0].values[1].is_nan());
+        assert_eq!(grid.fields[0].summary().missing, 1);
+        assert_eq!(grid.fields[1].summary().range, Some([5.0, 5.0]));
+        assert_eq!(grid.skipped_fields.len(), 3, "{:?}", grid.skipped_fields);
+        assert!(grid.skipped_fields[0].starts_with("uv (node): 2 components"));
+        assert!(grid.skipped_fields[1].starts_with("short (node): 2 values"));
+        assert!(grid.skipped_fields[2].starts_with("label (cell)"));
         Ok(())
     }
 

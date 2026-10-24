@@ -59,6 +59,14 @@ impl<'a> Cursor<'a> {
             .map_err(|_| FormatError::new("token is not UTF-8"))
     }
 
+    /// 查看下一个词而不前进。
+    pub fn peek_token(&mut self) -> Option<&'a str> {
+        let position = self.position;
+        let token = self.token().ok();
+        self.position = position;
+        token
+    }
+
     pub fn parse<T: std::str::FromStr>(&mut self) -> FormatResult<T> {
         let token = self.token()?;
         token

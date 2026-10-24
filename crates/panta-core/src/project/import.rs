@@ -231,8 +231,14 @@ fn commit_import(
         })?;
     ensure_import_running(phase)?;
     progress.set_fraction(0.5);
-    let record = prepared.record(import_number, options);
-    let volume = volume_from_prepared(&prepared, options)?;
+    let mut record = prepared.record(import_number, options);
+    let (volume, fields) = match volume_from_prepared(&prepared, options)? {
+        Some(imported) => {
+            record.skipped_result_fields = imported.skipped_fields;
+            (Some(imported.mesh), imported.fields)
+        }
+        None => (None, Vec::new()),
+    };
     drop(std::mem::take(&mut prepared.bytes));
     match &volume {
         Some(volume) => prepared.mesh = panta_mesh::boundary_surface(volume),
@@ -243,11 +249,17 @@ fn commit_import(
         candidate,
         record,
         prepared.mesh,
-        volume,
+        MeshPayload { volume, fields },
         phase,
         progress,
         0.6,
     )
+}
+
+/// 提交到工程的网格内容：体网格（可选）及与其节点 / 单元顺序对齐的结果场（task 029）。
+pub(super) struct MeshPayload {
+    pub(super) volume: Option<panta_mesh::TetMesh>,
+    pub(super) fields: Vec<panta_mesh::ResultField>,
 }
 
 /// 写出 Mesh 资产并原子提交清单；导入与生成体网格（task 023）共用同一提交闸门。
@@ -256,17 +268,18 @@ pub(super) fn commit_mesh_record(
     candidate: &mut super::ProjectState,
     mut record: ImportRecord,
     mesh: panta_mesh::SurfaceMesh,
-    volume: Option<panta_mesh::TetMesh>,
+    payload: MeshPayload,
     phase: &AtomicU8,
     progress: &Progress,
     asset_start: f64,
 ) -> Result<ImportCommit, ProjectError> {
+    let MeshPayload { volume, fields } = payload;
     let lease = super::repository::WriteLease::acquire(candidate)?;
     let project_root = candidate
         .path
         .parent()
         .ok_or_else(|| ProjectError::Io("project has no package directory".to_owned()))?;
-    let (asset_reference, asset_path, created) = write_import_mesh_asset(
+    let (mut asset_reference, asset_path, created) = write_import_mesh_asset(
         project_root,
         &mut record,
         match &volume {
@@ -276,16 +289,34 @@ pub(super) fn commit_mesh_record(
         Some(phase),
         &|value| progress.set_fraction(asset_start + value * (0.9 - asset_start)),
     )?;
-    progress.set_fraction(0.9);
-    candidate
-        .mesh_assets
-        .insert(asset_reference.id.clone(), asset_reference);
-    candidate.imports.push(record.clone());
     let mut asset = ImportAsset {
         path: asset_path,
         created,
         committed: false,
     };
+    let mut result_asset = None;
+    if let Some(volume) = volume.as_ref().filter(|_| !fields.is_empty()) {
+        ensure_import_running(phase)?;
+        let set = panta_mesh::ResultSet {
+            mesh_digest: asset_reference.digest.clone(),
+            node_count: volume.nodes.len() as u64,
+            cell_count: volume.tets.len() as u64,
+            fields,
+        };
+        let (reference, path, created) =
+            write_import_result_asset(project_root, &asset_reference.id, &set)?;
+        asset_reference.results = Some(reference);
+        result_asset = Some(ImportAsset {
+            path,
+            created,
+            committed: false,
+        });
+    }
+    progress.set_fraction(0.9);
+    candidate
+        .mesh_assets
+        .insert(asset_reference.id.clone(), asset_reference);
+    candidate.imports.push(record.clone());
     let commit_result = lease.commit_with_before_replace(candidate, || {
         phase
             .compare_exchange(
@@ -299,6 +330,9 @@ pub(super) fn commit_mesh_record(
     });
     commit_result?;
     asset.committed = true;
+    if let Some(result_asset) = &mut result_asset {
+        result_asset.committed = true;
+    }
     phase.store(IMPORT_COMMITTED, Ordering::Release);
     progress.set_fraction(1.0);
     Ok((candidate.clone(), record, mesh, volume))
@@ -306,10 +340,17 @@ pub(super) fn commit_mesh_record(
 
 /// 「实体 3D」类型的 VTU / 旧版 VTK 按线性四面体体网格导入：坐标换算到毫米后构建并校验；
 /// 含其他单元类型时整体拒绝（task 021 保守决策）。其他组合仍按表面导入。
+/// 结果场按来源顺序原样保留：`tet_mesh_from_cells` 不重排节点与单元，下标与网格对齐。
+struct ImportedVolume {
+    mesh: panta_mesh::TetMesh,
+    fields: Vec<panta_mesh::ResultField>,
+    skipped_fields: Vec<String>,
+}
+
 fn volume_from_prepared(
     prepared: &panta_io::import::PreparedStl,
     options: ImportOptions,
-) -> Result<Option<panta_mesh::TetMesh>, ProjectError> {
+) -> Result<Option<ImportedVolume>, ProjectError> {
     if !options.is_solid()
         || !matches!(
             prepared.format,
@@ -339,9 +380,13 @@ fn volume_from_prepared(
             ));
         }
     }
-    panta_mesh::tet_mesh_from_cells(points, grid.tets)
-        .map(Some)
-        .map_err(|error| ProjectError::ImportVolumeUnsupported(error.to_string()))
+    let mesh = panta_mesh::tet_mesh_from_cells(points, grid.tets)
+        .map_err(|error| ProjectError::ImportVolumeUnsupported(error.to_string()))?;
+    Ok(Some(ImportedVolume {
+        mesh,
+        fields: grid.fields,
+        skipped_fields: grid.skipped_fields,
+    }))
 }
 
 struct ImportAsset {
@@ -404,6 +449,38 @@ fn write_import_mesh_asset(
     record.mesh_asset_id = base_id;
     Err(ProjectError::ImportAssetWriteFailed(
         "mesh asset recovery path limit reached".to_owned(),
+    ))
+}
+
+/// 结果场 sidecar 写在 `assets/results/`，文件名跟随 Mesh 资产 ID；
+/// 同路径已有不同内容（崩溃遗留）时换恢复路径，不覆盖不可变文件。
+fn write_import_result_asset(
+    project_root: &Path,
+    asset_id: &str,
+    set: &panta_mesh::ResultSet,
+) -> Result<(super::model::ResultAssetRef, std::path::PathBuf, bool), ProjectError> {
+    for attempt in 0..32 {
+        let relative_path = if attempt == 0 {
+            format!("assets/results/{asset_id}-r1.presult")
+        } else {
+            format!("assets/results/{asset_id}-r1-recovery-{attempt}.presult")
+        };
+        let path = super::service::resolve_asset_path(project_root, &relative_path)
+            .map_err(|error| ProjectError::ImportAssetWriteFailed(error.to_string()))?;
+        if let Some((digest, created)) = mesh_assets::write_result_asset_or_reuse(&path, set)? {
+            let reference = super::model::ResultAssetRef {
+                format_version: panta_mesh::RESULT_ASSET_FORMAT_VERSION,
+                relative_path,
+                digest,
+                field_count: u32::try_from(set.fields.len()).map_err(|_| {
+                    ProjectError::ImportAssetWriteFailed("too many result fields".to_owned())
+                })?,
+            };
+            return Ok((reference, path, created));
+        }
+    }
+    Err(ProjectError::ImportAssetWriteFailed(
+        "result asset recovery path limit reached".to_owned(),
     ))
 }
 
@@ -512,6 +589,7 @@ fn new_surface_asset_ref(record: &ImportRecord, units: &str) -> MeshAssetRef {
         digest: String::new(),
         units: units.to_owned(),
         source_revision: record.source_digest.clone(),
+        results: None,
     }
 }
 

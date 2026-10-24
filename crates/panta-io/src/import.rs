@@ -95,6 +95,9 @@ pub struct ImportRecord {
     /// 可选字段向后兼容，记录版本不变。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation: Option<VolumeGeneration>,
+    /// 体网格导入时未保留的来源数组及原因（task 029）；结果场本身在 `.presult` sidecar 中。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped_result_fields: Vec<String>,
 }
 
 /// 生成体网格的工程记录信息；来源 STEP 不复制进工程，只记录名称与摘要。
@@ -469,6 +472,7 @@ impl PreparedStl {
             triangle_count: summary.triangle_count,
             dimensions: summary.dimensions,
             generation: None,
+            skipped_result_fields: Vec::new(),
         }
     }
 
