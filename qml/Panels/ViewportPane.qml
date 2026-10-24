@@ -47,6 +47,8 @@ PanelSurface {
                 objectName: "caeViewport"
                 anchors.fill: parent
                 meshSource: panel.meshSource
+                // 对象树可见性眼睛（task 037）：只隐藏显示，不改网格来源。
+                meshVisible: panel.meshSource ? panel.meshSource.activeMeshVisible : true
                 onPointPicked: (hit, x, y, z, triangle) => panel.pointPicked(hit, x, y, z, triangle)
             }
         }

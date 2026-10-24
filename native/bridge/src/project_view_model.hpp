@@ -4,6 +4,7 @@
 /// 本类型缓存工作区的 Qt 投影与当前活动显示 DTO，不拥有第二份领域选择。
 #pragma once
 
+#include "object_tree_model.hpp"
 #include "panta_ffi.h"
 #include <QColor>
 #include <QElapsedTimer>
@@ -124,6 +125,10 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     /// 与视口查找表同源的色标控制点：[{position, color}]，color 为 QColor。
     Q_PROPERTY(QVariantList fieldLegendStops READ fieldLegendStops CONSTANT)
     Q_PROPERTY(QString fieldMissingColor READ fieldMissingColor CONSTANT)
+    /// 工作台对象树（task 037）：Rust 投影的只读树模型，随工程 / 活动文档状态刷新。
+    Q_PROPERTY(panta::bridge::ObjectTreeModel* objectTree READ objectTree CONSTANT)
+    /// 活动文档网格是否显示；可见性是会话显示状态，不写工程、不影响 dirty。
+    Q_PROPERTY(bool activeMeshVisible READ activeMeshVisible NOTIFY assetVisibilityChanged)
 
   public:
     explicit ProjectViewModel(QObject* parent = nullptr);
@@ -331,9 +336,16 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     [[nodiscard]] static QVariantList fieldLegendStops();
     /// `#rrggbb`；QML 的 color 属性直接接受该字符串。
     [[nodiscard]] static QString fieldMissingColor();
+    [[nodiscard]] ObjectTreeModel* objectTree() const { return m_objectTree; }
+    [[nodiscard]] bool activeMeshVisible() const {
+        return !m_hiddenAssetIds.contains(m_activeDocumentId);
+    }
+    /// 设置资产网格的显示可见性（眼睛）；未知资产忽略。只改本次会话的显示状态。
+    Q_INVOKABLE void setAssetVisible(const QString& assetId, bool visible);
 
   signals:
     void animationChanged();
+    void assetVisibilityChanged();
     void volumeChanged();
     void fieldLegendChanged();
     void largeMeshLimitsChanged();
@@ -390,6 +402,8 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     static bool toBoundaryText(const QString& text, std::string* out, QString* error);
 
     void refresh_workspace(bool forceActiveNotification = false);
+    /// 由当前工程与活动文档状态重算对象树（Rust 投影），结构不变时只更新节点数据。
+    void refresh_object_tree();
     void reset_documents();
     void drain_activations();
     void sync_activation_poll();
@@ -418,6 +432,10 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     quint64 m_importPreviewExpandedBytes = 0;
     QStringList m_importedPartNames;
     QStringList m_importedPartIds;
+    /// 导入记录副本，供对象树投影（task 037）。
+    std::vector<panta::ffi::ProjectImport> m_imports;
+    QStringList m_hiddenAssetIds;
+    ObjectTreeModel* m_objectTree = nullptr;
     QString m_importedPartName;
     QString m_importedAssetPath;
     QString m_importedMeshType;

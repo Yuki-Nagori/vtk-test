@@ -288,7 +288,7 @@ class ShellModuleLoadTest final : public QObject {
             auto* collapse = window->findChild<QObject*>(QStringLiteral("sidebarCollapseButton"));
             auto* expand = window->findChild<QObject*>(QStringLiteral("sidebarExpandButton"));
             auto* menuItem = window->findChild<QObject*>(QStringLiteral("sidebarMenuItem"));
-            auto* assets = window->findChild<QQuickItem*>(QStringLiteral("assetListPane"));
+            auto* assets = window->findChild<QQuickItem*>(QStringLiteral("objectTreePane"));
             auto* properties = window->findChild<QQuickItem*>(QStringLiteral("propertiesPanel"));
             auto* pane = window->findChild<QQuickItem*>(QStringLiteral("viewportPane"));
             QVERIFY(sidebar && rail && collapse && expand && menuItem && assets && properties &&
@@ -351,39 +351,144 @@ class ShellModuleLoadTest final : public QObject {
         auto* root = engine.rootObjects().constFirst();
         auto* project =
             root->findChild<panta::bridge::ProjectViewModel*>(QStringLiteral("projectModel"));
-        auto* assets = root->findChild<QQuickItem*>(QStringLiteral("assetList"));
+        auto* sidebar = root->findChild<QQuickItem*>(QStringLiteral("assetSidebar"));
         auto* bar = root->findChild<QObject*>(QStringLiteral("documentTabBar"));
-        QVERIFY(project && assets && bar);
+        QVERIFY(project && sidebar && bar);
+        auto* tree = project->objectTree();
+        QVERIFY(tree);
+        QCOMPARE(tree->nodeCount(), 0);
         QVERIFY(project->createProject(QStringLiteral("Imported"), fixture.path()));
         QTRY_VERIFY(!project->projectOperationPending());
+        // 新工程只有根节点；导入后出现一个资产节点（task 037）。
+        QTRY_COMPARE(tree->nodeCount(), 1);
         const QString projectPath = project->currentPath();
         QVERIFY(project->inspectStl(stlPath));
         QTRY_VERIFY(project->importPreviewReady());
         QVERIFY(project->importStl(stlPath, project->defaultMeshType(),
                                    QStringLiteral("millimeters"), false));
-        QTRY_COMPARE(assets->property("count").toInt(), 1);
+        QTRY_COMPARE(tree->nodeCount(), 2);
         const QString importId = project->importedPartIds().constFirst();
+        const QString assetNode = QStringLiteral("asset:") + importId;
         QTRY_COMPARE(project->activeDocumentId(), importId);
         QTRY_COMPARE(bar->property("activeDocumentId").toString(), importId);
         QVERIFY(QMetaObject::invokeMethod(bar, "closeDocument", Q_ARG(QString, importId)));
         QTRY_VERIFY(project->activeDocumentId() != importId);
-        QTRY_VERIFY(!visual_items(assets, QStringLiteral("importedPartEntry")).isEmpty());
-        auto* entry = visual_items(assets, QStringLiteral("importedPartEntry")).constFirst();
-        QVERIFY(QMetaObject::invokeMethod(entry, "clicked"));
+        QTRY_VERIFY(!visual_items(sidebar, QStringLiteral("objectTreeRow_") + assetNode).isEmpty());
+        // 单击只切换属性面板，不打开页签；激活（双击 / Enter）才打开。
+        QVERIFY(QMetaObject::invokeMethod(sidebar, "selectNode", Q_ARG(QString, assetNode)));
+        QCOMPARE(sidebar->property("selectedNodeId").toString(), assetNode);
+        QTest::qWait(20);
+        QVERIFY(project->activeDocumentId() != importId);
+        QVERIFY(QMetaObject::invokeMethod(sidebar, "activateNode", Q_ARG(QString, assetNode)));
         QTRY_COMPARE(project->activeDocumentId(), importId);
         QVERIFY(project->saveProject());
         QTRY_VERIFY(!project->projectOperationPending());
         QVERIFY(project->createProject(QStringLiteral("Empty"), fixture.path()));
         QTRY_VERIFY(!project->projectOperationPending());
-        QTRY_COMPARE(assets->property("count").toInt(), 0);
+        QTRY_COMPARE(tree->nodeCount(), 1);
         QVERIFY(project->openProject(projectPath));
         QTRY_VERIFY(!project->projectOperationPending());
-        QTRY_COMPARE(assets->property("count").toInt(), 1);
+        QTRY_COMPARE(tree->nodeCount(), 2);
         QCOMPARE(project->importedPartIds().constFirst(), importId);
         QVERIFY(QFile::remove(stlPath));
         project->openImportRecord(importId);
         QTRY_COMPARE(project->activeDocumentId(), importId);
         QTRY_VERIFY(project->errorCode().isEmpty());
+    }
+
+    // task 037：键盘上下 / 左右浏览与展开对象树，Enter 激活；可见性眼睛只影响显示，不改 dirty。
+    void object_tree_keyboard_and_visibility_stay_display_only() {
+        QTemporaryDir fixture;
+        QVERIFY(fixture.isValid());
+        QStringList stlPaths;
+        for (const auto* name : {"first.stl", "second.stl"}) {
+            stlPaths.append(fixture.filePath(QString::fromLatin1(name)));
+            QFile stl(stlPaths.constLast());
+            QVERIFY(stl.open(QIODevice::WriteOnly));
+            QVERIFY(stl.write("vertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\n") > 0);
+        }
+        QQmlApplicationEngine engine;
+        panta::install_icon_provider(engine);
+        engine.loadFromModule(QStringLiteral("Panta.Shell"), QStringLiteral("App"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().constFirst());
+        QVERIFY(window);
+        auto* project =
+            window->findChild<panta::bridge::ProjectViewModel*>(QStringLiteral("projectModel"));
+        auto* sidebar = window->findChild<QQuickItem*>(QStringLiteral("assetSidebar"));
+        auto* treeView = window->findChild<QQuickItem*>(QStringLiteral("objectTree"));
+        auto* viewport = window->findChild<QQuickItem*>(QStringLiteral("caeViewport"));
+        QVERIFY(project && sidebar && treeView && viewport);
+        auto* tree = project->objectTree();
+        QVERIFY(project->createProject(QStringLiteral("Tree"), fixture.path()));
+        QTRY_VERIFY(!project->projectOperationPending());
+        for (const auto& path : stlPaths) {
+            QVERIFY(project->inspectStl(path));
+            QTRY_VERIFY(project->importPreviewReady());
+            QVERIFY(project->importStl(path, project->defaultMeshType(),
+                                       QStringLiteral("millimeters"), false));
+            QTRY_VERIFY(!project->importPending());
+        }
+        QTRY_COMPARE(tree->nodeCount(), 3);
+        const auto ids = project->importedPartIds();
+        QCOMPARE(ids.size(), 2);
+        QVERIFY(project->saveProject());
+        QTRY_VERIFY(!project->projectOperationPending());
+        QVERIFY(!project->dirty());
+        project->openImportRecord(ids.at(1));
+        QTRY_COMPARE(project->activeDocumentId(), ids.at(1));
+
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        treeView->forceActiveFocus();
+        QVERIFY(QMetaObject::invokeMethod(sidebar, "selectNode",
+                                          Q_ARG(QString, QStringLiteral("project"))));
+        QTRY_COMPARE(treeView->property("rows").toInt(), 3);
+        QTest::keyClick(window, Qt::Key_Down);
+        QTRY_COMPARE(sidebar->property("selectedNodeId").toString(),
+                     QStringLiteral("asset:") + ids.at(0));
+        QCOMPARE(project->activeDocumentId(), ids.at(1));
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_COMPARE(project->activeDocumentId(), ids.at(0));
+        // 左键回到父节点并折叠，右键展开。
+        QTest::keyClick(window, Qt::Key_Up);
+        QTRY_COMPARE(sidebar->property("selectedNodeId").toString(), QStringLiteral("project"));
+        QTest::keyClick(window, Qt::Key_Left);
+        QTRY_COMPARE(treeView->property("rows").toInt(), 1);
+        QTest::keyClick(window, Qt::Key_Right);
+        QTRY_COMPARE(treeView->property("rows").toInt(), 3);
+
+        // 眼睛：隐藏活动资产只隐藏视口网格，节点弱化；不写工程，dirty 不变。
+        const QString active = project->activeDocumentId();
+        QVERIFY(viewport->property("meshVisible").toBool());
+        project->setAssetVisible(active, false);
+        QVERIFY(!project->activeMeshVisible());
+        QTRY_VERIFY(!viewport->property("meshVisible").toBool());
+        QCOMPARE(
+            tree->node(QStringLiteral("asset:") + active).value(QStringLiteral("visible")).toBool(),
+            false);
+        QVERIFY(!project->dirty());
+        // 切到另一资产时视口按该资产的可见性显示。
+        project->openImportRecord(ids.at(1));
+        QTRY_COMPARE(project->activeDocumentId(), ids.at(1));
+        QTRY_VERIFY(viewport->property("meshVisible").toBool());
+        project->openImportRecord(active);
+        QTRY_VERIFY(!viewport->property("meshVisible").toBool());
+        project->setAssetVisible(active, true);
+        QTRY_VERIFY(viewport->property("meshVisible").toBool());
+        QVERIFY(!project->dirty());
+        // 未知资产忽略。
+        project->setAssetVisible(QStringLiteral("missing"), false);
+        QVERIFY(project->activeMeshVisible());
+        if (const auto dir = qEnvironmentVariable("PANTA_SHELL_SCREENSHOT_DIR"); !dir.isEmpty()) {
+            project->setAssetVisible(ids.at(1), false);
+            QVERIFY(QMetaObject::invokeMethod(sidebar, "selectNode",
+                                              Q_ARG(QString, QStringLiteral("asset:") + active)));
+            sidebar->setProperty("propertiesTab", 2);
+            QTest::qWait(50);
+            QVERIFY(window->grabWindow().save(
+                QDir(dir).filePath(QStringLiteral("tree-assets-info.png"))));
+        }
     }
     void project_file_dialog_routes_final_selection_data() {
         QTest::addColumn<QString>("storedName");
@@ -593,11 +698,28 @@ class ShellModuleLoadTest final : public QObject {
         auto* quality = window->findChild<QQuickItem*>(QStringLiteral("meshQualityPanel"));
         QVERIFY(quality);
         QTRY_VERIFY_WITH_TIMEOUT(quality->isVisible(), 15000);
-        for (const char* name : {"volumePanel", "fieldLegend", "fieldRangeModeRow",
-                                 "sectionNormalZ", "openAnimationButton"}) {
-            auto* item = visual_item(sidebar, QString::fromLatin1(name));
-            QVERIFY2(item && item->isVisible(), name);
-        }
+        // task 037：属性面板按节点类型与页签显示；逐一选中检查控件可见。
+        const QString asset = QStringLiteral(":") + model->activeDocumentId();
+        const auto show = [&](const QString& kind, int tab,
+                              std::initializer_list<const char*> names) {
+            QVERIFY(QMetaObject::invokeMethod(sidebar, "selectNode", Q_ARG(QString, kind + asset)));
+            sidebar->setProperty("propertiesTab", tab);
+            for (const char* name : names) {
+                auto* item = visual_item(sidebar, QString::fromLatin1(name));
+                QVERIFY2(item, name);
+                QTRY_VERIFY2(item->isVisible(), name);
+            }
+        };
+        show(QStringLiteral("field"), 1, {"fieldLegend"});
+        show(QStringLiteral("field"), 0, {"fieldProperties", "fieldRangeModeRow"});
+        show(QStringLiteral("asset"), 1, {"visibilityProperties", "nodeVisibleToggle"});
+        show(QStringLiteral("asset"), 2, {"infoRow"});
+        QVERIFY(QMetaObject::invokeMethod(sidebar, "selectNode",
+                                          Q_ARG(QString, QStringLiteral("project"))));
+        sidebar->setProperty("propertiesTab", 0);
+        QTRY_VERIFY(visual_item(sidebar, QStringLiteral("openAnimationButton"))->isVisible());
+        show(QStringLiteral("section"), 0,
+             {"sectionProperties", "sectionNormalZ", "sectionSlider"});
         // task 036：诊断结果进入底部面板「诊断」页，并自动展开一次。
         auto* bottom = window->findChild<QQuickItem*>(QStringLiteral("bottomPanel"));
         QVERIFY(bottom && !bottom->property("collapsed").toBool());
@@ -638,7 +760,7 @@ class ShellModuleLoadTest final : public QObject {
             auto* scroll = visual_item(sidebar, QStringLiteral("sidebarDetailsScroll"));
             auto* details = visual_item(sidebar, QStringLiteral("sidebarDetails"));
             auto* scrollBar = visual_item(sidebar, QStringLiteral("sidebarDetailsScrollBar"));
-            auto* last = visual_item(sidebar, QStringLiteral("volumePanel"));
+            auto* last = visual_item(sidebar, QStringLiteral("sectionSlider"));
             QVERIFY(scroll && details && scrollBar && last);
             // 滚动条只在内容超出时出现；出现时滚到底能看到最后一项。
             const bool overflows = details->height() > scroll->height() + 0.5;

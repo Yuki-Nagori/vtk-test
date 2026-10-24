@@ -19,6 +19,8 @@ class CaeViewport : public QQuickItem {
     Q_OBJECT
     QML_NAMED_ELEMENT(CaeViewport)
     Q_PROPERTY(QObject* meshSource READ meshSource WRITE setMeshSource NOTIFY meshSourceChanged)
+    /// 模型显示开关（task 037 可见性眼睛）：只影响显示，不改网格来源。
+    Q_PROPERTY(bool meshVisible READ meshVisible WRITE setMeshVisible NOTIFY meshVisibleChanged)
 
   public:
     explicit CaeViewport(QQuickItem* parent = nullptr);
@@ -26,6 +28,8 @@ class CaeViewport : public QQuickItem {
 
     [[nodiscard]] QObject* meshSource() const;
     void setMeshSource(QObject* source);
+    [[nodiscard]] bool meshVisible() const;
+    void setMeshVisible(bool visible);
 
     /// 把当前视口帧保存为 PNG（原子替换目标文件）；返回中文错误文案，空串表示成功。
     Q_INVOKABLE QString saveScreenshot(const QUrl& url);
@@ -39,6 +43,7 @@ class CaeViewport : public QQuickItem {
     /// 后端完成场景构建后通知 GUI；渲染错误经 qWarning 上报，不静默。
     void sceneReady();
     void meshSourceChanged();
+    void meshVisibleChanged();
     /// 左键单击模型区域的拾取结果；x/y/z 为双精度世界坐标（工程单位 mm），未命中 hit=false。
     void pointPicked(bool hit, double x, double y, double z, quint64 triangle);
 

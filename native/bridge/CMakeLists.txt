@@ -25,6 +25,8 @@ qt_add_qml_module(
   src/settings.cpp
   src/utf8_boundary.hpp
   src/utf8_boundary.cpp
+  src/object_tree_model.hpp
+  src/object_tree_model.cpp
   src/project_view_model.hpp
   src/project_view_model.cpp
   src/large_mesh_settings.cpp)
