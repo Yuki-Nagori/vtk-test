@@ -356,4 +356,40 @@ mod tests {
         );
         Ok(())
     }
+
+    /// OpenFOAM 多区域算例（task 032）：按米导入、区域与边界组名写入记录并在重开后保留。
+    #[test]
+    fn openfoam_case_imports_regions_patches_and_fields() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let fixture_dir = temp_directory::Fixture::new()?;
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/mesh/openfoam/multi/multi.foam");
+        let mut service = ProjectService::new();
+        let project = service.create(&fixture_dir.root, "Foam")?;
+        let record = service.import_stl(&source, "solid-3d", "meters", false)?;
+        assert_eq!(record.format, "openfoam");
+        assert_eq!(record.display_name, "multi");
+        assert_eq!(record.units, "meters");
+        assert_eq!(record.region_names, ["fluid", "solid"]);
+        assert!(
+            record
+                .boundary_group_names
+                .iter()
+                .any(|name| name == "solid/solid_to_fluid")
+        );
+        // 记录尺寸沿用来源单位（与其他格式一致），界面按 `units` 显示为 m。
+        assert_eq!(record.dimensions, [0.1, 0.1, 0.01]);
+        let summaries = service.result_fields_for_import(&record.id)?;
+        let temperature = summaries
+            .iter()
+            .find(|field| field.name == "T")
+            .ok_or("missing T")?;
+        assert_eq!(temperature.association, FieldAssociation::Cell);
+        assert_eq!(temperature.units, "K");
+        assert_eq!(temperature.range, Some([300.0, 400.0]));
+        let mut reopened = ProjectService::new();
+        reopened.open(&project.path)?;
+        assert_eq!(reopened.imports()?, vec![record]);
+        Ok(())
+    }
 }

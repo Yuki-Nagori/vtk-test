@@ -19,7 +19,7 @@ DialogWindow {
     title: "导入"
 
     readonly property var meshTypes: projectModel.meshTypes
-    readonly property var unitValues: ["millimeters", "centimeters", "inches"]
+    readonly property var unitValues: ["millimeters", "centimeters", "meters", "inches"]
 
     onVisibleChanged: {
         if (!visible) {
@@ -46,12 +46,28 @@ DialogWindow {
     }
 
     // 拖放导入（task 018）：打开对话框并预填源文件，仍需用户确认网格类型与单位。
+    // OpenFOAM 算例（task 032）：SI 米制，默认按实体 3D 体网格导入，用户仍可改选。
+    function isOpenFoamPath(path: string): bool {
+        const lower = path.toLowerCase();
+        return lower.endsWith(".foam") || lower.endsWith(".openfoam") || /[\\/]system[\\/]controldict$/.test(lower);
+    }
+
+    function selectSource(path: string) {
+        sourcePath = path;
+        if (isOpenFoamPath(path)) {
+            unitsCombo.currentIndex = unitValues.indexOf("meters");
+            const solid = meshTypes.findIndex(entry => entry.id === "solid-3d");
+            if (solid >= 0)
+                meshTypeCombo.currentIndex = solid;
+        }
+        projectModel.inspectStl(path);
+    }
+
     function openWithFile(path: string) {
         open();
         if (!path)
             return;
-        sourcePath = path;
-        projectModel.inspectStl(path);
+        selectSource(path);
     }
 
     function chooseFile() {
@@ -153,7 +169,7 @@ DialogWindow {
                     id: unitsCombo
                     Layout.fillWidth: true
                     enabled: !dialog.projectModel.importPending
-                    model: ["毫米", "厘米", "英寸"]
+                    model: ["毫米", "厘米", "米", "英寸"]
                     Accessible.name: "单位"
                 }
 
@@ -233,15 +249,14 @@ DialogWindow {
         id: fileDialog
         title: "选择网格文件"
         fileMode: FileDialog.OpenFile
-        nameFilters: ["网格文件 (*.stl *.vtu *.vtp *.vtk *.obj *.ply)", "STL 文件 (*.stl)", "VTK 文件 (*.vtu *.vtp *.vtk)", "OBJ 文件 (*.obj)", "PLY 文件 (*.ply)"]
+        nameFilters: ["网格文件 (*.stl *.vtu *.vtp *.vtk *.obj *.ply *.foam *.openfoam controlDict)", "STL 文件 (*.stl)", "VTK 文件 (*.vtu *.vtp *.vtk)", "OpenFOAM 算例 (*.foam *.openfoam controlDict)", "OBJ 文件 (*.obj)", "PLY 文件 (*.ply)"]
         onAccepted: {
             if (!dialog.visible)
                 return;
             const selectedPath = dialog.projectModel.localPath(selectedFile);
             if (!selectedPath)
                 return;
-            dialog.sourcePath = selectedPath;
-            dialog.projectModel.inspectStl(selectedPath);
+            dialog.selectSource(selectedPath);
         }
     }
 

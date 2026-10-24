@@ -1,0 +1,43 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:                                        |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      binary;
+    class       volVectorField;
+    arch        "LSB;label=32;scalar=64";
+    location    "0.01";
+    object      U;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+dimensions      [ 0 1 -1 0 0 0 0 ];
+
+internalField   nonuniform List<vector> 
+12
+(…}4aR¿F]m9žå^?‡ôGÄk@¾è9Uv¶b¿j¤4Ö=t¾¾œàrà“¾Ñí¤`R¿ë÷=çå^¿9lû!ŽîG>•j™gÉ…u?þÌ›)æ^?B,~ÿe¾¯·â]”2W?S-ÔK½>£öâR¯WR>di€CÊ…u?4ˆñLå^¿íà:b‚%¾Ã¥É?aR¿ž~	Bå^?Üš8ÚÇk@¾ü?ì~¶b¿AÅÿPo=v¾Ìª …“¾RÅÓÂ`R¿a&ÏÒÜå^¿ØÊ?S”îG>“ËHÃ…u?Uî72æ^?«&Q-f¾›ÜÉÒ2W?7!~ê½}>üä?´WR>5³>¸Î…u?©¶ âtå^¿øbÀXk‚%¾);
+
+boundaryField
+{
+    movingWall
+    {
+        type            fixedValue;
+        value           uniform ( 1 0 0 );
+    }
+    fixedWalls
+    {
+        type            noSlip;
+    }
+    frontAndBack
+    {
+        type            noSlip;
+    }
+}
+
+
+// ************************************************************************* //

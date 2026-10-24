@@ -309,6 +309,8 @@ mod tests {
             dimensions: [1.0, 1.0, 0.0],
             generation: None,
             skipped_result_fields: Vec::new(),
+            region_names: Vec::new(),
+            boundary_group_names: Vec::new(),
         });
         state.mesh_assets.insert(
             "mesh-overflow".to_owned(),
@@ -396,6 +398,8 @@ mod tests {
                 dimensions: [0.0; 3],
                 generation: None,
                 skipped_result_fields: Vec::new(),
+                region_names: Vec::new(),
+                boundary_group_names: Vec::new(),
             });
         }
         assert!(service.workspace.open_import("import-2", "model_a"));
@@ -439,6 +443,8 @@ mod tests {
             dimensions: [1.0, 1.0, 0.0],
             generation: None,
             skipped_result_fields: Vec::new(),
+            region_names: Vec::new(),
+            boundary_group_names: Vec::new(),
         });
         state.mesh_assets.insert(
             "mesh-saved-import".to_owned(),
@@ -498,6 +504,8 @@ mod tests {
             dimensions: [1.0, 1.0, 0.0],
             generation: None,
             skipped_result_fields: Vec::new(),
+            region_names: Vec::new(),
+            boundary_group_names: Vec::new(),
         });
         state.mesh_assets.insert(
             "mesh-invalid-saved-import".to_owned(),

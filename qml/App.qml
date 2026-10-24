@@ -113,7 +113,7 @@ ApplicationWindow {
             else
                 importDialog.openWithFile(projectModel.localPath(urls[0]));
         } else {
-            showNotice("不支持的文件类型：仅支持 .panta 工程与 STL/VTU/VTP/VTK/OBJ/PLY 网格。", true);
+            showNotice("不支持的文件类型：仅支持 .panta 工程与 STL/VTU/VTP/VTK/OBJ/PLY 网格及 OpenFOAM 算例（.foam / controlDict）。", true);
         }
         if (urls.length > 1)
             showNotice("一次只处理一个文件，已使用第一个。", false);
