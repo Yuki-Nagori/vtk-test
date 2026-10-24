@@ -1,21 +1,26 @@
-//! 原生混合单元（task 030）：VTK 风格的单元类型、局部节点顺序与共形四面体拆分。
+//! 原生混合单元（task 030 / 031）：VTK 风格的单元类型、局部节点顺序与共形四面体拆分。
 //!
 //! 局部节点顺序与 VTK 线性单元一致（见 `ai-docs/architecture/mesh.md`）：
 //! - Tetra（10）：0,1,2 逆时针朝向节点 3；参考坐标 (0,0,0)(1,0,0)(0,1,0)(0,0,1)。
 //! - Hexahedron（12）：底面 0,1,2,3 逆时针朝向顶面，顶面 4..7 依次位于 0..3 上方。
 //! - Wedge（13）：底面三角形 0,1,2 的右手法向指向顶面 3,4,5，3..5 依次位于 0..2 上方。
 //! - Pyramid（14）：底面 0,1,2,3 的右手法向指向锥顶 4。
-//! - Polyhedron（42）：预留编码，导入时以明确错误拒绝。
+//! - Polyhedron（42，task 031）：规范连接为 `[apex, nFaces, n0, ids…, n1, ids…]`，即 VTK
+//!   旧版序列化面流前加辅助中心节点 `apex`；各面按右手法则朝外，面集合是闭合、一致定向的曲面。
 //!
 //! 拆分只用于切面、体积与质量计算等内部算法；单元 ID 始终是原始单元下标。
 //! 四边形面的对角线取经过面上全局节点号最小者的那一条（Dompierre 等的最小下标规则），
 //! 相邻单元因此在共享面上选同一条对角线，拆分结果共形且只由全局节点号决定，
-//! 加载时可确定性重算，不写入资产。
+//! 加载时可确定性重算，不写入资产。多面体的每个面从最小全局节点号出发扇形三角化
+//! （四边形面与上述规则一致），每个三角形与 `apex` 组成一个四面体。
 
 use crate::{MeshIndex, Tetrahedron};
 
-/// VTK 多面体单元编码：格式预留，当前不支持。
+/// VTK 多面体单元编码。
 pub const VTK_POLYHEDRON: u8 = 42;
+
+/// 受支持的单元类型数，即 [`CellType::ALL`] 的长度。
+pub const CELL_TYPE_COUNT: usize = 5;
 
 /// 线性体单元类型，判别值即 VTK 单元编码。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -25,11 +30,18 @@ pub enum CellType {
     Hexahedron = 12,
     Wedge = 13,
     Pyramid = 14,
+    Polyhedron = 42,
 }
 
 impl CellType {
     /// 按 VTK 编码顺序列出全部受支持的类型。
-    pub const ALL: [Self; 4] = [Self::Tetra, Self::Hexahedron, Self::Wedge, Self::Pyramid];
+    pub const ALL: [Self; CELL_TYPE_COUNT] = [
+        Self::Tetra,
+        Self::Hexahedron,
+        Self::Wedge,
+        Self::Pyramid,
+        Self::Polyhedron,
+    ];
 
     pub fn from_vtk(code: u8) -> Option<Self> {
         Some(match code {
@@ -37,6 +49,7 @@ impl CellType {
             12 => Self::Hexahedron,
             13 => Self::Wedge,
             14 => Self::Pyramid,
+            VTK_POLYHEDRON => Self::Polyhedron,
             _ => return None,
         })
     }
@@ -45,12 +58,14 @@ impl CellType {
         self as u8
     }
 
-    pub fn node_count(self) -> usize {
+    /// 固定节点数；多面体节点数可变，返回 `None`。
+    pub fn fixed_node_count(self) -> Option<usize> {
         match self {
-            Self::Tetra => 4,
-            Self::Hexahedron => 8,
-            Self::Wedge => 6,
-            Self::Pyramid => 5,
+            Self::Tetra => Some(4),
+            Self::Hexahedron => Some(8),
+            Self::Wedge => Some(6),
+            Self::Pyramid => Some(5),
+            Self::Polyhedron => None,
         }
     }
 
@@ -61,6 +76,7 @@ impl CellType {
             Self::Hexahedron => 1,
             Self::Wedge => 2,
             Self::Pyramid => 3,
+            Self::Polyhedron => 4,
         }
     }
 
@@ -70,6 +86,7 @@ impl CellType {
             Self::Hexahedron => "hexahedron",
             Self::Wedge => "wedge",
             Self::Pyramid => "pyramid",
+            Self::Polyhedron => "polyhedron",
         }
     }
 
@@ -80,13 +97,14 @@ impl CellType {
             Self::Hexahedron => &[0, 3, 2, 1, 4, 7, 6, 5],
             Self::Wedge => &[0, 2, 1, 3, 5, 4],
             Self::Pyramid => &[0, 3, 2, 1, 4],
+            Self::Polyhedron => &[],
         }
     }
 
     /// 四边形面（局部节点号）；对角线位 i 对应第 i 个面。
     fn quad_faces(self) -> &'static [[usize; 4]] {
         match self {
-            Self::Tetra => &[],
+            Self::Tetra | Self::Polyhedron => &[],
             Self::Hexahedron => &[
                 [0, 1, 2, 3],
                 [4, 5, 6, 7],
@@ -106,6 +124,7 @@ impl CellType {
             Self::Hexahedron => &HEX_TETS,
             Self::Wedge => &WEDGE_TETS,
             Self::Pyramid => &PYRAMID_TETS,
+            Self::Polyhedron => &[],
         }
     }
 }
@@ -114,6 +133,8 @@ impl CellType {
 /// 以及派生的四面体拆分归属 `tet_cells`（第 i 个四面体所属原始单元，非递减）。
 ///
 /// 纯四面体网格不携带布局（`TetMesh::cells == None`），此时单元 ID 即四面体下标。
+/// 多面体的 `apex` 是追加在节点数组末尾的辅助中心节点：第 k 个多面体（按单元顺序）的
+/// `apex` 为 `源节点数 + k`，源节点数 = 节点数 − 多面体数（task 031）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CellLayout {
     pub types: Vec<CellType>,
@@ -127,56 +148,103 @@ impl CellLayout {
         self.types.len()
     }
 
-    /// 第 `cell` 个单元的节点（局部顺序）。
+    /// 第 `cell` 个单元的节点（局部顺序；多面体为规范面流）。
     pub fn cell_nodes(&self, cell: usize) -> &[MeshIndex] {
         &self.connectivity[self.offsets[cell] as usize..self.offsets[cell + 1] as usize]
     }
 
     /// 各类型单元数，顺序同 [`CellType::ALL`]。
-    pub fn type_counts(&self) -> [u64; 4] {
-        let mut counts = [0; 4];
+    pub fn type_counts(&self) -> [u64; CELL_TYPE_COUNT] {
+        let mut counts = [0; CELL_TYPE_COUNT];
         for kind in &self.types {
             counts[kind.ordinal()] += 1;
         }
         counts
     }
+
+    /// 多面体单元数，即辅助中心节点数。
+    pub fn polyhedron_count(&self) -> usize {
+        self.types
+            .iter()
+            .filter(|&&kind| kind == CellType::Polyhedron)
+            .count()
+    }
 }
 
-/// 由类型与节点数组成 VTK 风格 offsets；节点数与类型不符时返回出错单元下标。
-pub fn cell_offsets(types: &[CellType], connectivity_len: usize) -> Result<Vec<u64>, usize> {
-    let mut offsets = Vec::with_capacity(types.len() + 1);
-    let mut cursor = 0_u64;
-    offsets.push(0);
-    for kind in types {
-        cursor += kind.node_count() as u64;
-        offsets.push(cursor);
+/// 面流（`[nFaces, n0, ids…, …]`）的总字数；格式不完整时返回 `None`。
+pub fn face_stream_len(words: &[MeshIndex]) -> Option<usize> {
+    let faces = *words.first()? as usize;
+    let mut cursor = 1_usize;
+    for _ in 0..faces {
+        let count = *words.get(cursor)? as usize;
+        cursor = cursor.checked_add(1 + count)?;
+        if cursor > words.len() {
+            return None;
+        }
     }
-    if cursor != connectivity_len as u64 {
+    Some(cursor)
+}
+
+/// 遍历格式完整的面流中的各个面（不含面节点数）。
+pub fn faces(words: &[MeshIndex]) -> impl Iterator<Item = &[MeshIndex]> {
+    let faces = words.first().map_or(0, |&count| count as usize);
+    let mut cursor = 1_usize;
+    (0..faces).map_while(move |_| {
+        let count = *words.get(cursor)? as usize;
+        let face = words.get(cursor + 1..cursor + 1 + count)?;
+        cursor += 1 + count;
+        Some(face)
+    })
+}
+
+/// 由类型与连接表组成 VTK 风格 offsets（多面体按规范面流解析长度）；
+/// 节点数与类型不符时返回出错单元下标（总长不符时为单元数）。
+pub fn cell_offsets(types: &[CellType], connectivity: &[MeshIndex]) -> Result<Vec<u64>, usize> {
+    let mut offsets = Vec::with_capacity(types.len() + 1);
+    let mut cursor = 0_usize;
+    offsets.push(0);
+    for (cell, kind) in types.iter().enumerate() {
+        cursor += match kind.fixed_node_count() {
+            Some(count) => count,
+            None => connectivity
+                .get(cursor + 1..)
+                .and_then(face_stream_len)
+                .map(|len| len + 1)
+                .ok_or(cell)?,
+        };
+        offsets.push(cursor as u64);
+    }
+    if cursor != connectivity.len() {
         return Err(types.len());
     }
     Ok(offsets)
 }
 
-/// 单元节点数与类型不符或含重复节点。
+/// 单元节点数与类型不符、含重复节点，或多面体面流不是闭合一致定向曲面。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidCell;
 
 impl std::fmt::Display for InvalidCell {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("cell has the wrong node count or repeats a node")
+        formatter.write_str(
+            "cell has the wrong node count, repeats a node, or (polyhedron) its faces do not form a closed consistently oriented surface",
+        )
     }
 }
 
 impl std::error::Error for InvalidCell {}
 
 /// 共形拆分一个单元，按局部顺序追加正朝向（对参考单元而言）的四面体节点。
-/// 节点数不符或节点重复的单元返回 `Err(InvalidCell)`。
+/// 节点数不符或节点重复的单元返回 `Err(InvalidCell)`；多面体见 [`decompose_polyhedron`]。
 pub fn decompose_cell(
     kind: CellType,
     nodes: &[MeshIndex],
     out: &mut Vec<[MeshIndex; 4]>,
 ) -> Result<(), InvalidCell> {
-    if nodes.len() != kind.node_count()
+    let Some(count) = kind.fixed_node_count() else {
+        return decompose_polyhedron(nodes, out);
+    };
+    if nodes.len() != count
         || nodes
             .iter()
             .enumerate()
@@ -206,11 +274,141 @@ pub fn decompose_cell(
     Ok(())
 }
 
-/// 单元局部节点镜像为正朝向顺序（原地）。
+/// 多面体拆分（task 031）：`stream` 为规范面流 `[apex, nFaces, n0, ids…, …]`。
+///
+/// 拓扑校验：至少 4 个面，每面至少 3 个互不相同的节点且不含 `apex`，每条有向边恰好出现
+/// 一次且其反向边也恰好出现一次（闭合、一致定向）。每个面从最小节点号起扇形三角化，
+/// 三角形 `(m, a, b)` 朝外，对应四面体 `[m, b, a, apex]`，面朝外时体积为正。
+pub fn decompose_polyhedron(
+    stream: &[MeshIndex],
+    out: &mut Vec<[MeshIndex; 4]>,
+) -> Result<(), InvalidCell> {
+    let (&apex, words) = stream.split_first().ok_or(InvalidCell)?;
+    if face_stream_len(words) != Some(words.len()) || words[0] < 4 {
+        return Err(InvalidCell);
+    }
+    let start = out.len();
+    let mut edges = Vec::with_capacity(words.len());
+    for face in faces(words) {
+        if face.len() < 3
+            || face.contains(&apex)
+            || face
+                .iter()
+                .enumerate()
+                .any(|(index, node)| face[..index].contains(node))
+        {
+            out.truncate(start);
+            return Err(InvalidCell);
+        }
+        for index in 0..face.len() {
+            edges.push((face[index], face[(index + 1) % face.len()]));
+        }
+        let minimum = (0..face.len()).min_by_key(|&i| face[i]).unwrap_or(0);
+        for step in 1..face.len() - 1 {
+            let a = face[(minimum + step) % face.len()];
+            let b = face[(minimum + step + 1) % face.len()];
+            out.push([face[minimum], b, a, apex]);
+        }
+    }
+    edges.sort_unstable();
+    let closed = edges.windows(2).all(|pair| pair[0] != pair[1])
+        && edges
+            .iter()
+            .all(|&(a, b)| edges.binary_search(&(b, a)).is_ok());
+    if !closed {
+        out.truncate(start);
+        return Err(InvalidCell);
+    }
+    Ok(())
+}
+
+/// 单元局部节点镜像为正朝向顺序（原地）；多面体为翻转每个面的节点顺序。
 pub fn mirror_cell(kind: CellType, nodes: &mut [MeshIndex]) {
+    if kind == CellType::Polyhedron {
+        let Some(words) = nodes.get_mut(1..) else {
+            return;
+        };
+        let faces = words.first().map_or(0, |&count| count as usize);
+        let mut cursor = 1_usize;
+        for _ in 0..faces {
+            let Some(&count) = words.get(cursor) else {
+                return;
+            };
+            let Some(face) = words.get_mut(cursor + 1..cursor + 1 + count as usize) else {
+                return;
+            };
+            face.reverse();
+            cursor += 1 + count as usize;
+        }
+        return;
+    }
     let original: Vec<MeshIndex> = nodes.to_vec();
     for (slot, &source) in nodes.iter_mut().zip(kind.mirror()) {
         *slot = original[source];
+    }
+}
+
+/// 单元的源节点（多面体为面流中出现的去重节点，升序；其余类型为局部节点）。
+pub fn cell_source_nodes(kind: CellType, nodes: &[MeshIndex]) -> Vec<MeshIndex> {
+    if kind != CellType::Polyhedron {
+        return nodes.to_vec();
+    }
+    let mut unique: Vec<MeshIndex> = nodes
+        .get(1..)
+        .map(|words| faces(words).flatten().copied().collect())
+        .unwrap_or_default();
+    unique.sort_unstable();
+    unique.dedup();
+    unique
+}
+
+/// 流式读写的一批原始单元（task 031）：与 [`CellLayout`] 同样的类型 + offsets + 连接表，
+/// 但 offsets 从 0 起只覆盖本批，另带区域号；多面体连接为规范面流（含全局 `apex`）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CellBlock {
+    pub types: Vec<CellType>,
+    pub regions: Vec<MeshIndex>,
+    offsets: Vec<usize>,
+    pub connectivity: Vec<MeshIndex>,
+}
+
+impl CellBlock {
+    pub fn len(&self) -> usize {
+        self.types.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.types.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.types.clear();
+        self.regions.clear();
+        self.offsets.clear();
+        self.connectivity.clear();
+    }
+
+    pub fn push(&mut self, kind: CellType, region: MeshIndex, nodes: &[MeshIndex]) {
+        if self.offsets.is_empty() {
+            self.offsets.push(self.connectivity.len());
+        }
+        self.types.push(kind);
+        self.regions.push(region);
+        self.connectivity.extend_from_slice(nodes);
+        self.offsets.push(self.connectivity.len());
+    }
+
+    /// 第 `index` 个单元的（类型，区域，节点）。
+    pub fn cell(&self, index: usize) -> (CellType, MeshIndex, &[MeshIndex]) {
+        (
+            self.types[index],
+            self.regions[index],
+            &self.connectivity[self.offsets[index]..self.offsets[index + 1]],
+        )
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (CellType, MeshIndex, &[MeshIndex])> {
+        (0..self.len()).map(|index| self.cell(index))
     }
 }
 
@@ -722,9 +920,12 @@ mod tests {
         assert!(tets.iter().all(|&tet| volume6(&HEX_REF, tet) < 0.0));
         assert!(decompose_cell(CellType::Pyramid, &[0, 1, 2, 2, 4], &mut tets).is_err());
         assert!(decompose_cell(CellType::Wedge, &[0, 1, 2], &mut tets).is_err());
-        assert_eq!(CellType::from_vtk(VTK_POLYHEDRON), None);
         assert_eq!(
-            cell_offsets(&[CellType::Tetra, CellType::Pyramid], 9),
+            CellType::from_vtk(VTK_POLYHEDRON),
+            Some(CellType::Polyhedron)
+        );
+        assert_eq!(
+            cell_offsets(&[CellType::Tetra, CellType::Pyramid], &[0; 9]),
             Ok(vec![0, 4, 9])
         );
     }

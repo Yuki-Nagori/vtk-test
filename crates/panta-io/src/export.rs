@@ -496,6 +496,12 @@ pub fn export_tet_mesh_vtu(
     path: &Path,
     progress: &Progress,
 ) -> Result<(), ExportError> {
+    // 多面体导出（faces/faceoffsets）随 task 031 PR 3 提供；此前拒绝，避免写出中心节点与错误连接。
+    if mesh.cell_type_counts()[panta_mesh::CellType::Polyhedron.ordinal()] > 0 {
+        return Err(ExportError::UnsupportedFormat(
+            "polyhedron cells (VTU polyhedron export is not implemented yet)".to_owned(),
+        ));
+    }
     // ASCII：每节点约 3×20 字节，每单元连接/偏移/类型约 40 字节。
     let estimate = mesh.nodes.len() as u64 * 60 + mesh.cell_count() as u64 * 60 + 512;
     write_atomically(path, progress, estimate, |writer| {

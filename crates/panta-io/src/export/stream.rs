@@ -265,6 +265,11 @@ pub fn export_volume_asset_vtu(
     progress: &Progress,
 ) -> Result<(), ExportError> {
     let counts = chunks.counts();
+    if counts.polyhedra > 0 {
+        return Err(ExportError::UnsupportedFormat(
+            "polyhedron cells (VTU polyhedron export is not implemented yet)".to_owned(),
+        ));
+    }
     let estimate = counts.nodes as u64 * 60 + counts.cells as u64 * 60 + 512;
     write_atomically(path, progress, estimate, |writer| {
         writeln!(writer, "<?xml version=\"1.0\"?>")?;
@@ -311,10 +316,9 @@ pub fn export_volume_asset_vtu(
             .map_err(|_| ExportError::Io(io::Error::other("cell type buffer allocation failed")))?;
         let finished = chunks
             .visit_cells(None, |batch| {
-                for (kind, _, nodes) in batch.iter().flatten() {
+                for (kind, _, nodes) in batch.iter().flat_map(panta_mesh::CellBlock::iter) {
                     kinds.push(kind.vtk_code());
-                    if let Err(error) = super::write_node_line(writer, &nodes[..kind.node_count()])
-                    {
+                    if let Err(error) = super::write_node_line(writer, nodes) {
                         failure = Some(error);
                         return false;
                     }
@@ -337,7 +341,8 @@ pub fn export_volume_asset_vtu(
         )?;
         let mut end = 0_u64;
         for &code in &kinds {
-            end += panta_mesh::CellType::from_vtk(code).map_or(0, |kind| kind.node_count() as u64);
+            end += panta_mesh::CellType::from_vtk(code)
+                .map_or(0, |kind| kind.fixed_node_count().unwrap_or(0) as u64);
             writeln!(writer, "{end}")?;
         }
         writeln!(

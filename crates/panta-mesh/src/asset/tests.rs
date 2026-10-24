@@ -419,6 +419,7 @@ mod volume_streaming {
             boundary: 0,
             region_count: 1,
             boundary_group_count: 0,
+            polyhedra: 0,
         };
         let result =
             write_volume_asset_streaming(std::io::Cursor::new(Vec::new()), counts, &Broken, None);
@@ -434,11 +435,11 @@ mod mixed_cells {
     };
 
     #[test]
-    fn mixed_asset_round_trips_as_v4_with_native_cells() -> TestResult {
+    fn mixed_asset_round_trips_as_v5_with_native_cells() -> TestResult {
         let mesh = mixed_mesh();
         let asset = MeshAsset::Volume(mesh.clone());
         let (bytes, digest) = encode_mesh_asset(&asset)?;
-        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into()?), 4);
+        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into()?), 5);
         assert_eq!(decode_mesh_asset(&bytes)?, asset);
         assert_eq!(read_streaming(&bytes)?, Some((asset, digest)));
 

@@ -54,7 +54,7 @@ fn volumes_tail(mesh: &TetMesh) -> f64 {
 
 pub(crate) fn mixed_mesh() -> TetMesh {
     let (nodes, types, connectivity) = mixed_cells();
-    let offsets = cell_offsets(&types, connectivity.len()).unwrap_or_default();
+    let offsets = cell_offsets(&types, &connectivity).unwrap_or_default();
     volume_mesh_from_cells(nodes, types, offsets, connectivity).unwrap_or_else(|error| {
         panic!("mixed fixture must build: {error:?}");
     })
@@ -67,7 +67,7 @@ fn mixed_cells_keep_original_ids_types_and_volumes() -> TestResult {
     assert!(report.is_ok(), "{:?}", report.issues);
     assert!((report.volume_mm3 - (1.0 + 1.0 / 6.0 + 0.5 + volumes_tail(&mesh))).abs() < 1e-12);
     assert_eq!(mesh.cell_count(), 4);
-    assert_eq!(mesh.cell_type_counts(), [1, 1, 1, 1]);
+    assert_eq!(mesh.cell_type_counts(), [1, 1, 1, 1, 0]);
     // 六面体 5–6、金字塔 2、棱柱 3、四面体 1。
     let per_cell: Vec<usize> = (0..4)
         .map(|cell| {
@@ -99,9 +99,9 @@ fn mixed_cells_keep_original_ids_types_and_volumes() -> TestResult {
 }
 
 #[test]
-fn inverted_cells_are_mirrored_but_degenerate_or_polyhedron_cells_are_rejected() -> TestResult {
+fn inverted_cells_are_mirrored_but_degenerate_cells_are_rejected() -> TestResult {
     let (nodes, types, mut connectivity) = mixed_cells();
-    let offsets = cell_offsets(&types, connectivity.len()).map_err(|c| format!("cell {c}"))?;
+    let offsets = cell_offsets(&types, &connectivity).map_err(|c| format!("cell {c}"))?;
     for (cell, kind) in types.iter().enumerate() {
         let range = offsets[cell] as usize..offsets[cell + 1] as usize;
         mirror_cell(*kind, &mut connectivity[range]);
@@ -120,7 +120,6 @@ fn inverted_cells_are_mirrored_but_degenerate_or_polyhedron_cells_are_rejected()
         volume_mesh_from_cells(nodes.clone(), types.clone(), offsets.clone(), repeated),
         Err(VolumeError(message)) if message.contains("cell 0")
     ));
-    assert!(CellType::from_vtk(crate::VTK_POLYHEDRON).is_none());
     assert!(volume_mesh_from_cells(nodes, types, vec![0, 8, 13], connectivity).is_err());
     Ok(())
 }
@@ -144,10 +143,10 @@ fn quality_is_reported_per_original_cell_type_resident_and_streamed() -> TestRes
     // 二面角/纵横比只统计原生四面体，拆分出的四面体不计入。
     assert_eq!(resident.tet_count, 1);
     let counts: Vec<usize> = resident.by_type.iter().map(|kind| kind.count).collect();
-    assert_eq!(counts, vec![1, 1, 1, 1]);
+    assert_eq!(counts, vec![1, 1, 1, 1, 0]);
     let hex = resident.by_type[CellType::Hexahedron.ordinal()];
     assert!((hex.min_scaled_jacobian - 1.0).abs() < 1e-12);
-    for summary in &resident.by_type {
+    for summary in resident.by_type.iter().filter(|summary| summary.count > 0) {
         assert!(summary.min_scaled_jacobian > 0.0 && summary.min_scaled_jacobian <= 1.0);
     }
     let directory =

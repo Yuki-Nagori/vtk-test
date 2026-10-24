@@ -46,11 +46,12 @@ pub(crate) fn cell_type_label(kind: panta_mesh::CellType) -> &'static str {
         panta_mesh::CellType::Hexahedron => "六面体",
         panta_mesh::CellType::Wedge => "三棱柱",
         panta_mesh::CellType::Pyramid => "四棱锥",
+        panta_mesh::CellType::Polyhedron => "多面体",
     }
 }
 
 /// “六面体 8 · 四面体 4”形式的类型计数，跳过 0。
-pub(crate) fn cell_type_summary(counts: [u64; 4]) -> String {
+pub(crate) fn cell_type_summary(counts: [u64; panta_mesh::CELL_TYPE_COUNT]) -> String {
     panta_mesh::CellType::ALL
         .iter()
         .zip(counts)
@@ -60,15 +61,21 @@ pub(crate) fn cell_type_summary(counts: [u64; 4]) -> String {
         .join(" · ")
 }
 
-/// 每类一行：“三棱柱 12：缩放雅可比 最小 0.83 / 平均 0.97，劣质 0”。
+/// 每类一行：“三棱柱 12：缩放雅可比 最小 0.83 / 平均 0.97，劣质 0”；多面体为正交质量。
 pub(crate) fn cell_quality_summary(quality: &panta_mesh::TetQuality) -> String {
     panta_mesh::CellType::ALL
         .iter()
         .zip(&quality.by_type)
         .filter(|(_, summary)| summary.count > 0)
         .map(|(&kind, summary)| {
+            // 多面体的指标是正交质量（task 031），其余类型为缩放雅可比。
+            let metric = if kind == panta_mesh::CellType::Polyhedron {
+                "正交质量"
+            } else {
+                "缩放雅可比"
+            };
             format!(
-                "{} {}：缩放雅可比 最小 {:.3} / 平均 {:.3}，劣质 {}",
+                "{} {}：{metric} 最小 {:.3} / 平均 {:.3}，劣质 {}",
                 cell_type_label(kind),
                 summary.count,
                 summary.min_scaled_jacobian,

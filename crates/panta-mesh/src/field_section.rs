@@ -197,6 +197,33 @@ pub(crate) fn check_field(
     Ok(())
 }
 
+/// 各多面体中心节点的节点场元组（按中心节点号顺序）：该单元不重复节点的算术平均，
+/// 任一节点非有限则结果非有限（按缺失值处理）。
+pub(crate) fn apex_tuples(mesh: &TetMesh, values: &[f64], components: usize) -> Vec<[f64; 3]> {
+    let Some(layout) = &mesh.cells else {
+        return Vec::new();
+    };
+    let source = mesh.source_node_count();
+    let mut apex = vec![[0.0; 3]; mesh.nodes.len() - source];
+    for (cell, kind) in layout.types.iter().enumerate() {
+        if *kind != crate::CellType::Polyhedron {
+            continue;
+        }
+        let stream = layout.cell_nodes(cell);
+        let unique = crate::cells::cell_source_nodes(*kind, stream);
+        let mut sum = [0.0; 3];
+        for &node in &unique {
+            let value = tuple(values, components, node as usize);
+            for slot in 0..3 {
+                sum[slot] += value[slot];
+            }
+        }
+        let count = unique.len().max(1) as f64;
+        apex[stream[0] as usize - source] = sum.map(|value| value / count);
+    }
+    apex
+}
+
 /// 每个外表面三角形所属的四面体（全局下标）；找不到时为 `u32::MAX`。
 pub(crate) fn boundary_owners(mesh: &TetMesh) -> Vec<u32> {
     let mut on_boundary = vec![0u64; mesh.nodes.len().div_ceil(64)];
@@ -251,7 +278,7 @@ pub fn section_surface_field(
     }
     check_field(
         field,
-        mesh.nodes.len() as u64,
+        mesh.source_node_count() as u64,
         mesh.cell_count() as u64,
         component,
     )
@@ -260,6 +287,20 @@ pub fn section_surface_field(
     let distance = plane_distances(&mesh.nodes, origin, normal);
     let components = usize::from(field.components);
     let values = &field.values;
+    let source = mesh.source_node_count();
+    let apex = match field.association {
+        FieldAssociation::Node => apex_tuples(mesh, values, components),
+        FieldAssociation::Cell => Vec::new(),
+    };
+    // 多面体中心节点（task 031）不在节点场中，取所属单元节点的算术平均。
+    let node_tuple = |node: u32| {
+        let node = node as usize;
+        if node < source {
+            tuple(values, components, node)
+        } else {
+            apex[node - source]
+        }
+    };
     let mut output = FieldOutput::default();
     match field.association {
         FieldAssociation::Node => {
@@ -269,7 +310,7 @@ pub fn section_surface_field(
                         (
                             mesh.nodes[node as usize],
                             distance[node as usize],
-                            tuple(values, components, node as usize),
+                            node_tuple(node),
                         )
                     }),
                     &mut output,
@@ -306,7 +347,7 @@ pub fn section_surface_field(
                 &distance,
                 tet.nodes,
                 normal,
-                |node| tuple(values, components, node as usize),
+                node_tuple,
                 &mut output,
             ),
             FieldAssociation::Cell => {

@@ -70,11 +70,12 @@ impl ProjectService {
         let counts = self
             .volume_meshes
             .get(import_id)
-            .map(|volume| (volume.nodes.len(), volume.cell_count()))
+            // 节点场长度是来源节点数，不含多面体拆分追加的中心节点（task 031）。
+            .map(|volume| (volume.source_node_count(), volume.cell_count()))
             .or_else(|| {
                 self.streamed_volumes
                     .get(import_id)
-                    .map(|counts| (counts.nodes, counts.cells))
+                    .map(|counts| (counts.source_nodes(), counts.cells))
             });
         Ok(Some(ResultFieldSource {
             path,

@@ -17,7 +17,8 @@ use super::format::{
 use super::{ChunkError, worker_count};
 use crate::field_section::{range_key, tuple};
 use crate::{
-    CellLayout, FieldAssociation, ResultField, SurfaceMesh, SurfaceTriangle, TetMesh, Tetrahedron,
+    CellBlock, CellLayout, CellType, FieldAssociation, ResultField, SurfaceMesh, SurfaceTriangle,
+    TetMesh, Tetrahedron,
 };
 
 /// 分块构建的结果场来源（task 029）：逐个加载，构建峰值只多一个场。
@@ -300,6 +301,15 @@ pub fn build_chunked_volume_with_fields<W: Write>(
             "tet count {tet_count} outside 1..=u32::MAX"
         )));
     }
+    if source
+        .cell_layout()
+        .is_some_and(|layout| layout.polyhedron_count() > 0)
+    {
+        // task 031 PR 1：`.pchunk` v3 不能表示多面体，PR 2 升级 `.pchunk` 后支持。
+        return Err(ChunkError::Invalid(
+            "polyhedron cells are not supported by the chunked format yet".to_owned(),
+        ));
+    }
     if options.max_chunk_cells == 0 || options.simplify_ratio == 0 {
         return Err(ChunkError::Invalid(
             "chunk options must be positive".to_owned(),
@@ -530,21 +540,32 @@ pub fn build_chunked_from_asset_with_fields<W: Write>(
         regions
             .try_reserve_exact(counts.cells)
             .map_err(|_| memory())?;
+        let mut polyhedron = false;
         let finished = asset
             .visit_cells(Some((progress, 0.05, 0.25)), |batch| {
-                for (kind, region, nodes) in batch.iter().flatten() {
-                    types.push(*kind);
-                    regions.push(*region);
-                    connectivity.extend_from_slice(&nodes[..kind.node_count()]);
+                for (kind, region, nodes) in batch.iter().flat_map(CellBlock::iter) {
+                    if kind == CellType::Polyhedron {
+                        polyhedron = true;
+                        return false;
+                    }
+                    types.push(kind);
+                    regions.push(region);
+                    connectivity.extend_from_slice(nodes);
                 }
                 !progress.is_cancelled()
             })
             .map_err(asset_error)?;
+        if polyhedron {
+            // task 031 PR 1：`.pchunk` v3 不能表示多面体，PR 2 升级 `.pchunk` 后支持。
+            return Err(ChunkError::Invalid(
+                "polyhedron cells are not supported by the chunked format yet".to_owned(),
+            ));
+        }
         if !finished {
             return Ok(None);
         }
         let invalid = |_| ChunkError::Format("mixed cell stream invalid".to_owned());
-        let offsets = crate::cell_offsets(&types, connectivity.len()).map_err(invalid)?;
+        let offsets = crate::cell_offsets(&types, &connectivity).map_err(invalid)?;
         if connectivity
             .iter()
             .any(|&node| node as usize >= nodes.len())

@@ -20,7 +20,7 @@ pub use vtk_legacy::{parse_vtk_legacy, parse_vtk_legacy_grid};
 pub use vtk_xml::{parse_vtp, parse_vtu, parse_vtu_grid};
 
 /// 体网格导入的原始数据（task 030 起为原生混合单元）：接受线性 tet(10)、voxel(11，
-/// 按 VTK 定义重排为 hex)、hex(12)、wedge(13)、pyramid(14)；polyhedron(42)、
+/// 按 VTK 定义重排为 hex)、hex(12)、wedge(13)、pyramid(14)；polyhedron(42，task 031 PR 3 前)、
 /// 二次单元与二维单元整体拒绝，不做部分导入。节点顺序保持来源 VTK 局部顺序。
 ///
 /// `fields` 为来源中的节点 / 单元结果场（task 029），下标与 `points` / 原始单元一一对应；
@@ -58,20 +58,21 @@ impl RawGrid {
                     .and_then(panta_mesh::CellType::from_vtk)
             };
             let Some(kind) = kind else {
-                let hint = if code == u64::from(panta_mesh::VTK_POLYHEDRON) {
-                    "polyhedron cells are reserved but not supported yet"
-                } else {
-                    "only linear tet (10), voxel (11), hex (12), wedge (13) and pyramid (14) cells are supported"
-                };
                 return Err(FormatError::new(format!(
-                    "cell {index} has type {code}; {hint}"
+                    "cell {index} has type {code}; only linear tet (10), voxel (11), hex (12), \
+                     wedge (13) and pyramid (14) cells are supported"
                 )));
             };
-            if nodes.len() != kind.node_count() {
+            // 多面体导入（VTU faces/faceoffsets 与 legacy 面流）随 task 031 PR 3 提供。
+            let Some(node_count) = kind.fixed_node_count() else {
                 return Err(FormatError::new(format!(
-                    "cell {index} ({}) must have {} nodes",
-                    kind.name(),
-                    kind.node_count()
+                    "cell {index} has type {code}; polyhedron import is not supported yet"
+                )));
+            };
+            if nodes.len() != node_count {
+                return Err(FormatError::new(format!(
+                    "cell {index} ({}) must have {node_count} nodes",
+                    kind.name()
                 )));
             }
             let start = connectivity.len();
@@ -118,7 +119,7 @@ impl RawGrid {
     pub fn take_mesh(&mut self) -> Result<panta_mesh::TetMesh, panta_mesh::VolumeError> {
         let types = std::mem::take(&mut self.types);
         let connectivity = std::mem::take(&mut self.connectivity);
-        let offsets = panta_mesh::cell_offsets(&types, connectivity.len())
+        let offsets = panta_mesh::cell_offsets(&types, &connectivity)
             .map_err(|cell| panta_mesh::VolumeError(format!("cell {cell} node count mismatch")))?;
         panta_mesh::volume_mesh_from_cells(
             std::mem::take(&mut self.points),

@@ -98,7 +98,7 @@ fn open_results(
     let reader = ResultAssetReader::open(source.path).ok()?;
     (reader.digest() == source.digest
         && reader.mesh_digest() == digest
-        && reader.node_count() == counts.nodes as u64
+        && reader.node_count() == counts.source_nodes() as u64
         && reader.cell_count() == counts.cells as u64
         && !reader.summaries().is_empty())
     .then_some(reader)

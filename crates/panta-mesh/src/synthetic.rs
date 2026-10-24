@@ -141,6 +141,7 @@ impl SyntheticTetBlock {
             boundary: self.boundary_count(),
             region_count: 1,
             boundary_group_count: 6,
+            polyhedra: 0,
         }
     }
 
@@ -360,7 +361,7 @@ impl SyntheticMixedBlock {
                         scratch.clear();
                         let _ = crate::cells::decompose_cell(
                             kind,
-                            &nodes[..kind.node_count()],
+                            &nodes[..kind.fixed_node_count().unwrap_or(0)],
                             &mut scratch,
                         );
                         scratch.len()
@@ -400,8 +401,8 @@ impl SyntheticMixedBlock {
         self.tets
     }
 
-    /// 各类型原始单元数，顺序同 [`crate::CellType::ALL`]（四面体、六面体、楔形、金字塔）。
-    pub fn type_counts(&self) -> [u64; 4] {
+    /// 各类型原始单元数，顺序同 [`crate::CellType::ALL`]（四面体、六面体、楔形、金字塔、多面体）。
+    pub fn type_counts(&self) -> [u64; crate::CELL_TYPE_COUNT] {
         let squares = (self.n * self.n) as u64;
         let prism = 2 * self.prism_layers as u64;
         [
@@ -409,6 +410,7 @@ impl SyntheticMixedBlock {
             self.core_layers as u64 * squares,
             2 * prism * squares,
             10 * squares,
+            0,
         ]
     }
 
@@ -428,6 +430,7 @@ impl SyntheticMixedBlock {
             boundary: self.boundary_count(),
             region_count: 2,
             boundary_group_count: 6,
+            polyhedra: 0,
         }
     }
 
@@ -483,7 +486,7 @@ impl SyntheticMixedBlock {
     }
 
     /// 第 `index` 个原始单元：类型、区域、节点（类型节点数之后为 `u32::MAX`）。
-    pub fn cell(&self, index: usize) -> crate::CellRecord {
+    pub fn cell(&self, index: usize) -> (crate::CellType, u32, [u32; 8]) {
         use crate::CellType;
         let layer = self
             .layers
@@ -633,7 +636,10 @@ impl crate::VolumeSource for SyntheticMixedBlock {
         out.extend(range.map(|index| self.boundary_face(index)));
     }
 
-    fn cells(&self, range: Range<usize>, out: &mut Vec<crate::CellRecord>) {
-        out.extend(range.map(|index| self.cell(index)));
+    fn cells(&self, range: Range<usize>, out: &mut crate::CellBlock) {
+        for index in range {
+            let (kind, region, nodes) = self.cell(index);
+            out.push(kind, region, &nodes[..kind.fixed_node_count().unwrap_or(0)]);
+        }
     }
 }
