@@ -1,7 +1,7 @@
 # 033 — 播放控制与时序结果场
 
 - 状态：in-progress
-- 阶段：PR 1（任务文档 + 时间步存储 + OpenFOAM / CGNS 多时间步导入）进行中；PR 2（VTU `.pvd` 时间集合）、PR 3（统一播放工具栏 + 切面随时间更新）待做
+- 阶段：PR 1（任务文档 + 时间步存储 + OpenFOAM / CGNS 多时间步导入）已合并（#47）；PR 2（VTU `.pvd` 时间集合）进行中；PR 3（统一播放工具栏 + 切面随时间更新）待做
 - 依赖：[020](020-time-series-animation.md)、[029](029-result-fields.md)、[032](032-openfoam-cgns-import.md)
 - 优先级：P1
 - 负责人：Grok Bot
@@ -47,7 +47,7 @@
 2. **导入**：`RawGrid` 新增 `time_steps`（每步 time / label / 字段）；
    - OpenFOAM：收入全部数值时间目录中的 volScalar / volVector 场；只在有场的时间目录成步；仅 1 步时与 032 行为一致；
    - CGNS：有 `BaseIterativeData_t/TimeValues` 且各 Zone 的 `ZoneIterativeData_t/FlowSolutionPointers` 指向的解存在时按步组织（不再加前缀）；否则保持 032 的前缀行为；
-   - VTU `.pvd`（PR 2）：读集合中各 `DataSet`（`part` 只接受单一值），首个文件给出网格，其余文件网格必须与首个逐字节等价（点、连接、类型），否则整体拒绝；
+   - VTU `.pvd`（PR 2）：读集合中各 `DataSet`（`part` 只接受单一值），最新一步给出网格，其余各步解析后必须与之等价（点坐标按位、连接、类型），否则整体拒绝；
    - 内存预算：除最新步外的场值总量超过 `MAX_TIME_STEP_VALUES`（2^28 个 f64 = 2 GiB）时只导入最新步，并在 `skipped_result_fields` 记一条说明（保守，避免导入时爆内存）。
 3. **服务 API**：`result_time_steps(import_id)`（time / label / 每步字段摘要）与按步的 `result_field_source_at(import_id, step)`；单字段缓存键已含结果摘要，跨步天然区分。
 4. **播放（PR 3）**：VM 把 020 的 `animation*` 属性替换为统一的 `playback*`（来源：`sequence` 或 `timeSteps`），新增首帧 / 末帧 / 循环开关；QML 新建 `PlaybackBar` 放在视口底部，替换侧栏的 020 动画控件；结果场时间步播放时切面按当前步读取字段重算，目标帧未就绪时保持上一帧（与 020 一致，不阻塞 GUI）；播放期间 export / diagnose 禁用规则沿用 020；时间步播放允许切面（这是目的）。
@@ -62,7 +62,7 @@ panta-io（格式解析）、panta-core（工程模型 / 导入 / 结果服务�
 ## 前置条件与待决策
 
 - 032 已合并（PR #46）后从 main 开分支。
-- 待决策（本文档自行按保守方案定，记录在决策记录）：色标默认全局范围；内存预算；`.pvd` 拓扑一致性按字节比较。
+- 待决策（本文档自行按保守方案定，记录在决策记录）：色标默认全局范围；内存预算；`.pvd` 拓扑一致性按解析值比较（见决策记录）。
 
 ## 实施步骤
 
@@ -84,10 +84,10 @@ PR 3 删除 VM 的 `animation*` 属性与 invokable、侧栏 020 动画控件，
 
 ## 验收标准
 
-- [ ] OpenFOAM 多时间目录算例导入后 `result_time_steps` 按时间升序给出全部步，最新步与 032 单步导入结果逐值相等；单时间目录算例清单不出现 `result_steps`。
-- [ ] CGNS 带 BaseIterativeData 的文件按步导入，字段名不带解名前缀；无 BaseIterativeData 的多解文件行为与 032 相同。
-- [ ] 任一步 sidecar 摘要不符时读取该步被拒，其余步与网格不受影响；导入中途失败不残留新 sidecar。
-- [ ] `.pvd` 集合导入；拓扑不一致整体拒绝并给出明确错误。
+- [x] OpenFOAM 多时间目录算例导入后 `result_time_steps` 按时间升序给出全部步，最新步与 032 单步导入结果逐值相等；单时间目录算例清单不出现 `result_steps`。
+- [x] CGNS 带 BaseIterativeData 的文件按步导入，字段名不带解名前缀；无 BaseIterativeData 的多解文件行为与 032 相同。
+- [x] 任一步 sidecar 摘要不符时读取该步被拒，其余步与网格不受影响；导入中途失败不残留新 sidecar。
+- [x] `.pvd` 集合导入；拓扑不一致整体拒绝并给出明确错误。
 - [ ] 播放工具栏：首 / 上 / 播放 / 暂停 / 下 / 末 / 循环 / 帧率 / 滑块在两种来源下都可用；循环关闭时播放到末帧自动暂停；切面 + 字段时颜色与色标随步更新；分块体网格时间轴禁用并提示。
 - [ ] `cargo format` / `cargo quality` / `cargo test --locked --workspace` / CTest / offscreen 启动通过；PR 3 nightly 绿。
 
@@ -97,6 +97,8 @@ PR 3 删除 VM 的 `animation*` 属性与 invokable、侧栏 020 动画控件，
 |---|---|---|---|
 | 2026-10-24 | PR 1：`cargo test -p panta-io`（OpenFOAM transient 4 时间目录、CGNS transient 3 步、单步 / 超预算 / 坏字段分步记录） | 通过 | 通过 |
 | 2026-10-24 | PR 1：panta-core `results::tests`（多步 sidecar 路径、重开、篡改单步、清单 4 种非法改写被拒、单步不写 `result_steps`、CGNS NaN）+ `time_series_sanitizing_*` | 通过 | 通过 |
+| 2026-10-24 | PR 1 合并（#47，CI 与 nightly 绿） | — | 合并于 18:37（UTC+8） |
+| 2026-10-24 | PR 2：`cargo test -p panta-io pvd`（乱序 timestep 排序、逐步字段集合、拓扑变化拒绝、集合文件 8 种非法情形、单步 / 超预算 / 条目不符、缺失 VTU）+ core `pvd_collection_imports_time_steps_and_rejects_moving_meshes` | 通过 | 通过 |
 
 ## 风险与回退
 
@@ -108,6 +110,7 @@ PR 3 删除 VM 的 `animation*` 属性与 invokable、侧栏 020 动画控件，
 
 - 2026-10-24：创建任务，按上文保守方案定范围与 PR 拆分。
 - 2026-10-24（PR 1）：OpenFOAM 只把含体场文件的时间目录算作步（`0.02/uniform` 之类不算）；更早步字段文件预算 2 GiB、场值预算 2^28 个 f64，超出只留最新步并记录。解压失败从整体失败改为单字段跳过（同一步其他字段照常）。CGNS 迭代声明不完整（缺 TimeValues / 指针长度不符）时回退 032 的前缀多解行为；未被指针引用的解跳过并记录；Null 指针填 NaN（与 032 跨 Zone 缺失规则一致）。导入层再清洗：无场的更早步省略，标签空 / 过长 / 重复改为 `#N`，时间非有限或倒序回退最新步。清单不升版本，最后一步与 `results` 共用引用。
+- 2026-10-24（PR 2）：`.pvd` 拓扑一致性按解析后的值比较（坐标按位、单元表逐项），而不是原始字节——同一网格可能以不同编码 / 压缩写出，按值比较更宽松但仍严格排除网格变化。多 part（多块）集合、非 VTU 数据集、重复 timestep 均整体拒绝；任一步 VTU 损坏整体拒绝（不做部分时间序列）。对话框对 `.pvd` 默认实体 3D（表面导入无时间步），不推断单位。
 
 ## 完成摘要
 

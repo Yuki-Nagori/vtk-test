@@ -52,10 +52,13 @@ DialogWindow {
         return lower.endsWith(".foam") || lower.endsWith(".openfoam") || lower.endsWith(".cgns") || /[\\/]system[\\/]controldict$/.test(lower);
     }
 
+    // ParaView 集合 .pvd（task 033）：只有体导入保留时间步，默认实体 3D；单位不推断，沿用当前选择。
     function selectSource(path: string) {
         sourcePath = path;
-        if (isCfdPath(path)) {
+        const cfd = isCfdPath(path);
+        if (cfd)
             unitsCombo.currentIndex = unitValues.indexOf("meters");
+        if (cfd || path.toLowerCase().endsWith(".pvd")) {
             const solid = meshTypes.findIndex(entry => entry.id === "solid-3d");
             if (solid >= 0)
                 meshTypeCombo.currentIndex = solid;
@@ -249,7 +252,7 @@ DialogWindow {
         id: fileDialog
         title: "选择网格文件"
         fileMode: FileDialog.OpenFile
-        nameFilters: ["网格文件 (*.stl *.vtu *.vtp *.vtk *.obj *.ply *.foam *.openfoam controlDict *.cgns)", "STL 文件 (*.stl)", "VTK 文件 (*.vtu *.vtp *.vtk)", "OpenFOAM 算例 (*.foam *.openfoam controlDict)", "CGNS 文件 (*.cgns)", "OBJ 文件 (*.obj)", "PLY 文件 (*.ply)"]
+        nameFilters: ["网格文件 (*.stl *.vtu *.vtp *.vtk *.pvd *.obj *.ply *.foam *.openfoam controlDict *.cgns)", "STL 文件 (*.stl)", "VTK 文件 (*.vtu *.vtp *.vtk *.pvd)", "OpenFOAM 算例 (*.foam *.openfoam controlDict)", "CGNS 文件 (*.cgns)", "OBJ 文件 (*.obj)", "PLY 文件 (*.ply)"]
         onAccepted: {
             if (!dialog.visible)
                 return;

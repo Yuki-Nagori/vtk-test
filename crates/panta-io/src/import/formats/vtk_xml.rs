@@ -44,10 +44,10 @@ fn parse_xml(bytes: &[u8], dataset: &str) -> FormatResult<SurfaceMesh> {
 }
 
 #[derive(Debug)]
-struct Tag {
-    name: String,
-    attributes: HashMap<String, String>,
-    closing: bool,
+pub(super) struct Tag {
+    pub(super) name: String,
+    pub(super) attributes: HashMap<String, String>,
+    pub(super) closing: bool,
     self_closing: bool,
     /// 起始标签之后、下一个 `<` 之前的文本（inline 数据）。
     text_start: usize,
@@ -55,7 +55,7 @@ struct Tag {
 }
 
 /// 扫描 `[0, limit)` 内的标签；跳过注释和处理指令。
-fn scan_tags(bytes: &[u8], limit: usize) -> FormatResult<Vec<Tag>> {
+pub(super) fn scan_tags(bytes: &[u8], limit: usize) -> FormatResult<Vec<Tag>> {
     let mut tags = Vec::new();
     let mut position = 0;
     while let Some(offset) = bytes[position..limit].iter().position(|&byte| byte == b'<') {

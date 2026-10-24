@@ -1012,10 +1012,11 @@ QString ProjectViewModel::classifyDroppedUrl(const QUrl& url) const {
     if (info.fileName() == QLatin1String("controlDict") &&
         info.dir().dirName() == QLatin1String("system"))
         return QStringLiteral("mesh");
-    static const QStringList mesh_suffixes = {
-        QStringLiteral("stl"),  QStringLiteral("vtu"),      QStringLiteral("vtp"),
-        QStringLiteral("vtk"),  QStringLiteral("obj"),      QStringLiteral("ply"),
-        QStringLiteral("foam"), QStringLiteral("openfoam"), QStringLiteral("cgns")};
+    static const QStringList mesh_suffixes = {QStringLiteral("stl"),  QStringLiteral("vtu"),
+                                              QStringLiteral("vtp"),  QStringLiteral("vtk"),
+                                              QStringLiteral("obj"),  QStringLiteral("ply"),
+                                              QStringLiteral("foam"), QStringLiteral("openfoam"),
+                                              QStringLiteral("cgns"), QStringLiteral("pvd")};
     return mesh_suffixes.contains(suffix) ? QStringLiteral("mesh") : QString();
 }
 

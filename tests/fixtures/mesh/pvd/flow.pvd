@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<VTKFile type="Collection" version="0.1" byte_order="LittleEndian">
+  <Collection>
+    <DataSet timestep="1" group="" part="0" file="steps/flow_2.vtu"/>
+    <DataSet timestep="0" group="" part="0" file="steps/flow_0.vtu"/>
+    <DataSet timestep="0.5" group="" part="0" file="steps/flow_1.vtu"/>
+  </Collection>
+</VTKFile>

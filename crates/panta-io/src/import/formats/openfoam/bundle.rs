@@ -253,13 +253,23 @@ pub struct Entry<'a> {
 }
 
 pub fn decode(bytes: &[u8]) -> FormatResult<Vec<Entry<'_>>> {
+    decode_with(bytes, MAGIC, "malformed OpenFOAM case snapshot")
+}
+
+/// 与 [`decode`] 相同的条目布局，换用其他包头（`.pvd` 集合快照，task 033）。
+pub(crate) fn decode_with<'a>(
+    bytes: &'a [u8],
+    magic: &[u8],
+    malformed: &'static str,
+) -> FormatResult<Vec<Entry<'a>>> {
     struct Reader<'a> {
         rest: &'a [u8],
+        malformed: &'static str,
     }
     impl<'a> Reader<'a> {
         fn take(&mut self, length: usize) -> FormatResult<&'a [u8]> {
             if self.rest.len() < length {
-                return Err(FormatError::new("malformed OpenFOAM case snapshot"));
+                return Err(FormatError::new(self.malformed));
             }
             let (head, tail) = self.rest.split_at(length);
             self.rest = tail;
@@ -276,19 +286,19 @@ pub fn decode(bytes: &[u8]) -> FormatResult<Vec<Entry<'_>>> {
             } else {
                 u64::from(u32::from_le_bytes(self.word()?))
             };
-            usize::try_from(value).map_err(|_| FormatError::new("malformed OpenFOAM case snapshot"))
+            usize::try_from(value).map_err(|_| FormatError::new(self.malformed))
         }
     }
     let rest = bytes
-        .strip_prefix(MAGIC)
-        .ok_or_else(|| FormatError::new("malformed OpenFOAM case snapshot"))?;
-    let mut reader = Reader { rest };
+        .strip_prefix(magic)
+        .ok_or_else(|| FormatError::new(malformed))?;
+    let mut reader = Reader { rest, malformed };
     let count = reader.length(false)?;
     let mut entries = Vec::with_capacity(count.min(4096));
     for _ in 0..count {
         let path_length = reader.length(false)?;
         let relative = std::str::from_utf8(reader.take(path_length)?)
-            .map_err(|_| FormatError::new("malformed OpenFOAM case snapshot"))?;
+            .map_err(|_| FormatError::new(malformed))?;
         let length = reader.length(true)?;
         entries.push(Entry {
             relative,
@@ -296,7 +306,7 @@ pub fn decode(bytes: &[u8]) -> FormatResult<Vec<Entry<'_>>> {
         });
     }
     if !reader.rest.is_empty() {
-        return Err(FormatError::new("malformed OpenFOAM case snapshot"));
+        return Err(FormatError::new(malformed));
     }
     Ok(entries)
 }
