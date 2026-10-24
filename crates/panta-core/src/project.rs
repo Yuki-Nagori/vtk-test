@@ -53,9 +53,9 @@ mod preview;
 mod results;
 mod volume;
 pub use volume::{
-    StreamedAsset, StreamedKind, export_streamed_surface, export_streamed_volume_vtu,
-    export_tet_mesh_vtu, section_plane, streamed_section_plane, streamed_volume_quality,
-    volume_quality,
+    SharedChunks, StreamedAsset, StreamedKind, export_streamed_surface, export_streamed_volume_vtu,
+    export_tet_mesh_vtu, section_plane, section_plane_field, streamed_section_plane,
+    streamed_section_plane_field, streamed_volume_quality, volume_quality,
 };
 
 pub use crate::activation::{ActivationAttempt, Outcome, OutcomeKind};
@@ -335,6 +335,7 @@ mod tests {
                             project_root: PathBuf::from("unused-project"),
                             relative_path: "unused.pmesh".to_owned(),
                             expected_digest: "sha256:test".to_owned(),
+                            results: None,
                         },
                         |_, _, _, _| Ok(()),
                     )

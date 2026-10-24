@@ -4,8 +4,8 @@
 use super::{ProjectError, ProjectService};
 use panta_mesh::chunked::{ChunkError, ChunkedVolume};
 use panta_mesh::{
-    Progress, SurfaceAssetChunks, SurfaceMesh, TetMesh, TetQuality, VolumeAssetChunks,
-    VolumeStreamCounts, VolumeStreamError,
+    FieldAssociation, FieldComponent, FieldSection, Progress, ResultField, SurfaceAssetChunks,
+    SurfaceMesh, TetMesh, TetQuality, VolumeAssetChunks, VolumeStreamCounts, VolumeStreamError,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -188,12 +188,7 @@ pub fn streamed_section_plane(
     fraction: f64,
     progress: &Progress,
 ) -> Result<Option<SurfaceMesh>, ProjectError> {
-    let length = normal.iter().map(|value| value * value).sum::<f64>().sqrt();
-    if !length.is_finite() || length == 0.0 || !fraction.is_finite() {
-        return Err(ProjectError::CommandInvalid(
-            "section normal or position is invalid".to_owned(),
-        ));
-    }
+    validate_plane(normal, fraction)?;
     if let Some(SharedChunks(volume)) = &asset.chunks {
         let plane = volume
             .plane_through_nodes(normal, fraction)
@@ -205,6 +200,66 @@ pub fn streamed_section_plane(
     let mut chunks = open_volume(asset)?;
     panta_mesh::section_plane_streaming(&mut chunks, normal, fraction, progress)
         .map_err(|error| stream_error(asset, error))
+}
+
+/// 单元未驻留体网格的场着色切面（task 029），几何与 [`streamed_section_plane`] 位级一致。
+/// 只在派生分块文件带该字段时可用：逐次扫描 v3 资产的回退路径不支持场剖面
+/// （每次都要再读整个结果场），返回 `CommandInvalid`，调用方退回无场切面。
+pub fn streamed_section_plane_field(
+    asset: &StreamedAsset,
+    name: &str,
+    association: FieldAssociation,
+    component: FieldComponent,
+    normal: [f64; 3],
+    fraction: f64,
+    progress: &Progress,
+) -> Result<Option<FieldSection>, ProjectError> {
+    validate_plane(normal, fraction)?;
+    let Some(SharedChunks(volume)) = &asset.chunks else {
+        return Err(ProjectError::CommandInvalid(
+            "field sections need the derived chunk file".to_owned(),
+        ));
+    };
+    let field = volume.field_index(name, association).ok_or_else(|| {
+        ProjectError::CommandInvalid(format!(
+            "result field {name} ({}) is not in the derived chunk file",
+            association.as_str()
+        ))
+    })?;
+    let plane = volume
+        .plane_through_nodes(normal, fraction)
+        .map_err(chunk_error)?;
+    volume
+        .fine_section_field(&plane, field, component, &|| progress.is_cancelled())
+        .map_err(chunk_error)
+}
+
+/// 驻留体网格的场着色切面（task 029），几何与 [`section_plane`] 位级一致：
+/// 节点场线性插值，单元场取所在单元值，缺失值为 NaN。`field` 由
+/// [`ProjectService::read_result_field`] 读出（整字段顺序大块读取）。
+pub fn section_plane_field(
+    volume: &TetMesh,
+    field: &ResultField,
+    component: FieldComponent,
+    normal: [f64; 3],
+    fraction: f64,
+    progress: &Progress,
+) -> Result<Option<FieldSection>, ProjectError> {
+    let normal = validate_plane(normal, fraction)?;
+    let origin = panta_mesh::section_plane_origin(&volume.nodes, normal, fraction);
+    panta_mesh::section_surface_field(volume, field, component, origin, normal, progress)
+        .map_err(|error| ProjectError::CommandInvalid(error.to_string()))
+}
+
+/// 校验切面参数并返回单位法向。
+fn validate_plane(normal: [f64; 3], fraction: f64) -> Result<[f64; 3], ProjectError> {
+    let length = normal.iter().map(|value| value * value).sum::<f64>().sqrt();
+    if !length.is_finite() || length == 0.0 || !fraction.is_finite() {
+        return Err(ProjectError::CommandInvalid(
+            "section normal or position is invalid".to_owned(),
+        ));
+    }
+    Ok(normal.map(|value| value / length))
 }
 
 /// 与工程无关的体网格 VTU 导出（Netgen 生成结果复用同一写出路径），带进度与取消。
@@ -231,13 +286,7 @@ pub fn section_plane(
     fraction: f64,
     progress: &Progress,
 ) -> Result<Option<SurfaceMesh>, ProjectError> {
-    let length = normal.iter().map(|value| value * value).sum::<f64>().sqrt();
-    if !length.is_finite() || length == 0.0 || !fraction.is_finite() {
-        return Err(ProjectError::CommandInvalid(
-            "section normal or position is invalid".to_owned(),
-        ));
-    }
-    let normal = normal.map(|value| value / length);
+    let normal = validate_plane(normal, fraction)?;
     let origin = panta_mesh::section_plane_origin(&volume.nodes, normal, fraction);
     panta_mesh::section_surface(volume, origin, normal, progress)
         .map_err(|error| ProjectError::CommandInvalid(error.to_string()))

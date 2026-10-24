@@ -1,7 +1,7 @@
 # 029 — 结果场：导入、存储、分块携带、切面插值与视口上色
 
 - 状态：in-progress
-- 阶段：PR 1 已合并（#33）；PR 2a/4（`.pchunk` v2 携带结果场、驻留与分块场剖面）实施中
+- 阶段：PR 1（#33）、PR 2a（#34）已合并；PR 2b/4（应用接入：派生分块带场、工程场剖面 API）实施中
 - 依赖：[028](028-out-of-core-rollout.md)、[021](021-volume-mesh.md)
 - 优先级：P1
 - 负责人：Grok Bot
@@ -69,7 +69,7 @@
 - [x] `.presult` 往返位级一致；损坏的块只影响所在字段（`ChecksumMismatch`）；Mesh 与结果读取器互相拒绝对方文件。
 - [x] 导入后重开工程可列出字段并读取数值；清单中的 results 引用经路径、版本、摘要校验；sidecar 与网格摘要 / 计数不符时拒绝。
 - [x] PR 2a：`.pchunk` v2 携带结果场；驻留 `section_surface_field` 与分块 `fine_section_field` 几何与无场剖面位级一致、数值集合一致；节点场线性插值误差 < 1e-9，单元场每三角形三值相等，NaN 传播；块级范围落在全局范围内；同场再次剖面只多 1 次合并读；损坏的场值块只让场剖面失败；从资产 + `ResultAssetReader` 构建与驻留构建字节一致。
-- [ ] PR 2b：应用接入、派生缓存带场、字段诊断。
+- [x] PR 2b：激活请求携带 `.presult` 引用；派生文件名含结果摘要并带场构建，结果 sidecar 不符时按无场构建；`section_plane_field` / `streamed_section_plane_field` 几何与无场切面位级一致、两路数值集合一致；无派生文件回退、字段不存在、参数非法都返回 CommandInvalid。字段诊断：字段级摘要沿用 PR 1 `result_fields_for_import`（缺失数、范围），切面级用 `FieldSection::value_range` / `missing_vertices`，由 PR 3 显示。
 - [ ] PR 3：视口上色、字段选择、色标（GUI / GPU 实机验收）。
 - [ ] 每次 commit 的代码、测试、文档和 task 自洽；索引状态一致。
 
@@ -87,6 +87,9 @@
 | 2026-10-24 | PR 2a：`ooc_bench --cells 20M --fields --reader pread`（8 线程，Linux，文件可能在页缓存） | 场剖面读调用为个位数、MiB 级 | 128 块 0.29 GiB；斜切面 40 块 40 万三角形：首次选矢量场 103.7 ms / 8 次读 / 30.1 MiB，同场换分量 7 次读 / 28.9 MiB，换标量节点场 8 次 / 10.5 MiB，换单元场 6 次 / 7.4 MiB；打开文件 1 |
 | 2026-10-24 | PR 2a：`ooc_bench --cells 100M --fields --reader pread`（同上） | 亿级下场剖面仍为少次 MiB 级读 | 构建 14.75 s、512 块 1.45 GiB、209 次写、峰值 RSS 4.4 GiB（字段逐个驻留，单元场 0.8 GiB）；斜切面 102 块 117 万三角形：选矢量场 218.7 ms / 22 次读 / 91.1 MiB，换分量 21 次 / 87.7 MiB，换节点标量场 18 次 / 34.1 MiB，换单元场 9 次 / 23.8 MiB；z 向 128 块：选矢量场 225.0 ms / 33 次读 / 106.5 MiB；单次读平均约 3–4 MiB，打开文件 1。命中块在 Morton 序上不连续，读调用数随命中块分散度增长 |
 
+| 2026-10-24 | PR 2b：`cargo test -p panta-core --lib derived`、`results` | 带场派生、场剖面一致、回退与错误路径 | 3 passed / 5 passed |
+| 2026-10-24 | PR 2b：`cargo quality`、`cargo test --locked --workspace`、offscreen 启动 | 全部通过 | 见 PR CI |
+
 ## 风险与回退
 
 - f64 结果场体积是网格节点数 × 分量 × 8 B，亿级网格单字段约 GiB 级；PR 1 读取整字段驻留，超大网格需等 PR 2 按块读取。回退：清单 `results` 可选，删除该引用即退回纯网格。
@@ -97,6 +100,10 @@
 - 2026-10-24：创建任务，确定三 PR 拆分与 sidecar 方案（见前置条件）。
 - 2026-10-24（PR 1）：实现结果场模型与 `.presult`、VTU / 旧版 VTK 解析、工程存储与只读访问；文档更新 [网格架构](../architecture/mesh.md)、[应用与存储](../architecture/application-and-storage.md)。现有 tet_ball 夹具带 `Normals` 节点数组，实体 3D 导入现在会生成 `.presult`。无独立 subagent 评审条件（本会话无法启动独立评审代理），由实现者自检并以测试覆盖失败路径。
 
+- 2026-10-24（PR 2b）决策（保守）：
+  - 派生文件名 `<资产摘要>-<结果摘要>.pchunk`，结果文件变化即换文件，不在旧文件上追加；同一资产的无场 / 带场文件在 LRU（保留 4 个）中各占一位。
+  - 结果 sidecar 打不开、摘要或计数不符时按无场构建，激活不失败（结果场是可选数据）；构建内存估计加上最大单字段体积。
+  - 逐次流式回退（无派生文件）不做场剖面：每次切面都要整字段读取，亿级下不可接受；返回 CommandInvalid，由 UI 退回无场切面。
 - 2026-10-24（PR 2a）决策（保守）：
   - 结果场嵌入 `.pchunk` 并升级 FORMAT_VERSION 到 2，不另建分块场文件：只打开一个文件，块表一次读入；v1 文件打开失败，应用派生缓存会自动重建（派生缓存可丢弃，不需迁移）。
   - 场段按字段排列：每个字段先所有块的内部值块，再所有块的外表面值块（都按 Morton 序）。外表面值连续存放，选中一个场只需一次合并读；内部值每次剖面按命中块合并读取（相邻 1 MiB 内合并、单次 ≤ 64 MiB），不进 LRU。
