@@ -23,7 +23,7 @@ Rust 2024 edition 随 Rust 1.85.0 发布；这只是 edition 的起点，不代�
 
 ## 导入与领域 crate
 
-按数据和生命周期划分 crate：`panta-import` 管理格式识别、来源快照、预览与导入选项；`panta-mesh` 拥有 STL 表面网格、体网格数据与校验；`panta-core` 拥有工程资产、清单、修订和提交。STEP / IGES 的底层几何读取通过 OCCT C++ adapter 完成，尚未接入的 Rust 领域接口不能写成已交付能力。当前边界见[职责审计](../architecture/native-domain-boundaries.md)。
+按数据和生命周期划分 crate：`panta-io` 管理网格文件读写，其中 `import` 模块负责格式识别、来源快照、预览与导入选项，`export` 模块负责各格式写出，两个模块互不依赖；`panta-mesh` 拥有 STL 表面网格、体网格数据与校验；`panta-core` 拥有工程资产、清单、修订和提交。STEP / IGES 的底层几何读取通过 OCCT C++ adapter 完成，尚未接入的 Rust 领域接口不能写成已交付能力。当前边界见[职责审计](../architecture/native-domain-boundaries.md)。
 
 拆 crate 时依次检查：是否需要重库、格式 / 规则是否频繁变化、消费者是否只占少数模块、逻辑与状态是否足够大。依赖重库的能力必须经独立 C++ adapter，不得放入 `panta-core`；但独立 Rust crate 本身也不直接链接重库。格式变化快、消费者少或生命周期独立时倾向独立 crate。`panta-core` 过渡期只拥有应用服务与工程存储；ID、单位和错误先留在各自的领域 crate，第二个真实消费者需要相同语义时再考虑低层契约 crate。不得为潜在复用提前创建 `panta-common` 或空领域 crate。此判断是项目模块边界准则，不是 Rust 语言的硬规则。
 

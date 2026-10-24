@@ -24,8 +24,8 @@ Rust 资产 / 显示快照 → CXX → C++ RenderScene / ViewportBackend → VTK
 | 层级 | 当前成员 | 当前仓库内依赖 | 说明 |
 |---|---|---|---|
 | Rust L1：基础与叶子库 | `panta-foundation`、`panta-build`、`panta-mesh` | 不依赖其他 workspace crate | 基础设施、构建工具与网格 IR / 解析 |
-| Rust L2：领域适配与工具入口 | `panta-import` | `panta-import → panta-mesh` | 导入格式适配，不成为应用组合根 |
-| Rust L3：应用 / 工程服务 | `panta-core` | `panta-core → panta-import, panta-mesh` | 编排工程状态、资产和领域服务 |
+| Rust L2：领域适配与工具入口 | `panta-io` | `panta-io → panta-mesh` | 导入格式适配，不成为应用组合根 |
+| Rust L3：应用 / 工程服务 | `panta-core` | `panta-core → panta-io, panta-mesh` | 编排工程状态、资产和领域服务 |
 | Rust L4：语言边界 | `panta-ffi` | `panta-ffi → panta-core, panta-mesh, panta-foundation, panta-build` | DTO、错误、句柄转换与服务转发，不承载领域算法 |
 | Rust L5：应用消费者与桌面启动组合根 | `panta-cli`、`panta-launcher` | `panta-cli → panta-core`；`panta-launcher → panta-ffi, panta-build` | CLI 适配应用命令；launcher 组装并启动 native app |
 | 测试工具（生产层外） | `panta-tests`、`tests/` | `panta-tests → panta-build`；测试可依赖被测 crate | 只作为验证消费者，不得被生产 crate 依赖 |
@@ -53,13 +53,13 @@ Rust 资产 / 显示快照 → CXX → C++ RenderScene / ViewportBackend → VTK
 
 ## Rust 导入职责
 
-- `panta-import` 是格式入口：识别 STEP / IGES / STL、读取 / 固定来源快照、按格式选择实际后端、持有预览与导入准备状态、记录格式专属诊断和导入选项。当前已接入 STL；STEP / IGES 只有格式识别，读取仍待 `panta-geom` 与 OCCT adapter 的真实业务任务。
+- `panta-io` 是格式入口，分 `import` / `export` 两个互不依赖的模块。`import`：识别 STEP / IGES / STL、读取 / 固定来源快照、按格式选择实际后端、持有预览与导入准备状态、记录格式专属诊断和导入选项。当前已接入 STL；STEP / IGES 只有格式识别，读取仍待 `panta-geom` 与 OCCT adapter 的真实业务任务。
 - `panta-mesh` 拥有表面 / 体 Mesh IR、STL 字节解析、网格领域校验及总体积摘要。它不管理工程包、Qt、VTK 或 OCCT；STL 不被冒充为 B-rep。
-- `panta-core` 拥有工程清单、资产写入、修订和原子提交。它调用 `panta-import` 取得已验证的输入，提交成功才替换当前网格。工程包事务不由格式解析器自行完成。
+- `panta-core` 拥有工程清单、资产写入、修订和原子提交。它调用 `panta-io` 取得已验证的输入，提交成功才替换当前网格。工程包事务不由格式解析器自行完成。
 - 运行期 `SurfaceMesh` 的预算、LRU、驻留 ID 和按页签关闭释放由 `panta-core::ProjectService` 管理；其 `DocumentWorkspace` 拥有打开页签、活动 ID、加载状态、重排与关闭回退。ViewModel 转发粗粒度意图并批量投影工作区快照，只保留当前活动显示 DTO，不能另建页签选择权威或按文档维护 Mesh 缓存。
-- 展开 Mesh 字节估算由 `panta-mesh` 根据编码布局提供，导入提醒策略由 `panta-import` 随预览返回；GUI / CLI 不重复公式或阈值。2 GiB 仅为非阻断提醒，不是导入或存储上限。
-- 后续 `panta-geom` 拥有 Shape / Face / Edge 的领域身份及 STEP / IGES 结果契约；C++ OCCT adapter 真正执行这两种几何格式的读取、转换与所需底层算法。`panta-import` 负责分发，不在 Rust 复制 OCCT 解析器。
-- 依赖方向为 `panta-core → panta-import → panta-mesh`；`panta-core` 在持有网格快照时可直接依赖 `panta-mesh`。`panta-ffi → panta-core / panta-mesh` 负责跨语言 DTO。反向依赖禁止。未来 `panta-import → panta-geom` 只在 STEP / IGES 服务接入时添加。
+- 展开 Mesh 字节估算由 `panta-mesh` 根据编码布局提供，导入提醒策略由 `panta-io` 随预览返回；GUI / CLI 不重复公式或阈值。2 GiB 仅为非阻断提醒，不是导入或存储上限。
+- 后续 `panta-geom` 拥有 Shape / Face / Edge 的领域身份及 STEP / IGES 结果契约；C++ OCCT adapter 真正执行这两种几何格式的读取、转换与所需底层算法。`panta-io` 负责分发，不在 Rust 复制 OCCT 解析器。
+- 依赖方向为 `panta-core → panta-io → panta-mesh`；`panta-core` 在持有网格快照时可直接依赖 `panta-mesh`。`panta-ffi → panta-core / panta-mesh` 负责跨语言 DTO。反向依赖禁止。未来 `panta-io → panta-geom` 只在 STEP / IGES 服务接入时添加。
 - 公共导入结果应保留格式、数据类别、单位、来源修订与诊断；共享导入编排不抹平 STL 表面网格和 STEP / IGES B-rep 的语义。新增格式需要实际后端和端到端消费者，不为统一名称创建空 parser。
 
 ## 显示与数据

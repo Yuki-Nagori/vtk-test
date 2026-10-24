@@ -1,8 +1,8 @@
-//! STL 导入的工程事务；读取、预览和解析由 panta-import 负责。
+//! STL 导入的工程事务；读取、预览和解析由 panta-io::import 负责。
 use super::model::{MeshAssetRef, next_revision};
 use super::{ImportRecord, ProjectError, ProjectService, StlImportPreview, mesh_assets};
-use panta_import::{CheckedReadError, StlImportSession};
-use panta_import::{ImportError, ImportOptions};
+use panta_io::import::{CheckedReadError, StlImportSession};
+use panta_io::import::{ImportError, ImportOptions};
 use panta_mesh::{DiagnosticOptions, Progress, SurfaceDiagnostics, diagnose_surface};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -306,25 +306,25 @@ pub(super) fn commit_mesh_record(
 /// 「实体 3D」类型的 VTU / 旧版 VTK 按线性四面体体网格导入：坐标换算到毫米后构建并校验；
 /// 含其他单元类型时整体拒绝（task 021 保守决策）。其他组合仍按表面导入。
 fn volume_from_prepared(
-    prepared: &panta_import::PreparedStl,
+    prepared: &panta_io::import::PreparedStl,
     options: ImportOptions,
 ) -> Result<Option<panta_mesh::TetMesh>, ProjectError> {
     if !options.is_solid()
         || !matches!(
             prepared.format,
-            panta_import::ImportFormat::Vtu | panta_import::ImportFormat::VtkLegacy
+            panta_io::import::ImportFormat::Vtu | panta_io::import::ImportFormat::VtkLegacy
         )
     {
         return Ok(None);
     }
-    let snapshot = panta_import::SourceSnapshot {
+    let snapshot = panta_io::import::SourceSnapshot {
         path: prepared.path.clone(),
         source_name: prepared.source_name.clone(),
         format: prepared.format,
         bytes: prepared.bytes.clone(),
         modified_unix_ms: prepared.modified_unix_ms,
     };
-    let grid = panta_import::parse_volume_snapshot(&snapshot).map_err(|error| match error {
+    let grid = panta_io::import::parse_volume_snapshot(&snapshot).map_err(|error| match error {
         ImportError::Format(detail) => ProjectError::ImportVolumeUnsupported(detail.to_string()),
         other => map_import_error(other),
     })?;
@@ -538,7 +538,7 @@ mod tests {
     use crate::execution::Executor;
     use crate::project::ProjectService;
     use crate::project::temp_directory;
-    use panta_import::ImportError;
+    use panta_io::import::ImportError;
     use panta_mesh::StlError;
     use std::fs;
     use std::sync::{Arc, atomic::Ordering, mpsc};

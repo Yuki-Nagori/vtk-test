@@ -1,6 +1,6 @@
 # 仓库协作指南
 
-本仓库是最小可视化渲染测试仓库，应用与 crate 暂沿用 `panta` 名称；保留模型导入、几何 / 网格处理与 VTK 渲染，project 用于组织测试资产与场景。当前能力见 [README](README.md)，实施进度见[任务索引](ai-docs/task-index.md)；规划路径和接口不代表已经实现。
+本仓库是最小可视化渲染测试仓库，应用与 crate 沿用 `panta` 名称（已决定不整体改名，见 task 005）；保留模型导入、几何 / 网格处理与 VTK 渲染，project 用于组织测试资产与场景。当前能力见 [README](README.md)，实施进度见[任务索引](ai-docs/task-index.md)；规划路径和接口不代表已经实现。
 
 ## 工作入口
 

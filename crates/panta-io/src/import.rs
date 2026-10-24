@@ -1,7 +1,6 @@
 //! 格式识别和来源快照；格式专属算法由对应领域后端执行。
 //! STEP / IGES 的几何读取由后续 OCCT adapter 接入。
 
-pub mod export;
 pub mod formats;
 
 use panta_mesh::{StlError, SurfaceMesh, SurfaceSummary, surface_mesh_expanded_bytes};
@@ -642,8 +641,7 @@ mod tests {
         fn new() -> Result<Self, Box<dyn std::error::Error>> {
             static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
             let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-            let root =
-                std::env::temp_dir().join(format!("panta-import-{}-{id}", std::process::id()));
+            let root = std::env::temp_dir().join(format!("panta-io-{}-{id}", std::process::id()));
             let _ = fs::remove_dir_all(&root);
             fs::create_dir_all(&root)?;
             Ok(Self { root })

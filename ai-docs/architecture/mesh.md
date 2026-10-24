@@ -8,12 +8,12 @@
 
 混合单元必须明确各单元的类型和局部节点顺序；边界面、体单元及其对应关系应可验证。索引宽度、浮点精度和内存布局在实现时依据规模确定并写入格式说明，不能依赖某个库的隐式默认值。
 
-当前权威 Mesh IR、STL 解码、体网格校验与总体积计算在 `crates/panta-mesh/`。`native/mesh/` 调用 Netgen，将库对象转换成明确命名的 native DTO，再经 CXX 委托 Rust 校验。C++ 只保留库结果转换、安全边界检查与局部节点顺序归一化；它不再保存第二套领域校验规则或重复计算网格总体积。STL 文件读取由 `panta-import` 编排、`panta-mesh` 解码，VTK 只接收已提交快照。职责与依赖方向见 [适配边界](native-domain-boundaries.md)。
+当前权威 Mesh IR、STL 解码、体网格校验与总体积计算在 `crates/panta-mesh/`。`native/mesh/` 调用 Netgen，将库对象转换成明确命名的 native DTO，再经 CXX 委托 Rust 校验。C++ 只保留库结果转换、安全边界检查与局部节点顺序归一化；它不再保存第二套领域校验规则或重复计算网格总体积。STL 文件读取由 `panta-io` 编排、`panta-mesh` 解码，VTK 只接收已提交快照。职责与依赖方向见 [适配边界](native-domain-boundaries.md)。
 
 ## 从 STL 到显示和计算的路线（A 已有，B/C 规划）
 
 ```text
-STL source asset → panta-import → panta-mesh::SurfaceMesh（Rust 权威）
+STL source asset → panta-io → panta-mesh::SurfaceMesh（Rust 权威）
                                       ├─ A. 直接显示：批量 CXX 快照 → C++ vtkPolyData → VTK
                                       ├─ B. 几何修复任务（规划）：C++ OCCT adapter → faceted B-rep
                                       │       → Rust 提交新 GeometryAsset / revision

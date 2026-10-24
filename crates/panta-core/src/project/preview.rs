@@ -1,7 +1,7 @@
 //! 只读 STL 预检：后台拥有字节 / 网格，服务只接收仍有效的请求结果。
 use super::{ProjectError, ProjectService, StlImportPreview, import};
-use panta_import::CheckedReadError;
-use panta_import::StlImportSession;
+use panta_io::import::CheckedReadError;
+use panta_io::import::StlImportSession;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::{path::Path, sync::Arc};
@@ -120,7 +120,7 @@ impl ProjectService {
 mod tests {
     use super::super::temp_directory;
     use super::{PendingPreview, ProjectService, StlImportPreview};
-    use panta_import::StlImportSession;
+    use panta_io::import::StlImportSession;
     use std::{
         path::Path,
         sync::{

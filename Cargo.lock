@@ -343,7 +343,7 @@ name = "panta-core"
 version = "0.1.0"
 dependencies = [
  "fs4",
- "panta-import",
+ "panta-io",
  "panta-mesh",
  "serde",
  "serde_json",
@@ -370,7 +370,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "panta-import"
+name = "panta-io"
 version = "0.1.0"
 dependencies = [
  "flate2",

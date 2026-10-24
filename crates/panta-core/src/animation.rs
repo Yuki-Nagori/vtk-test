@@ -131,11 +131,11 @@ impl Drop for AnimationSequence {
 }
 
 fn parse_frame(path: &Path) -> Result<SurfaceMesh, String> {
-    let snapshot = panta_import::read_source(path).map_err(|error| error.to_string())?;
+    let snapshot = panta_io::import::read_source(path).map_err(|error| error.to_string())?;
     if !snapshot.format.is_surface_mesh() {
         return Err(format!("{}: not a surface mesh format", path.display()));
     }
-    panta_import::parse_mesh_snapshot(&snapshot).map_err(|error| error.to_string())
+    panta_io::import::parse_mesh_snapshot(&snapshot).map_err(|error| error.to_string())
 }
 
 impl AnimationSequence {

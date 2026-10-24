@@ -207,8 +207,8 @@ impl ProjectService {
         &self,
         import_id: &str,
         target: &Path,
-    ) -> Result<panta_import::export::ExportFormat, ProjectError> {
-        panta_import::export::detect_export_format(target).map_err(export_error)?;
+    ) -> Result<panta_io::export::ExportFormat, ProjectError> {
+        panta_io::export::detect_export_format(target).map_err(export_error)?;
         // 驻留网格为显示 LOD 时缓存不是完整网格，改为流式读取资产（task 025）。
         if let Some(
             asset @ super::StreamedAsset {
@@ -604,7 +604,7 @@ impl Drop for ProjectService {
 pub fn export_mesh_file(
     mesh: &SurfaceMesh,
     target: &Path,
-) -> Result<panta_import::export::ExportFormat, ProjectError> {
+) -> Result<panta_io::export::ExportFormat, ProjectError> {
     export_mesh_file_with_progress(mesh, target, &panta_mesh::Progress::new())
 }
 
@@ -613,13 +613,13 @@ pub fn export_mesh_file_with_progress(
     mesh: &SurfaceMesh,
     target: &Path,
     progress: &panta_mesh::Progress,
-) -> Result<panta_import::export::ExportFormat, ProjectError> {
-    panta_import::export::export_surface_mesh_with_progress(mesh, target, progress)
+) -> Result<panta_io::export::ExportFormat, ProjectError> {
+    panta_io::export::export_surface_mesh_with_progress(mesh, target, progress)
         .map_err(export_error)
 }
 
-pub(super) fn export_error(error: panta_import::export::ExportError) -> ProjectError {
-    use panta_import::export::ExportError;
+pub(super) fn export_error(error: panta_io::export::ExportError) -> ProjectError {
+    use panta_io::export::ExportError;
     match error {
         ExportError::UnsupportedFormat(path) => ProjectError::ExportUnsupportedFormat(path),
         ExportError::TooLarge(limit) => ProjectError::ExportTooLarge(limit.to_owned()),
