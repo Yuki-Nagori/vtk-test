@@ -59,6 +59,6 @@ Netgen API 依据：[v6.2.2604 `nglib.h`](https://github.com/NGSolve/netgen/blob
 
 - 模块 `panta_mesh::chunked`：导入时 k-d 分块（默认每块 ≤ 262144 四面体），块按 Morton 序写入单个 `.pchunk` 文件，每块独立 zstd 压缩。块表常驻，记录包围盒、场值范围表、16³ 占据体素；外表面与简化外表面在打开时一次读入常驻。
 - 块内保留原始单元顺序，存全局单元 ID / 全局节点 ID，以后的结果场按全局 ID 对齐。新格式（结果场、混合单元、OpenFOAM / CGNS）都要能写成这一分块格式。
-- 读取经 `ChunkSource` 接口（本地文件为定位读，以后可换远程源）；`ChunkCache` 是按字节计的 LRU，未命中的相邻块合并成 MiB 级读。`Prefetcher` 后台预取，新请求覆盖旧请求。
+- 读取经 `ChunkSource` 接口：默认 `MmapChunkSource`（整文件只读映射，零拷贝，0 次读调用；task 028），映射不可用时回退 `FileChunkSource`（定位读）；以后可换远程源。映射的 unsafe 只在 `panta_mesh::mapped`。打开时校验长度、头尾与块表，每块解压时校验 zstd 校验和与计数；`ChunkCache` 是按字节计的 LRU，未命中的相邻块合并成 MiB 级读。`Prefetcher` 后台预取，新请求覆盖旧请求。
 - 切面：拖动时粗级别只用常驻数据（体素 + 简化外表面），松手后精细级别对命中块并行求交，结果与 `section_surface` 位级一致。质量统计按块缓存。
 - 内存：块缓存与按块批处理都受预算约束；实测见 [task 027](../task/027-out-of-core-block-prototype.md)。

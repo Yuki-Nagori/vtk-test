@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
-use super::format::{ChunkCells, ChunkHeader, ChunkSource, decode_cells, decompress};
+use super::format::{ChunkBytes, ChunkCells, ChunkHeader, ChunkSource, decode_cells, decompress};
 use super::{ChunkError, worker_count};
 
 /// 合并读允许跳过的最大间隙：读多几百 KiB 比多一次读调用便宜。
@@ -202,11 +202,11 @@ impl ChunkCache {
                 _ => runs.push((start, end, vec![slot])),
             }
         }
-        let buffers: Vec<Result<Vec<u8>, ChunkError>> = parallel_map(&runs, |run| {
+        let buffers: Vec<Result<ChunkBytes, ChunkError>> = parallel_map(&runs, |run| {
             self.source.read_at(run.0, (run.1 - run.0) as usize)
         });
         let mut pieces: Vec<(usize, &[u8])> = Vec::with_capacity(ids.len());
-        let buffers: Vec<Vec<u8>> = buffers.into_iter().collect::<Result<_, _>>()?;
+        let buffers: Vec<ChunkBytes> = buffers.into_iter().collect::<Result<_, _>>()?;
         for (run, buffer) in runs.iter().zip(&buffers) {
             for &slot in &run.2 {
                 let header = &self.headers[ids[slot]];

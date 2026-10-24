@@ -26,6 +26,7 @@ repository = "https://github.com/Yuki-Nagori/vtk-test"
 
 [workspace.dependencies]
 libc = "0.2"
+memmap2 = "0.9.12"
 fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
 panta-build = { path = "crates/panta-build", version = "0.1.0" }
 panta-foundation = { path = "crates/panta-foundation", version = "0.1.0" }
@@ -42,8 +43,9 @@ zstd = "0.14.2"
 flate2 = { version = "1.0", default-features = false, features = ["rust_backend"] }
 
 [workspace.lints.rust]
-# 默认拒绝 unsafe；已登记例外只有 FFI 边界（任务 006）的 CXX 生成胶水，以及
-# 任务 047 的 panta-foundation::crash 专用模块。两处均只在模块级 allow 放开，
+# 默认拒绝 unsafe；已登记例外只有 FFI 边界（任务 006）的 CXX 生成胶水、
+# 任务 047 的 panta-foundation::crash 专用模块，以及任务 028 的 panta-mesh::mapped
+# 只读文件映射模块。三处均只在模块级 allow 放开，
 # 手写 unsafe 必须逐块写 // SAFETY:，规范见 standards/rust.md。
 unsafe_code = "deny"
 

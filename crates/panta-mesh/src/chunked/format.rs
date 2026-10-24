@@ -7,9 +7,11 @@
 
 use std::fs::File;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::ChunkError;
+use crate::mapped::MappedFile;
 use crate::{SurfaceMesh, Tetrahedron};
 
 pub(crate) const HEAD_MAGIC: &[u8; 8] = b"PANTAOC1";
@@ -23,20 +25,144 @@ const TAIL_WINDOW: u64 = 1 << 20;
 pub const VOXELS_PER_AXIS: usize = 16;
 const VOXEL_BYTES: usize = VOXELS_PER_AXIS * VOXELS_PER_AXIS * VOXELS_PER_AXIS / 8;
 
-/// 按字节区间读取的块源。实现必须线程安全；IO 计数用于基准报告。
+/// 块源读取结果：定位读为自有缓冲，映射为文件映射上的零拷贝切片。
+pub enum ChunkBytes {
+    Owned(Vec<u8>),
+    Mapped {
+        file: Arc<MappedFile>,
+        start: usize,
+        len: usize,
+    },
+}
+
+impl std::ops::Deref for ChunkBytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::Owned(bytes) => bytes,
+            // 构造时已校验区间在映射内。
+            Self::Mapped { file, start, len } => &file.bytes()[*start..*start + *len],
+        }
+    }
+}
+
+/// 块源 IO 计数（基准报告用）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IoCounts {
+    /// 读系统调用次数（映射实现为 0）。
+    pub reads: u64,
+    /// 读取或访问的字节数。
+    pub bytes: u64,
+    /// 打开的文件数。
+    pub files: u64,
+    /// 映射区间访问次数（定位读实现为 0）；实际缺页 IO 由 OS 决定，不在这里计数。
+    pub mapped: u64,
+}
+
+/// 按字节区间读取的块源。实现必须线程安全。
 pub trait ChunkSource: Send + Sync {
     fn len(&self) -> u64;
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    /// 读取 `[offset, offset + len)`，一次调用计为一次读。
-    fn read_at(&self, offset: u64, len: usize) -> Result<Vec<u8>, ChunkError>;
-    /// （读调用次数，读取字节数，打开文件数）。
-    fn io_counts(&self) -> (u64, u64, u64);
+    /// 读取 `[offset, offset + len)`；越界返回 `Format` 错误。
+    fn read_at(&self, offset: u64, len: usize) -> Result<ChunkBytes, ChunkError>;
+    fn io_counts(&self) -> IoCounts;
+    /// 实现名（`mmap` / `pread`），用于诊断与基准。
+    fn kind(&self) -> &'static str;
+}
+
+fn check_range(offset: u64, len: usize, file_len: u64) -> Result<(), ChunkError> {
+    if offset
+        .checked_add(len as u64)
+        .is_none_or(|end| end > file_len)
+    {
+        return Err(ChunkError::Format(format!(
+            "range {offset}+{len} beyond file length {file_len}"
+        )));
+    }
+    Ok(())
+}
+
+/// 块读取实现选择。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChunkReadMode {
+    /// 优先映射，映射失败（锁冲突、平台不支持等）时回退定位读。
+    #[default]
+    Auto,
+    /// 只用映射。
+    Mmap,
+    /// 只用合并定位读。
+    Read,
+}
+
+/// 按 `mode` 打开单文件块源。
+pub fn open_chunk_source(
+    path: &Path,
+    mode: ChunkReadMode,
+) -> Result<Arc<dyn ChunkSource>, ChunkError> {
+    match mode {
+        ChunkReadMode::Read => Ok(Arc::new(FileChunkSource::open(path)?)),
+        ChunkReadMode::Mmap => Ok(Arc::new(MmapChunkSource::open(path)?)),
+        ChunkReadMode::Auto => match MmapChunkSource::open(path) {
+            Ok(source) => Ok(Arc::new(source)),
+            Err(_) => Ok(Arc::new(FileChunkSource::open(path)?)),
+        },
+    }
+}
+
+/// 映射块源：整文件只读映射（见 [`crate::mapped`]），读取为零拷贝切片；合并后的区段先提示内核预读。
+pub struct MmapChunkSource {
+    file: Arc<MappedFile>,
+    accesses: AtomicU64,
+    bytes: AtomicU64,
+}
+
+impl MmapChunkSource {
+    pub fn open(path: &Path) -> Result<Self, ChunkError> {
+        Ok(Self {
+            file: Arc::new(MappedFile::open(path)?),
+            accesses: AtomicU64::new(0),
+            bytes: AtomicU64::new(0),
+        })
+    }
+}
+
+impl ChunkSource for MmapChunkSource {
+    fn len(&self) -> u64 {
+        self.file.len() as u64
+    }
+
+    fn read_at(&self, offset: u64, len: usize) -> Result<ChunkBytes, ChunkError> {
+        check_range(offset, len, self.len())?;
+        let start = offset as usize;
+        self.file.will_need(start, len);
+        self.accesses.fetch_add(1, Ordering::Relaxed);
+        self.bytes.fetch_add(len as u64, Ordering::Relaxed);
+        Ok(ChunkBytes::Mapped {
+            file: self.file.clone(),
+            start,
+            len,
+        })
+    }
+
+    fn io_counts(&self) -> IoCounts {
+        IoCounts {
+            reads: 0,
+            bytes: self.bytes.load(Ordering::Relaxed),
+            files: 1,
+            mapped: self.accesses.load(Ordering::Relaxed),
+        }
+    }
+
+    fn kind(&self) -> &'static str {
+        "mmap"
+    }
 }
 
 /// 单文件块源：打开一次，之后用定位读（Unix `pread`，Windows `seek_read`），不移动共享游标，
-/// 多线程并发读不加锁。
+/// 多线程并发读不加锁。映射不可用时的回退实现。
 pub struct FileChunkSource {
     file: File,
     len: u64,
@@ -62,29 +188,26 @@ impl ChunkSource for FileChunkSource {
         self.len
     }
 
-    fn read_at(&self, offset: u64, len: usize) -> Result<Vec<u8>, ChunkError> {
-        if offset
-            .checked_add(len as u64)
-            .is_none_or(|end| end > self.len)
-        {
-            return Err(ChunkError::Format(format!(
-                "range {offset}+{len} beyond file length {}",
-                self.len
-            )));
-        }
+    fn read_at(&self, offset: u64, len: usize) -> Result<ChunkBytes, ChunkError> {
+        check_range(offset, len, self.len)?;
         let mut buffer = vec![0; len];
         positioned_read(&self.file, offset, &mut buffer)?;
         self.reads.fetch_add(1, Ordering::Relaxed);
         self.bytes.fetch_add(len as u64, Ordering::Relaxed);
-        Ok(buffer)
+        Ok(ChunkBytes::Owned(buffer))
     }
 
-    fn io_counts(&self) -> (u64, u64, u64) {
-        (
-            self.reads.load(Ordering::Relaxed),
-            self.bytes.load(Ordering::Relaxed),
-            1,
-        )
+    fn io_counts(&self) -> IoCounts {
+        IoCounts {
+            reads: self.reads.load(Ordering::Relaxed),
+            bytes: self.bytes.load(Ordering::Relaxed),
+            files: 1,
+            mapped: 0,
+        }
+    }
+
+    fn kind(&self) -> &'static str {
+        "pread"
     }
 }
 
@@ -492,8 +615,8 @@ pub(crate) fn encode_tail(table_offset: u64, table_len: u64, table_raw_len: u64)
     out.0
 }
 
-/// 打开：一次读尾部窗口（块表通常在窗口内），必要时再读一次块表；
-/// 然后一次读入整个表面段。返回块表与各块常驻表面。
+/// 打开：一次读尾部窗口（块表通常在窗口内），一次 16 B 读校验文件头（小文件在窗口内则免），
+/// 必要时再读一次块表；然后一次读入整个表面段。长度、头尾、块表与各块区间都在这里校验。返回块表与各块常驻表面。
 pub(crate) fn read_index(
     source: &dyn ChunkSource,
 ) -> Result<(ChunkTable, Vec<ChunkSurface>), ChunkError> {
@@ -504,6 +627,17 @@ pub(crate) fn read_index(
     let window = TAIL_WINDOW.min(len);
     let window_start = len - window;
     let tail_bytes = source.read_at(window_start, window as usize)?;
+    // 文件头：小文件已在尾部窗口里，否则单独一次 16 B 读；防止文件被截断后又被别的内容覆盖开头。
+    let head = if window_start == 0 {
+        ChunkBytes::Owned(tail_bytes[..HEAD_LEN as usize].to_vec())
+    } else {
+        source.read_at(0, HEAD_LEN as usize)?
+    };
+    if &head[..8] != HEAD_MAGIC || head[8..12] != FORMAT_VERSION.to_le_bytes() {
+        return Err(ChunkError::Format(
+            "head magic or version mismatch".to_owned(),
+        ));
+    }
     let tail = &tail_bytes[tail_bytes.len() - TAIL_LEN as usize..];
     let mut reader = Reader::new(tail);
     let table_offset = reader.u64()?;
@@ -525,7 +659,7 @@ pub(crate) fn read_index(
     }
     let compressed = if table_offset >= window_start {
         let start = (table_offset - window_start) as usize;
-        tail_bytes[start..start + table_len as usize].to_vec()
+        ChunkBytes::Owned(tail_bytes[start..start + table_len as usize].to_vec())
     } else {
         source.read_at(table_offset, table_len as usize)?
     };
