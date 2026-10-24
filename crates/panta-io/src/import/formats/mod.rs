@@ -5,6 +5,7 @@
 //! 写入可实现同一接口，不要求整体物化三角形。
 
 mod cells;
+mod cgns;
 mod obj;
 mod openfoam;
 mod ply;
@@ -15,6 +16,7 @@ mod vtk_xml;
 use panta_mesh::SurfaceMesh;
 use std::fmt::{Display, Formatter};
 
+pub use cgns::{parse_cgns_grid, parse_cgns_surface};
 pub use obj::parse_obj;
 pub use openfoam::bundle as openfoam_bundle;
 pub use openfoam::{parse_openfoam_grid, parse_openfoam_surface};

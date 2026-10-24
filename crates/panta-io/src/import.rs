@@ -24,6 +24,8 @@ pub enum ImportFormat {
     /// OpenFOAM 算例（task 032）：选中 `.foam` / `.openfoam` 标记文件或 `system/controlDict`，
     /// 快照为算例文件包（见 `formats::openfoam_bundle`）。
     OpenFoam,
+    /// CGNS（task 032）：仅 HDF5 后端，读取非结构 Zone 与 FlowSolution。
+    Cgns,
     Step,
     Iges,
 }
@@ -39,6 +41,7 @@ impl ImportFormat {
             Self::Obj => "obj",
             Self::Ply => "ply",
             Self::OpenFoam => "openfoam",
+            Self::Cgns => "cgns",
             Self::Step => "step",
             Self::Iges => "iges",
         }
@@ -317,6 +320,7 @@ pub fn detect_format(path: &Path) -> Result<ImportFormat, ImportError> {
         "obj" => Ok(ImportFormat::Obj),
         "ply" => Ok(ImportFormat::Ply),
         "foam" | "openfoam" => Ok(ImportFormat::OpenFoam),
+        "cgns" => Ok(ImportFormat::Cgns),
         "step" | "stp" => Ok(ImportFormat::Step),
         "iges" | "igs" => Ok(ImportFormat::Iges),
         _ => Err(ImportError::UnsupportedFormat(path.display().to_string())),
@@ -557,6 +561,7 @@ pub fn parse_mesh_snapshot_with_progress(
         ImportFormat::OpenFoam => {
             formats::parse_openfoam_surface(bytes).map_err(ImportError::Format)
         }
+        ImportFormat::Cgns => formats::parse_cgns_surface(bytes).map_err(ImportError::Format),
         ImportFormat::Step | ImportFormat::Iges => Err(ImportError::UnsupportedFormat(
             snapshot.path.display().to_string(),
         )),
@@ -577,6 +582,9 @@ pub fn parse_volume_snapshot(snapshot: &SourceSnapshot) -> Result<formats::RawGr
         }
         ImportFormat::OpenFoam => {
             formats::parse_openfoam_grid(&snapshot.bytes).map_err(ImportError::Format)
+        }
+        ImportFormat::Cgns => {
+            formats::parse_cgns_grid(&snapshot.bytes).map_err(ImportError::Format)
         }
         _ => Err(ImportError::UnsupportedFormat(
             snapshot.path.display().to_string(),

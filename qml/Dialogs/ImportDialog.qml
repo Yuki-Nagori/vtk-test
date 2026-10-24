@@ -46,15 +46,15 @@ DialogWindow {
     }
 
     // 拖放导入（task 018）：打开对话框并预填源文件，仍需用户确认网格类型与单位。
-    // OpenFOAM 算例（task 032）：SI 米制，默认按实体 3D 体网格导入，用户仍可改选。
-    function isOpenFoamPath(path: string): bool {
+    // OpenFOAM 算例与 CGNS（task 032）：CFD 结果按 SI 米制，默认按实体 3D 体网格导入，用户仍可改选。
+    function isCfdPath(path: string): bool {
         const lower = path.toLowerCase();
-        return lower.endsWith(".foam") || lower.endsWith(".openfoam") || /[\\/]system[\\/]controldict$/.test(lower);
+        return lower.endsWith(".foam") || lower.endsWith(".openfoam") || lower.endsWith(".cgns") || /[\\/]system[\\/]controldict$/.test(lower);
     }
 
     function selectSource(path: string) {
         sourcePath = path;
-        if (isOpenFoamPath(path)) {
+        if (isCfdPath(path)) {
             unitsCombo.currentIndex = unitValues.indexOf("meters");
             const solid = meshTypes.findIndex(entry => entry.id === "solid-3d");
             if (solid >= 0)
@@ -249,7 +249,7 @@ DialogWindow {
         id: fileDialog
         title: "选择网格文件"
         fileMode: FileDialog.OpenFile
-        nameFilters: ["网格文件 (*.stl *.vtu *.vtp *.vtk *.obj *.ply *.foam *.openfoam controlDict)", "STL 文件 (*.stl)", "VTK 文件 (*.vtu *.vtp *.vtk)", "OpenFOAM 算例 (*.foam *.openfoam controlDict)", "OBJ 文件 (*.obj)", "PLY 文件 (*.ply)"]
+        nameFilters: ["网格文件 (*.stl *.vtu *.vtp *.vtk *.obj *.ply *.foam *.openfoam controlDict *.cgns)", "STL 文件 (*.stl)", "VTK 文件 (*.vtu *.vtp *.vtk)", "OpenFOAM 算例 (*.foam *.openfoam controlDict)", "CGNS 文件 (*.cgns)", "OBJ 文件 (*.obj)", "PLY 文件 (*.ply)"]
         onAccepted: {
             if (!dialog.visible)
                 return;
