@@ -50,6 +50,7 @@ target_include_directories(panta_mesh PRIVATE "${PANTA_FFI_INCLUDE_DIR}"
 
 target_sources(
   panta_mesh PRIVATE include/panta/mesh/mesh_ir.hpp include/panta/mesh/netgen_mesher.hpp
+                     include/panta/mesh/rust_dto.hpp
                      src/mesh_ir.cpp src/netgen/netgen_mesher.cpp)
 
 panta_native_defaults(panta_mesh)

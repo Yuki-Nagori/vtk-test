@@ -29,6 +29,11 @@
 #include <utility>
 #include <vector>
 
+#ifndef PANTA_STRINGIFY
+#define PANTA_STRINGIFY_(value) (#value)
+#define PANTA_STRINGIFY(value) (PANTA_STRINGIFY_(value))
+#endif
+
 using panta::bridge::ProjectViewModel;
 using panta::test::finish_project_operation;
 using panta::test::wait_for_active_mesh;
@@ -1297,4 +1302,50 @@ TEST(ProjectViewModelTest, RunsVolumeQualitySectionAndVtuExportInTheBackground) 
     QFile written(target);
     ASSERT_TRUE(written.open(QIODevice::ReadOnly));
     EXPECT_TRUE(written.readAll().contains("NumberOfCells=\"1\""));
+}
+
+TEST(ProjectViewModelTest, GeneratesVolumeMeshFromStepInTheBackgroundAndHonoursCancel) {
+    QTemporaryDir fixture;
+    ASSERT_TRUE(fixture.isValid());
+    const QString stepPath =
+        QDir(QString::fromUtf8(PANTA_STRINGIFY(PANTA_BRIDGE_GEOMETRY_FIXTURE_DIR)))
+            .filePath(QStringLiteral("box_mm.step"));
+    ASSERT_TRUE(QFileInfo::exists(stepPath));
+
+    ProjectViewModel view_model;
+    // 未打开工程时拒绝。
+    EXPECT_FALSE(view_model.beginGenerateVolumeFromStep(stepPath, 0.0));
+    ASSERT_TRUE(finish_project_operation(
+        view_model, view_model.createProject(QStringLiteral("Generated"), fixture.path())));
+
+    // 参数校验：负尺寸、超限尺寸与缺失文件在提交后台作业前拒绝。
+    EXPECT_FALSE(view_model.beginGenerateVolumeFromStep(stepPath, -1.0));
+    EXPECT_FALSE(view_model.beginGenerateVolumeFromStep(stepPath, 2.0e6));
+    EXPECT_FALSE(view_model.beginGenerateVolumeFromStep(
+        QDir(fixture.path()).filePath(QStringLiteral("missing.step")), 0.0));
+    EXPECT_FALSE(view_model.generationPending());
+
+    // 启动后立即取消：不发布任何导入记录。
+    QSignalSpy finished(&view_model, &ProjectViewModel::generationFinished);
+    ASSERT_TRUE(view_model.beginGenerateVolumeFromStep(stepPath, 1.0));
+    EXPECT_TRUE(view_model.generationPending());
+    EXPECT_FALSE(view_model.beginGenerateVolumeFromStep(stepPath, 0.0));
+    view_model.cancelGeneration();
+    ASSERT_TRUE(finished.wait(60000));
+    EXPECT_FALSE(finished.takeFirst().at(0).toBool());
+    EXPECT_EQ(view_model.errorCode(), QStringLiteral("project.volume_generation_cancelled"));
+    EXPECT_FALSE(view_model.generationPending());
+    EXPECT_TRUE(view_model.importedPartNames().isEmpty());
+
+    // 正常生成：后台完成后发布为 solid-3d 体网格资产并成为活动文档。
+    ASSERT_TRUE(view_model.beginGenerateVolumeFromStep(stepPath, 0.0));
+    ASSERT_TRUE(finished.wait(120000));
+    EXPECT_TRUE(finished.takeFirst().at(0).toBool());
+    EXPECT_FALSE(view_model.generationPending());
+    EXPECT_EQ(view_model.generationProgress(), -1.0);
+    ASSERT_EQ(view_model.importedPartNames().size(), 1);
+    EXPECT_EQ(view_model.importedPartNames().front(), QStringLiteral("box_mm"));
+    EXPECT_EQ(view_model.importedMeshType(), QStringLiteral("solid-3d"));
+    ASSERT_TRUE(wait_for_active_mesh(view_model, view_model.activeDocumentId()));
+    EXPECT_TRUE(view_model.volumeAvailable());
 }

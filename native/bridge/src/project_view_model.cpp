@@ -19,13 +19,18 @@
 #include <QtCore/qnamespace.h>
 #include <QtCore/qtmetamacros.h>
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
 #include <functional>
 #include <future>
 #include <memory>
 #include <optional>
+#include <panta/geometry/step_import.hpp>
+#include <panta/mesh/netgen_mesher.hpp>
+#include <panta/mesh/rust_dto.hpp>
 #include <panta/qt_adapter/standard_paths.hpp>
 #include <string>
 #include <system_error>
@@ -74,7 +79,7 @@ ProjectViewModel::ProjectViewModel(QObject* parent)
     connect(&m_taskProgressPoll, &QTimer::timeout, this, [this] {
         emit taskProgressChanged();
         if (!m_importPending && !m_importPreviewPending && !m_exportProgress &&
-            !m_diagnosticsProgress)
+            !m_diagnosticsProgress && !m_generationProgress)
             m_taskProgressPoll.stop();
     });
     m_animationPoll.setInterval(10);
@@ -564,6 +569,183 @@ bool ProjectViewModel::cancelDiagnostics() {
     return true;
 }
 
+namespace {
+
+/// 与 Rust begin_generated_volume 的参数上限一致；在启动昂贵生成前先拒绝。
+constexpr double kMaxGenerationLengthMm = 1.0e6;
+
+/// 后台生成的结果：失败携带稳定诊断码，成功携带可直接交给 Rust 的 DTO。
+struct GenerationOutcome {
+    QString code;
+    QString category;
+    QString detail;
+    std::optional<panta::ffi::TetMeshData> mesh;
+};
+
+GenerationOutcome generation_failure(const QString& category, const std::string& detail) {
+    return {QStringLiteral("project.volume_generation_failed"), category,
+            QString::fromStdString(detail), std::nullopt};
+}
+
+GenerationOutcome generate_volume_from_step(const std::filesystem::path& file, double maxLengthMm,
+                                            const panta::ffi::TaskProgress& progress) {
+    const auto imported = panta::geometry::import_step(file);
+    if (imported.status != panta::geometry::StepImportStatus::kNone) {
+        if (imported.shape.id != 0)
+            panta::geometry::release_shape(imported.shape);
+        return generation_failure(QStringLiteral("format"), "STEP import: " + imported.detail);
+    }
+    panta::mesh::TetMeshGenerationParameters parameters;
+    parameters.max_length_mm = maxLengthMm;
+    parameters.on_progress = [&progress](double value) {
+        panta::ffi::task_progress_set_fraction(progress, value);
+    };
+    parameters.is_cancelled = [&progress] {
+        return panta::ffi::task_progress_is_cancelled(progress);
+    };
+    const auto generated = panta::mesh::generate_tet_mesh(imported.shape, parameters);
+    panta::geometry::release_shape(imported.shape);
+    if (generated.status == panta::mesh::TetMeshGenerationStatus::kCancelled)
+        return {QStringLiteral("project.volume_generation_cancelled"),
+                QStringLiteral("state"),
+                {},
+                std::nullopt};
+    if (generated.status != panta::mesh::TetMeshGenerationStatus::kNone)
+        return generation_failure(QStringLiteral("format"), "Netgen: " + generated.detail);
+    return {{}, {}, {}, panta::mesh::to_rust_tet_mesh_data(generated.mesh)};
+}
+
+} // namespace
+
+bool ProjectViewModel::beginGenerateVolumeFromStep(const QString& rawPath, double maxLengthMm) {
+    clearError();
+    if (m_generationPending || m_importPending)
+        return fail(QStringLiteral("project.command_invalid"), QStringLiteral("state"),
+                    QStringLiteral("another import or generation is pending"));
+    if (m_currentPath.isEmpty())
+        return fail(QStringLiteral("project.no_project"), QStringLiteral("state"));
+    if (!std::isfinite(maxLengthMm) || maxLengthMm < 0.0 || maxLengthMm > kMaxGenerationLengthMm)
+        return fail(QStringLiteral("project.volume_generation_failed"),
+                    QStringLiteral("validation"),
+                    QStringLiteral("max length %1 mm outside 0..=%2")
+                        .arg(maxLengthMm)
+                        .arg(kMaxGenerationLengthMm));
+    std::string path;
+    QString conversionError;
+    const QString cleanPath = QDir::cleanPath(QDir::fromNativeSeparators(rawPath.trimmed()));
+    if (cleanPath.isEmpty() || !toBoundaryText(cleanPath, &path, &conversionError))
+        return fail(conversionError.isEmpty() ? QStringLiteral("project.import_invalid_file")
+                                              : conversionError);
+    const QFileInfo sourceInfo(cleanPath);
+    if (!sourceInfo.isFile())
+        return fail(QStringLiteral("project.import_file_missing"), QStringLiteral("missing"),
+                    cleanPath);
+    // 平台原生编码的路径给 OCCT；UTF-8 文本给 Rust 工程记录。
+    const std::filesystem::path sourceFile = sourceInfo.filesystemFilePath();
+
+    using Result = std::shared_ptr<GenerationOutcome>;
+    using Watcher = QFutureWatcher<Result>;
+    auto hostProgress = panta::ffi::task_progress_new();
+    const auto progress = std::make_shared<rust::Box<panta::ffi::TaskProgress>>(
+        panta::ffi::task_progress_share(*hostProgress));
+    const auto result = std::make_shared<QPromise<Result>>();
+    auto watcher = std::make_unique<Watcher>();
+    result->start();
+    watcher->setFuture(result->future());
+    connect(watcher.get(), &Watcher::finished, watcher.get(), &QObject::deleteLater);
+    const QString projectPath = m_currentPath;
+    connect(
+        watcher.get(), &Watcher::finished, this,
+        [this, future = result->future(), path, maxLengthMm, projectPath] {
+            m_generationProgress.reset();
+            emit taskProgressChanged();
+            const auto outcome = future.result();
+            if (!outcome || !outcome->mesh) {
+                if (outcome)
+                    fail(outcome->code, outcome->category, outcome->detail);
+                finish_generation(false);
+                return;
+            }
+            // 生成期间切换或关闭了工程：结果不写入另一个工程（保守丢弃）。
+            if (m_currentPath != projectPath) {
+                fail(QStringLiteral("project.command_invalid"), QStringLiteral("state"),
+                     QStringLiteral("project changed during volume generation"));
+                finish_generation(false);
+                return;
+            }
+            const auto begun = panta::ffi::project_service_begin_generated_volume(
+                *m_service, path, maxLengthMm, std::move(*outcome->mesh));
+            outcome->mesh.reset();
+            if (!begun.error.code.empty()) {
+                fail(begun.error);
+                finish_generation(false);
+                return;
+            }
+            m_importRequest = begun.value;
+            m_importPending = true;
+            m_stlImportPoll.start();
+            m_taskProgressPoll.start();
+            emit importPendingChanged();
+        },
+        Qt::QueuedConnection);
+    try {
+        startBackgroundWaiter([sourceFile, maxLengthMm, result, progress] {
+            Result outcome;
+            try {
+                outcome = std::make_shared<GenerationOutcome>(
+                    generate_volume_from_step(sourceFile, maxLengthMm, **progress));
+            } catch (const std::exception& error) {
+                outcome = std::make_shared<GenerationOutcome>(
+                    generation_failure(QStringLiteral("io"), error.what()));
+            }
+            result->addResult(outcome);
+            result->finish();
+        });
+    } catch (const std::system_error& error) {
+        return fail(QStringLiteral("project.io"), QStringLiteral("io"),
+                    QString::fromUtf8(error.what()));
+    }
+    watcher.release()->setParent(this);
+    m_generationPending = true;
+    m_generationProgress.emplace(std::move(hostProgress));
+    m_taskProgressPoll.start();
+    emit generationPendingChanged();
+    emit taskProgressChanged();
+    return true;
+}
+
+bool ProjectViewModel::cancelGeneration() {
+    if (!m_generationPending)
+        return false;
+    if (m_generationProgress) {
+        panta::ffi::task_progress_cancel(**m_generationProgress);
+        return true;
+    }
+    // 提交阶段：取消导入请求后同步收尾（cancelImport 不发 projectImportFinished）。
+    if (!cancelImport())
+        return false;
+    fail(QStringLiteral("project.volume_generation_cancelled"), QStringLiteral("state"));
+    finish_generation(false);
+    return true;
+}
+
+double ProjectViewModel::generationProgress() const {
+    if (!m_generationPending)
+        return -1.0;
+    if (m_generationProgress)
+        return 0.9 * panta::ffi::task_progress_fraction(**m_generationProgress);
+    const double commit = importProgress();
+    return commit < 0.0 ? 0.9 : 0.9 + 0.1 * commit;
+}
+
+void ProjectViewModel::finish_generation(bool succeeded) {
+    if (!m_generationPending)
+        return;
+    m_generationPending = false;
+    emit generationPendingChanged();
+    emit generationFinished(succeeded);
+}
+
 bool ProjectViewModel::renameProject(const QString& name) {
     clearError();
     std::string boundaryName;
@@ -660,6 +842,7 @@ void ProjectViewModel::finish_stl_import() {
     }
     emit projectImportFinished(request, succeeded);
     emit importPendingChanged();
+    finish_generation(succeeded);
 }
 
 bool ProjectViewModel::publish_import(const panta::ffi::ProjectImport& imported) {

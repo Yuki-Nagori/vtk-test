@@ -23,6 +23,15 @@ pub(super) fn task_progress_cancel(progress: &TaskProgress) {
     progress.0.cancel();
 }
 
+/// native 生成器（task 023）上报整体进度；值被钳制到 0..=1。
+pub(super) fn task_progress_set_fraction(progress: &TaskProgress, value: f64) {
+    progress.0.set_fraction(value);
+}
+
+pub(super) fn task_progress_is_cancelled(progress: &TaskProgress) -> bool {
+    progress.0.is_cancelled()
+}
+
 /// 导入进度 0..=1；没有匹配的进行中导入时返回 -1。
 pub(super) fn project_service_stl_import_progress(
     service: &crate::ProjectService,
@@ -52,7 +61,11 @@ mod tests {
         let worker = task_progress_share(&host);
         worker.0.set_fraction(0.5);
         assert_eq!(task_progress_fraction(&host), 0.5);
+        task_progress_set_fraction(&worker, 0.75);
+        assert_eq!(task_progress_fraction(&host), 0.75);
+        assert!(!task_progress_is_cancelled(&worker));
         task_progress_cancel(&host);
+        assert!(task_progress_is_cancelled(&worker));
         assert!(worker.0.is_cancelled());
     }
 }

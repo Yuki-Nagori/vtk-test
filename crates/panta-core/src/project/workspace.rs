@@ -373,6 +373,10 @@ pub fn project_error_message(code: &str) -> &'static str {
             "体网格首期仅支持线性四面体；文件含其他单元类型或四面体校验失败。"
         }
         "project.volume_unavailable" => "当前网格不是体网格。",
+        "project.volume_generation_failed" => {
+            "无法从 STEP 生成体网格：请检查 STEP 文件是否为闭合实体，以及最大单元尺寸是否有效。"
+        }
+        "project.volume_generation_cancelled" => "体网格生成已取消。",
         "project.import_asset_write_failed" => "无法将网格资产保存到工程中。",
         "project.export_unsupported_format" => "请选择导出格式：STL、VTU、VTP、VTK、OBJ 或 PLY。",
         "project.export_too_large" => "网格超出所选导出格式的容量上限。",

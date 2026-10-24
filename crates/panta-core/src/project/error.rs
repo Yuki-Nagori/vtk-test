@@ -25,6 +25,8 @@ pub enum ProjectError {
     ImportVolumeUnsupported(String),
     /// 体网格命令作用于非体网格（task 021）。
     VolumeUnavailable(String),
+    /// STEP → 体网格生成失败：来源不可读、参数非法或生成结果未通过校验（task 023）。
+    VolumeGenerationFailed(String),
     ImportSourceChanged(String),
     ImportAssetWriteFailed(String),
     ImportRecordMissing(String),
@@ -63,6 +65,7 @@ impl ProjectError {
             Self::ImportParseFailed(_) => "project.import_parse_failed",
             Self::ImportVolumeUnsupported(_) => "project.import_volume_unsupported",
             Self::VolumeUnavailable(_) => "project.volume_unavailable",
+            Self::VolumeGenerationFailed(_) => "project.volume_generation_failed",
             Self::ImportSourceChanged(_) => "project.import_source_changed",
             Self::ImportAssetWriteFailed(_) => "project.import_asset_write_failed",
             Self::ImportRecordMissing(_) => "project.import_record_missing",
@@ -96,6 +99,7 @@ impl ProjectError {
             | Self::ImportUnsupportedUnits(_)
             | Self::ImportParseFailed(_)
             | Self::ImportVolumeUnsupported(_)
+            | Self::VolumeGenerationFailed(_)
             | Self::ExportUnsupportedFormat(_)
             | Self::ExportTooLarge(_)
             | Self::ExportSourceUnavailable(_) => "format",
@@ -127,6 +131,7 @@ impl ProjectError {
             | Self::ImportParseFailed(name)
             | Self::ImportVolumeUnsupported(name)
             | Self::VolumeUnavailable(name)
+            | Self::VolumeGenerationFailed(name)
             | Self::ImportSourceChanged(name)
             | Self::ImportAssetWriteFailed(name)
             | Self::ImportRecordMissing(name)

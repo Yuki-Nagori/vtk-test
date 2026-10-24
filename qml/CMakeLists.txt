@@ -21,6 +21,7 @@ set(PANTA_SHELL_QML_FILES
     Components/Composites/DialogTitleBar.qml
     Components/Composites/DialogWindow.qml
     Components/Composites/DocumentTabBar.qml
+    Dialogs/GenerateVolumeDialog.qml
     Dialogs/ImportDialog.qml
     Dialogs/NewProjectDialog.qml
     Panels/ViewportPane.qml
@@ -33,7 +34,8 @@ if(NOT PANTA_ENABLE_BRIDGE_MODULE)
   # 提供无 Bridge 的最小 Shell，避免关闭可选模块后残留 Panta.Bridge import；
   # ViewportPane 依赖 Panta.Visualization（CaeViewport），一并剔除。
   list(REMOVE_ITEM PANTA_SHELL_QML_FILES App.qml Panels/ViewportPane.qml
-       Dialogs/NewProjectDialog.qml Dialogs/ImportDialog.qml)
+       Dialogs/NewProjectDialog.qml Dialogs/ImportDialog.qml
+       Dialogs/GenerateVolumeDialog.qml)
   list(APPEND PANTA_SHELL_QML_FILES AppNoBridge.qml)
 endif()
 

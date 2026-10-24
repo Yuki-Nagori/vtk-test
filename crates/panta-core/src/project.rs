@@ -18,7 +18,7 @@ pub use model::{ProjectCommand, ProjectSnapshot};
 use model::{ProjectManifest, ProjectState};
 pub use panta_import::{
     DEFAULT_MESH_TYPE, IMPORT_RECORD_VERSION, ImportRecord, MESH_TYPES, STL_IMPORT_PARSER_VERSION,
-    StlImportPreview, default_display_name,
+    StlImportPreview, VolumeGeneration, default_display_name,
 };
 pub use panta_mesh::{DEFAULT_RELATIVE_WELD_TOLERANCE, DiagnosticOptions, SurfaceDiagnostics};
 pub(crate) use service::resolve_asset_path;
@@ -45,6 +45,7 @@ mod gate_location;
 pub use gate_location::{GateLocationSettings, GateLocatorAlgorithm, NUMBER_OF_GATES_CONSTRAINT};
 mod material;
 pub use material::default_material_id;
+mod generated;
 mod import;
 mod mesh_assets;
 mod preview;
@@ -299,6 +300,7 @@ mod tests {
             show_import_log: false,
             triangle_count: 1,
             dimensions: [1.0, 1.0, 0.0],
+            generation: None,
         });
         state.mesh_assets.insert(
             "mesh-overflow".to_owned(),
@@ -382,6 +384,7 @@ mod tests {
                 show_import_log: false,
                 triangle_count: 0,
                 dimensions: [0.0; 3],
+                generation: None,
             });
         }
         assert!(service.workspace.open_import("import-2", "model_a"));
@@ -423,6 +426,7 @@ mod tests {
             show_import_log: false,
             triangle_count: 1,
             dimensions: [1.0, 1.0, 0.0],
+            generation: None,
         });
         state.mesh_assets.insert(
             "mesh-saved-import".to_owned(),
@@ -479,6 +483,7 @@ mod tests {
             show_import_log: false,
             triangle_count: 1,
             dimensions: [1.0, 1.0, 0.0],
+            generation: None,
         });
         state.mesh_assets.insert(
             "mesh-invalid-saved-import".to_owned(),

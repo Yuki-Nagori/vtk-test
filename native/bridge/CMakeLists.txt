@@ -33,7 +33,7 @@ target_include_directories(panta_bridge PUBLIC src)
 # ViewModel 使用 CXX 生成头，staticlib 及系统库随 target 传播到最终链接者。
 target_include_directories(panta_bridge PUBLIC "${PANTA_FFI_INCLUDE_DIR}")
 target_link_libraries(panta_bridge PUBLIC Qt6::Core Qt6::Qml panta::visualization panta::qt_adapter
-                                          "${PANTA_FFI_STATIC_LIB}")
+                                          panta::mesh "${PANTA_FFI_STATIC_LIB}")
 if(UNIX)
   find_package(Threads REQUIRED)
   target_link_libraries(panta_bridge PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
@@ -56,6 +56,12 @@ if(BUILD_TESTING)
   target_include_directories(panta_bridge_project_view_model_test PRIVATE ../../tests/support/qt)
   target_link_libraries(panta_bridge_project_view_model_test PRIVATE panta::bridge GTest::gtest
                                                                      Qt6::Test)
+  # 023：STEP → Netgen 体网格命令复用 tests/fixtures/geometry/box_mm.step（裸路径宏同 009/010）。
+  get_filename_component(_panta_bridge_geometry_fixture_dir
+                         "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/fixtures/geometry" ABSOLUTE)
+  target_compile_definitions(
+    panta_bridge_project_view_model_test
+    PRIVATE PANTA_BRIDGE_GEOMETRY_FIXTURE_DIR=${_panta_bridge_geometry_fixture_dir})
   gtest_discover_tests(panta_bridge_project_view_model_test DISCOVERY_MODE POST_BUILD
                        DISCOVERY_TIMEOUT 120 PROPERTIES LABELS bridge)
 

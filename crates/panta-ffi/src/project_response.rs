@@ -138,6 +138,24 @@ pub(super) fn project_service_finish_stl_import_response(
     }
 }
 
+pub(super) fn project_service_begin_generated_volume(
+    service: &mut ProjectService,
+    source_step: String,
+    max_length_mm: f64,
+    data: bridge::TetMeshData,
+) -> bridge::StlPreviewRequestResult {
+    crate::mesh::tet_mesh_from_dto(data)
+        .map_err(ProjectError::VolumeGenerationFailed)
+        .and_then(|volume| {
+            service.service.begin_generated_volume(
+                std::path::Path::new(&source_step),
+                max_length_mm,
+                volume,
+            )
+        })
+        .into()
+}
+
 pub(super) fn project_service_cancel_stl_import_response(
     service: &mut ProjectService,
     request: u64,

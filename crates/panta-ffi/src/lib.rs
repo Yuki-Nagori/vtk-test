@@ -7,11 +7,12 @@ mod project_response;
 mod temp_directory;
 
 use project_response::{
-    project_service_begin_stl_import_response, project_service_begin_stl_preview_response,
-    project_service_cancel_stl_import_response, project_service_cancel_stl_preview,
-    project_service_current_response, project_service_execute_response,
-    project_service_finish_stl_import_response, project_service_finish_stl_preview_response,
-    project_service_import_stl_response, project_service_imports_response,
+    project_service_begin_generated_volume, project_service_begin_stl_import_response,
+    project_service_begin_stl_preview_response, project_service_cancel_stl_import_response,
+    project_service_cancel_stl_preview, project_service_current_response,
+    project_service_execute_response, project_service_finish_stl_import_response,
+    project_service_finish_stl_preview_response, project_service_import_stl_response,
+    project_service_imports_response,
 };
 mod support;
 use support::{finish_background_writes, install_crash_handler};
@@ -45,7 +46,8 @@ mod progress;
 pub use progress::TaskProgress;
 use progress::{
     project_service_stl_import_progress, project_service_stl_preview_progress,
-    task_progress_cancel, task_progress_fraction, task_progress_new, task_progress_share,
+    task_progress_cancel, task_progress_fraction, task_progress_is_cancelled, task_progress_new,
+    task_progress_set_fraction, task_progress_share,
 };
 mod volume;
 use volume::project_service_volume_summary;
@@ -325,6 +327,8 @@ pub mod bridge {
         fn task_progress_share(progress: &TaskProgress) -> Box<TaskProgress>;
         fn task_progress_fraction(progress: &TaskProgress) -> f64;
         fn task_progress_cancel(progress: &TaskProgress);
+        fn task_progress_set_fraction(progress: &TaskProgress, value: f64);
+        fn task_progress_is_cancelled(progress: &TaskProgress) -> bool;
         fn project_service_stl_import_progress(service: &ProjectService, request: u64) -> f64;
         fn project_service_stl_preview_progress(service: &ProjectService, request: u64) -> f64;
         fn project_service_begin_operation(
@@ -424,6 +428,14 @@ pub mod bridge {
         ) -> StlImportPoll;
         #[rust_name = "project_service_cancel_stl_import_response"]
         fn project_service_cancel_stl_import(service: &mut ProjectService, request: u64) -> bool;
+        /// STEP → Netgen 生成结果的工程提交（task 023）；轮询与取消复用
+        /// `project_service_finish_stl_import` / `project_service_cancel_stl_import`。
+        fn project_service_begin_generated_volume(
+            service: &mut ProjectService,
+            source_step: String,
+            max_length_mm: f64,
+            data: TetMeshData,
+        ) -> StlPreviewRequestResult;
 
         fn project_service_drain_workspace_activations(service: &mut ProjectService);
         fn mesh_validate_tet(data: TetMeshData) -> TetMeshValidation;
