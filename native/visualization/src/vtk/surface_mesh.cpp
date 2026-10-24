@@ -56,6 +56,16 @@ vtkSmartPointer<vtkPolyData> make_surface_poly_data(const SurfaceMeshSnapshot& m
     data->SetPolys(cells);
     // 当前三角面快照每面独占三个顶点，直接写面法线以避免重复三角化和拆点。
     data->GetPointData()->SetNormals(normals);
+    if (!mesh.scalars.empty() && mesh.scalars.size() == mesh.vertices.size()) {
+        // 场剖面：每个三角面顶点一个标量（task 029），NaN 由查找表的缺失色显示。
+        auto scalars = vtkSmartPointer<vtkFloatArray>::New();
+        scalars->SetName("field");
+        scalars->SetNumberOfComponents(1);
+        scalars->SetNumberOfTuples(point_count);
+        for (vtkIdType point = 0; point < point_count; ++point)
+            scalars->SetValue(point, mesh.scalars[static_cast<std::size_t>(point)]);
+        data->GetPointData()->SetScalars(scalars);
+    }
     return data;
 }
 

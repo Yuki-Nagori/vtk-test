@@ -10,6 +10,9 @@ pub struct MeshDisplayInput {
     volume: Option<Arc<panta_mesh::TetMesh>>,
     /// 需要流式访问的完整资产（task 025）：表面 LOD 的源资产，或单元未驻留的体网格资产。
     streamed: Option<panta_core::project::StreamedAsset>,
+    /// 结果 sidecar 句柄（task 029）：驻留体网格场剖面在后台读取字段（单字段缓存）。
+    /// `Arc` 保持输入体积小（与其他快照字段同为共享句柄）。
+    results: Option<Arc<panta_core::project::ResultFieldSource>>,
 }
 
 impl MeshDisplayInput {
@@ -66,11 +69,19 @@ pub(super) fn project_service_mesh_display_input(
     let lod_source_triangles = service.service.mesh_lod_source_for_import(import_id);
     let volume = service.service.volume_for_import(import_id);
     let streamed = service.service.streamed_asset_for_import(import_id);
+    // 只解析路径与核对参数，不做 IO；无效引用在场剖面时报告。
+    let results = service
+        .service
+        .result_field_source(import_id)
+        .ok()
+        .flatten()
+        .map(Arc::new);
     Box::new(MeshDisplayInput {
         mesh,
         lod_source_triangles,
         volume,
         streamed,
+        results,
     })
 }
 
@@ -281,6 +292,102 @@ pub(super) fn section_mesh_display(
     result
 }
 
+fn field_component(component: i32) -> Option<panta_mesh::FieldComponent> {
+    match component {
+        -1 => Some(panta_mesh::FieldComponent::Magnitude),
+        0..=2 => Some(panta_mesh::FieldComponent::Component(component as u8)),
+        _ => None,
+    }
+}
+
+fn field_association(association: &str) -> Option<panta_mesh::FieldAssociation> {
+    match association {
+        "node" => Some(panta_mesh::FieldAssociation::Node),
+        "cell" => Some(panta_mesh::FieldAssociation::Cell),
+        _ => None,
+    }
+}
+
+/// 在宿主后台线程计算带结果场数值的切面（task 029）：驻留体网格读整字段（服务单字段缓存），
+/// 单元未驻留时只走派生分块文件；逐次流式回退返回 CommandInvalid。
+#[expect(clippy::boxed_local, reason = "切面输入由 CXX Box 独占移交后台线程")]
+pub(super) fn section_field_mesh_display(
+    input: Box<MeshDisplayInput>,
+    request: &bridge::FieldSectionRequest,
+    progress: &crate::TaskProgress,
+) -> bridge::FieldSectionResult {
+    use panta_core::project::ProjectError;
+    let mut result = bridge::FieldSectionResult::default();
+    let normal = [request.normal_x, request.normal_y, request.normal_z];
+    let (fraction, field_name) = (request.fraction, request.field_name.as_str());
+    let (Some(association), Some(component)) = (
+        field_association(&request.association),
+        field_component(request.component),
+    ) else {
+        result.error =
+            ProjectError::CommandInvalid("field association or component is invalid".to_owned())
+                .into();
+        return result;
+    };
+    let section = match (&input.volume, input.streamed_volume()) {
+        (Some(volume), _) => input
+            .results
+            .as_ref()
+            .ok_or_else(|| ProjectError::CommandInvalid("import has no result fields".to_owned()))
+            .and_then(|source| source.read_field(field_name, association))
+            .and_then(|field| {
+                panta_core::project::section_plane_field(
+                    volume,
+                    &field,
+                    component,
+                    normal,
+                    fraction,
+                    &progress.0,
+                )
+            }),
+        (None, Some(asset)) => panta_core::project::streamed_section_plane_field(
+            asset,
+            field_name,
+            association,
+            component,
+            normal,
+            fraction,
+            &progress.0,
+        ),
+        (None, None) => Err(ProjectError::VolumeUnavailable(String::new())),
+    };
+    match section {
+        Ok(Some(section)) => match crate::mesh_coordinates(&section.surface) {
+            Ok(coordinates) => {
+                if let Some([min, max]) = section.value_range() {
+                    result.has_range = true;
+                    result.min = min;
+                    result.max = max;
+                }
+                result.missing_vertices = section.missing_vertices() as u64;
+                result.scalars = section
+                    .values
+                    .iter()
+                    .flatten()
+                    .map(|&value| value as f32)
+                    .collect();
+                result.coordinates = coordinates;
+                result.ready = true;
+            }
+            Err(detail) => {
+                result.error = crate::project_response::diagnostic(
+                    "project.mesh_allocation_failed",
+                    "resource",
+                    detail,
+                );
+            }
+        },
+        Ok(None) => {}
+        Err(error) => result.error = error.into(),
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,6 +403,7 @@ mod tests {
                 lod_source_triangles: 0,
                 volume: None,
                 streamed: None,
+                results: None,
             }),
             &crate::TaskProgress::default(),
         );
@@ -307,6 +415,7 @@ mod tests {
                 lod_source_triangles: 0,
                 volume: None,
                 streamed: None,
+                results: None,
             }),
             &cancelled,
         );
@@ -327,6 +436,7 @@ mod tests {
                 lod_source_triangles: 0,
                 volume: None,
                 streamed: None,
+                results: None,
             }),
             &crate::TaskProgress::default(),
         );
@@ -338,6 +448,7 @@ mod tests {
                 lod_source_triangles: 30_000_000,
                 volume: None,
                 streamed: None,
+                results: None,
             }),
             &crate::TaskProgress::default(),
         );
@@ -359,6 +470,7 @@ mod tests {
             lod_source_triangles: 0,
             volume: Some(Arc::new(volume)),
             streamed: None,
+            results: None,
         }))
     }
 
@@ -434,6 +546,7 @@ mod tests {
                     kind: StreamedKind::Volume(block.counts()),
                     chunks: None,
                 }),
+                results: None,
             })
         };
         let report = diagnose_mesh_display(volume_input(), &Default::default());
@@ -475,6 +588,7 @@ mod tests {
                     kind: StreamedKind::Surface { triangles: 5_000 },
                     chunks: None,
                 }),
+                results: None,
             })
         };
         let stl = directory.join("full.stl");
@@ -495,6 +609,109 @@ mod tests {
         let diagnose = diagnose_mesh_display(surface_input(&surface_digest), &Default::default());
         assert_eq!(diagnose.error.code, "project.mesh_lod_only");
         std::fs::remove_dir_all(&directory)?;
+        Ok(())
+    }
+
+    #[test]
+    fn field_sections_color_resident_volumes_and_report_invalid_requests()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = crate::temp_directory::Fixture::new()?;
+        let source = fixture.root.join("fields.vtk");
+        std::fs::write(
+            &source,
+            "# vtk DataFile Version 4.2\nresults\nASCII\nDATASET UNSTRUCTURED_GRID\n\
+             POINTS 5 double\n0 0 0 1 0 0 0 1 0 0 0 1 1 1 1\n\
+             CELLS 2 10\n4 0 1 2 3\n4 1 2 3 4\nCELL_TYPES 2\n10 10\n\
+             POINT_DATA 5\nVECTORS velocity double\n1 0 0 0 2 0 0 0 3 0 0 0 1 1 1\n\
+             CELL_DATA 2\nSCALARS material int\nLOOKUP_TABLE default\n1 2\n",
+        )?;
+        let mut service = crate::project::project_service_new();
+        service.service.create(&fixture.root, "Fields")?;
+        let record = service
+            .service
+            .import_stl(&source, "solid-3d", "millimeters", false)?;
+        let fields = crate::volume::project_service_result_fields(&service, &record.id);
+        assert!(fields.error.code.is_empty(), "{}", fields.error.detail);
+        let names: Vec<_> = fields
+            .fields
+            .iter()
+            .map(|field| {
+                (
+                    field.name.as_str(),
+                    field.association.as_str(),
+                    field.sectionable,
+                )
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [("velocity", "node", true), ("material", "cell", true)]
+        );
+        assert!(fields.fields[0].has_range && fields.fields[0].max == 3.0);
+
+        let request = |name: &str, association: &str, component: i32| bridge::FieldSectionRequest {
+            field_name: name.to_owned(),
+            association: association.to_owned(),
+            component,
+            normal_x: 1.0,
+            normal_y: 1.0,
+            normal_z: 1.0,
+            fraction: 0.5,
+        };
+        let input = || project_service_mesh_display_input(&service, &record.id);
+        let progress = crate::TaskProgress::default();
+        let material =
+            section_field_mesh_display(input(), &request("material", "cell", -1), &progress);
+        assert!(material.error.code.is_empty(), "{}", material.error.detail);
+        assert!(material.ready);
+        assert_eq!(material.scalars.len() * 3, material.coordinates.len());
+        assert!(
+            material
+                .scalars
+                .iter()
+                .all(|value| *value == 1.0 || *value == 2.0)
+        );
+        assert!(material.has_range && material.min >= 1.0 && material.max <= 2.0);
+        assert_eq!(material.missing_vertices, 0);
+        let plain = section_mesh_display(input(), 1.0, 1.0, 1.0, 0.5, &progress);
+        assert_eq!(plain.coordinates, material.coordinates);
+        let velocity_x =
+            section_field_mesh_display(input(), &request("velocity", "node", 0), &progress);
+        assert!(velocity_x.ready && velocity_x.max <= 1.0 + 1e-9);
+
+        for invalid in [
+            request("velocity", "edge", -1),
+            request("velocity", "node", 3),
+            request("missing", "node", -1),
+            bridge::FieldSectionRequest {
+                normal_x: 0.0,
+                normal_y: 0.0,
+                normal_z: 0.0,
+                ..request("velocity", "node", -1)
+            },
+        ] {
+            let result = section_field_mesh_display(input(), &invalid, &progress);
+            assert_eq!(result.error.code, "project.command_invalid", "{invalid:?}");
+            assert!(!result.ready);
+        }
+        let cancelled = crate::TaskProgress::default();
+        cancelled.0.cancel();
+        let stopped =
+            section_field_mesh_display(input(), &request("velocity", "node", -1), &cancelled);
+        assert!(!stopped.ready && stopped.error.code.is_empty());
+        // 表面网格输入：无体网格。
+        let surface = section_field_mesh_display(
+            Box::new(MeshDisplayInput {
+                mesh: Err(Default::default()),
+                lod_source_triangles: 0,
+                volume: None,
+                streamed: None,
+                results: None,
+            }),
+            &request("velocity", "node", -1),
+            &progress,
+        );
+        assert_eq!(surface.error.code, "project.volume_unavailable");
         Ok(())
     }
 

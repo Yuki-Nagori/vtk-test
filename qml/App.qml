@@ -685,6 +685,110 @@ ApplicationWindow {
                     value: projectModel.sectionFraction
                     onMoved: projectModel.setSection(true, projectModel.sectionNormalX, projectModel.sectionNormalY, projectModel.sectionNormalZ, value)
                 }
+                // 结果场上色（task 029）：只列出可切面的 1/3 分量字段；3 分量字段可选模或 X/Y/Z 分量。
+                RowLayout {
+                    id: sectionFieldRow
+                    readonly property var fieldOptions: [
+                        {
+                            "label": "无",
+                            "name": "",
+                            "association": "",
+                            "components": 1
+                        }
+                    ].concat(projectModel.resultFields.filter(field => field.sectionable).map(field => ({
+                                "label": field.name + (field.association === "cell" ? "（单元）" : "（节点）"),
+                                "name": field.name,
+                                "association": field.association,
+                                "components": field.components
+                            })))
+                    readonly property int selectedIndex: fieldOptions.findIndex(option => option.name === projectModel.sectionFieldName && option.association === projectModel.sectionFieldAssociation)
+                    Layout.fillWidth: true
+                    visible: fieldOptions.length > 1
+                    Label {
+                        text: "字段"
+                        color: Theme.colorTextMuted
+                    }
+                    ComboBox {
+                        objectName: "sectionField"
+                        Layout.fillWidth: true
+                        model: sectionFieldRow.fieldOptions
+                        textRole: "label"
+                        currentIndex: Math.max(0, sectionFieldRow.selectedIndex)
+                        Accessible.name: "切面上色字段"
+                        onActivated: index => {
+                            const option = sectionFieldRow.fieldOptions[index];
+                            projectModel.setSectionField(option.name, option.association, -1);
+                        }
+                    }
+                    ComboBox {
+                        objectName: "sectionFieldComponent"
+                        readonly property var option: sectionFieldRow.fieldOptions[Math.max(0, sectionFieldRow.selectedIndex)]
+                        visible: option.components === 3
+                        model: ["模", "X", "Y", "Z"]
+                        currentIndex: projectModel.sectionFieldComponent + 1
+                        Accessible.name: "切面上色分量"
+                        onActivated: index => projectModel.setSectionField(projectModel.sectionFieldName, projectModel.sectionFieldAssociation, index - 1)
+                    }
+                }
+                // 色标：渐变与视口查找表共用同一组 Cool to Warm 控制点；位于视口之外，不遮挡渲染。
+                ColumnLayout {
+                    objectName: "fieldLegend"
+                    Layout.fillWidth: true
+                    visible: projectModel.fieldLegendVisible
+                    spacing: 2
+                    Label {
+                        Layout.fillWidth: true
+                        text: projectModel.fieldLegendTitle + (projectModel.fieldLegendUnits.length > 0 ? " (" + projectModel.fieldLegendUnits + ")" : "")
+                        elide: Text.ElideRight
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: 12
+                        border.color: Theme.colorTextMuted
+                        gradient: Gradient {
+                            orientation: Gradient.Horizontal
+                            GradientStop {
+                                position: projectModel.fieldLegendStops[0].position
+                                color: projectModel.fieldLegendStops[0].color
+                            }
+                            GradientStop {
+                                position: projectModel.fieldLegendStops[1].position
+                                color: projectModel.fieldLegendStops[1].color
+                            }
+                            GradientStop {
+                                position: projectModel.fieldLegendStops[2].position
+                                color: projectModel.fieldLegendStops[2].color
+                            }
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Label {
+                            text: projectModel.fieldLegendHasRange ? Number(projectModel.fieldLegendMin).toPrecision(4) : "无有限值"
+                            color: Theme.colorTextMuted
+                        }
+                        Item {
+                            Layout.fillWidth: true
+                        }
+                        Label {
+                            visible: projectModel.fieldLegendHasRange
+                            text: Number(projectModel.fieldLegendMax).toPrecision(4)
+                            color: Theme.colorTextMuted
+                        }
+                    }
+                    RowLayout {
+                        visible: projectModel.fieldMissingVertices > 0
+                        Rectangle {
+                            implicitWidth: 12
+                            implicitHeight: 12
+                            color: projectModel.fieldMissingColor
+                        }
+                        Label {
+                            text: "缺失值顶点 " + projectModel.fieldMissingVertices
+                            color: Theme.colorTextMuted
+                        }
+                    }
+                }
             }
             // 大网格 LOD 提示（task 019/025）：显示的是简化网格，拾取为近似值；导出流式读取源资产，表面诊断不可用。
             Label {

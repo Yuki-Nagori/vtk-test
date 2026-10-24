@@ -1149,6 +1149,8 @@ void ProjectViewModel::refresh_workspace(bool forceActiveNotification) {
         m_sectionDirty = false;
         if (m_sectionProgress)
             panta::ffi::task_progress_cancel(**m_sectionProgress);
+        m_resultFields.clear();
+        clear_section_field();
         emit volumeChanged();
         if (m_animation) {
             // 切换文档即退出序列查看（保守：序列不与文档并存）。
@@ -1245,6 +1247,7 @@ bool panta::bridge::ProjectViewModel::openAnimationUrl(const QUrl& url) {
         return fail(error);
     if (m_sectionActive) {
         m_sectionActive = false;
+        hide_field_legend();
         emit volumeChanged();
     }
     m_animation.emplace(std::move(sequence));
@@ -1383,7 +1386,109 @@ void panta::bridge::ProjectViewModel::refresh_volume() {
                                   : QString();
     if (!m_volumeAvailable)
         m_sectionActive = false;
+    refresh_result_fields();
     emit volumeChanged();
+}
+
+void panta::bridge::ProjectViewModel::refresh_result_fields() {
+    m_resultFields.clear();
+    if (m_volumeAvailable) {
+        // 只读 sidecar 头部与字段表；打不开时不阻断体网格功能，只是没有字段可选。
+        const auto list =
+            panta::ffi::project_service_result_fields(*m_service, m_activeDocumentId.toStdString());
+        for (const auto& field : list.fields) {
+            QVariantMap item;
+            item.insert(QStringLiteral("name"), QString::fromUtf8(field.name));
+            item.insert(QStringLiteral("association"), QString::fromUtf8(field.association));
+            item.insert(QStringLiteral("components"), static_cast<int>(field.components));
+            item.insert(QStringLiteral("units"), QString::fromUtf8(field.units));
+            item.insert(QStringLiteral("missing"), static_cast<double>(field.missing));
+            item.insert(QStringLiteral("hasRange"), field.has_range);
+            item.insert(QStringLiteral("min"), field.min);
+            item.insert(QStringLiteral("max"), field.max);
+            item.insert(QStringLiteral("sectionable"), field.sectionable);
+            m_resultFields.push_back(item);
+        }
+    }
+    if (!m_sectionFieldName.isEmpty() &&
+        find_result_field(m_sectionFieldName, m_sectionFieldAssociation).isEmpty())
+        clear_section_field();
+    if (!m_sectionActive)
+        hide_field_legend();
+}
+
+QVariantMap panta::bridge::ProjectViewModel::find_result_field(const QString& name,
+                                                               const QString& association) const {
+    for (const auto& value : m_resultFields) {
+        const auto field = value.toMap();
+        if (field.value(QStringLiteral("name")).toString() == name &&
+            field.value(QStringLiteral("association")).toString() == association)
+            return field;
+    }
+    return {};
+}
+
+void panta::bridge::ProjectViewModel::clear_section_field() {
+    m_sectionFieldName.clear();
+    m_sectionFieldAssociation.clear();
+    m_sectionFieldComponent = -1;
+    hide_field_legend();
+    emit fieldLegendChanged();
+}
+
+void panta::bridge::ProjectViewModel::hide_field_legend() {
+    if (!m_fieldLegendVisible)
+        return;
+    m_fieldLegendVisible = false;
+    emit fieldLegendChanged();
+}
+
+bool panta::bridge::ProjectViewModel::setSectionField(const QString& name,
+                                                      const QString& association, int component) {
+    clearError();
+    if (name.isEmpty()) {
+        const bool changed = !m_sectionFieldName.isEmpty();
+        clear_section_field();
+        if (changed && m_sectionActive)
+            request_section();
+        return true;
+    }
+    const auto field = find_result_field(name, association);
+    const int components = field.value(QStringLiteral("components")).toInt();
+    if (field.isEmpty() || !field.value(QStringLiteral("sectionable")).toBool() || component < -1 ||
+        component >= components || (components == 1 && component > 0))
+        return fail(QStringLiteral("project.command_invalid"), QStringLiteral("state"),
+                    QStringLiteral("result field %1 (%2) component %3 cannot color sections")
+                        .arg(name, association)
+                        .arg(component));
+    m_sectionFieldName = name;
+    m_sectionFieldAssociation = association;
+    // 标量字段只有一个分量，取模与分量 0 等价；统一记为 -1。
+    m_sectionFieldComponent = components == 1 ? -1 : component;
+    emit fieldLegendChanged();
+    if (m_sectionActive)
+        request_section();
+    return true;
+}
+
+QVariantList panta::bridge::ProjectViewModel::fieldLegendStops() {
+    QVariantList stops;
+    for (const auto& stop : panta::visualization::field_color_stops) {
+        QVariantMap item;
+        item.insert(QStringLiteral("position"), stop.position);
+        item.insert(QStringLiteral("color"),
+                    QColor::fromRgbF(static_cast<float>(stop.red), static_cast<float>(stop.green),
+                                     static_cast<float>(stop.blue)));
+        stops.push_back(item);
+    }
+    return stops;
+}
+
+QString panta::bridge::ProjectViewModel::fieldMissingColor() {
+    const auto& color = panta::visualization::field_missing_color;
+    return QColor::fromRgbF(static_cast<float>(color[0]), static_cast<float>(color[1]),
+                            static_cast<float>(color[2]))
+        .name();
 }
 
 void panta::bridge::ProjectViewModel::request_section() {
@@ -1399,6 +1504,8 @@ void panta::bridge::ProjectViewModel::request_section() {
     using Input = rust::Box<panta::ffi::MeshDisplayInput>;
     struct Section {
         panta::ffi::AnimationFrameResult frame;
+        /// 有字段选择时为场剖面结果（task 029），`frame` 只承载错误。
+        std::optional<panta::ffi::FieldSectionResult> field;
     };
     using Result = std::shared_ptr<Section>;
     using Watcher = QFutureWatcher<Result>;
@@ -1411,6 +1518,34 @@ void panta::bridge::ProjectViewModel::request_section() {
     const auto normal = m_sectionNormal;
     const double fraction = m_sectionFraction;
     const auto selection = m_meshSelection;
+    std::optional<panta::ffi::FieldSectionRequest> fieldRequest;
+    if (!m_sectionFieldName.isEmpty()) {
+        std::string name;
+        std::string association;
+        QString conversionError;
+        if (!to_boundary_utf8(m_sectionFieldName, &name, &conversionError) ||
+            !to_boundary_utf8(m_sectionFieldAssociation, &association, &conversionError)) {
+            fail(QStringLiteral("project.command_invalid"), QStringLiteral("state"),
+                 conversionError);
+            return;
+        }
+        fieldRequest = panta::ffi::FieldSectionRequest{rust::String(name),
+                                                       rust::String(association),
+                                                       m_sectionFieldComponent,
+                                                       normal[0],
+                                                       normal[1],
+                                                       normal[2],
+                                                       fraction};
+    }
+    const QString fieldTitle =
+        m_sectionFieldName.isEmpty() ? QString()
+        : m_sectionFieldComponent < 0
+            ? m_sectionFieldName
+            : QStringLiteral("%1 [%2]").arg(m_sectionFieldName,
+                                            QString(QChar(u'X' + m_sectionFieldComponent)));
+    const QString fieldUnits = find_result_field(m_sectionFieldName, m_sectionFieldAssociation)
+                                   .value(QStringLiteral("units"))
+                                   .toString();
     const auto current = panta::ffi::project_service_current(*m_service);
     if (!current.error.code.empty())
         return;
@@ -1422,7 +1557,7 @@ void panta::bridge::ProjectViewModel::request_section() {
     connect(watcher.get(), &Watcher::finished, watcher.get(), &QObject::deleteLater);
     connect(
         watcher.get(), &Watcher::finished, this,
-        [this, future = result->future(), selection, revision] {
+        [this, future = result->future(), selection, revision, fieldTitle, fieldUnits] {
             m_sectionPending = false;
             m_sectionProgress.reset();
             const auto section = future.result();
@@ -1434,16 +1569,25 @@ void panta::bridge::ProjectViewModel::request_section() {
             // 结果已过期（切换文档、关闭切面或进入动画）时丢弃。
             if (!section || selection != m_meshSelection || !m_sectionActive || m_animation)
                 return;
-            if (!section->frame.error.code.empty()) {
-                fail(section->frame.error);
+            const auto& error = section->field ? section->field->error : section->frame.error;
+            if (!error.code.empty()) {
+                hide_field_legend();
+                fail(error);
                 return;
             }
-            if (!section->frame.ready)
+            if (!(section->field ? section->field->ready : section->frame.ready))
                 return;
             try {
                 auto mesh = std::make_shared<panta::visualization::SurfaceMeshSnapshot>();
                 mesh->project_revision = revision;
-                const auto& coordinates = section->frame.coordinates;
+                const auto& coordinates =
+                    section->field ? section->field->coordinates : section->frame.coordinates;
+                if (section->field) {
+                    const auto& field = *section->field;
+                    mesh->scalars.assign(field.scalars.begin(), field.scalars.end());
+                    mesh->scalar_min = field.has_range ? field.min : 0.0;
+                    mesh->scalar_max = field.has_range ? field.max : 1.0;
+                }
                 mesh->vertices.reserve(coordinates.size() / 3);
                 for (std::size_t offset = 0; offset + 2 < coordinates.size(); offset += 3)
                     mesh->vertices.push_back(
@@ -1456,14 +1600,32 @@ void panta::bridge::ProjectViewModel::request_section() {
                      QString::fromUtf8(error.what()));
                 return;
             }
+            if (section->field) {
+                const auto& field = *section->field;
+                m_fieldLegendVisible = true;
+                m_fieldLegendTitle = fieldTitle;
+                m_fieldLegendUnits = fieldUnits;
+                m_fieldLegendHasRange = field.has_range;
+                m_fieldLegendMin = field.min;
+                m_fieldLegendMax = field.max;
+                m_fieldMissingVertices = static_cast<double>(field.missing_vertices);
+                emit fieldLegendChanged();
+            } else {
+                hide_field_legend();
+            }
             emit meshChanged();
         },
         Qt::QueuedConnection);
     try {
-        startBackgroundWaiter([input, result, progress, normal, fraction] {
+        startBackgroundWaiter([input, result, progress, normal, fraction, fieldRequest] {
             auto section = std::make_shared<Section>();
-            section->frame = panta::ffi::section_mesh_display(
-                std::move(input->value()), normal[0], normal[1], normal[2], fraction, **progress);
+            if (fieldRequest)
+                section->field = panta::ffi::section_field_mesh_display(std::move(input->value()),
+                                                                        *fieldRequest, **progress);
+            else
+                section->frame =
+                    panta::ffi::section_mesh_display(std::move(input->value()), normal[0],
+                                                     normal[1], normal[2], fraction, **progress);
             input->reset();
             result->addResult(section);
             result->finish();
@@ -1502,6 +1664,7 @@ bool panta::bridge::ProjectViewModel::setSection(bool enabled, double normalX, d
     }
     if (m_sectionPending && m_sectionProgress)
         panta::ffi::task_progress_cancel(**m_sectionProgress);
+    hide_field_legend();
     if (wasActive) {
         m_activeMesh.reset();
         emit meshChanged();

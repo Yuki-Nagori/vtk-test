@@ -35,3 +35,50 @@ pub(super) fn project_service_volume_summary(
     }
     result
 }
+
+/// 结果场摘要（task 029）：GUI 线程同步调用，只读 sidecar 头部与字段表（KiB 级）。
+pub(super) fn project_service_result_fields(
+    service: &ProjectService,
+    import_id: &str,
+) -> bridge::ResultFieldListResult {
+    let mut result = bridge::ResultFieldListResult::default();
+    let summaries = match service.service.result_fields_for_import(import_id) {
+        Ok(summaries) => summaries,
+        Err(error) => {
+            result.error = error.into();
+            return result;
+        }
+    };
+    let resident = service.service.volume_for_import(import_id).is_some();
+    let chunks = service
+        .service
+        .streamed_asset_for_import(import_id)
+        .and_then(|asset| asset.chunks);
+    result.fields = summaries
+        .into_iter()
+        .map(|field| {
+            let sampled = field.components == 1 || field.components == 3;
+            let sectionable = sampled
+                && (resident
+                    || chunks.as_ref().is_some_and(|chunks| {
+                        chunks
+                            .0
+                            .field_index(&field.name, field.association)
+                            .is_some()
+                    }));
+            let [min, max] = field.range.unwrap_or([0.0, 0.0]);
+            bridge::ResultFieldInfo {
+                association: field.association.as_str().to_owned(),
+                name: field.name,
+                components: field.components,
+                units: field.units,
+                missing: field.missing,
+                has_range: field.range.is_some(),
+                min,
+                max,
+                sectionable,
+            }
+        })
+        .collect();
+    result
+}

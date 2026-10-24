@@ -1414,6 +1414,88 @@ TEST(ProjectViewModelTest, RunsVolumeQualitySectionAndVtuExportInTheBackground) 
     EXPECT_TRUE(written.readAll().contains("NumberOfCells=\"1\""));
 }
 
+TEST(ProjectViewModelTest, ColorsSectionsByResultFieldAndShowsLegend) {
+    QTemporaryDir fixture;
+    ASSERT_TRUE(fixture.isValid());
+    const QString sourcePath = QDir(fixture.path()).filePath(QStringLiteral("fields.vtk"));
+    QFile source(sourcePath);
+    ASSERT_TRUE(source.open(QIODevice::WriteOnly | QIODevice::Text));
+    ASSERT_GT(source.write("# vtk DataFile Version 4.2\nfields\nASCII\nDATASET UNSTRUCTURED_GRID\n"
+                           "POINTS 5 double\n0 0 0 1 0 0 0 1 0 0 0 1 1 1 1\n"
+                           "CELLS 2 10\n4 0 1 2 3\n4 1 2 3 4\nCELL_TYPES 2\n10 10\n"
+                           "POINT_DATA 5\nSCALARS temperature double\nLOOKUP_TABLE default\n"
+                           "300 nan 310 320 330\n"
+                           "VECTORS velocity double\n1 0 0 0 2 0 0 0 3 0 0 0 1 1 1\n"
+                           "CELL_DATA 2\nSCALARS material int\nLOOKUP_TABLE default\n1 2\n"),
+              0);
+    source.close();
+
+    ProjectViewModel view_model;
+    ASSERT_TRUE(finish_project_operation(
+        view_model, view_model.createProject(QStringLiteral("Fields"), fixture.path())));
+    ASSERT_TRUE(view_model.importStl(sourcePath, QStringLiteral("solid-3d"),
+                                     QStringLiteral("millimeters"), false));
+    ASSERT_TRUE(wait_for_active_mesh(view_model, view_model.activeDocumentId()));
+    ASSERT_TRUE(view_model.volumeAvailable());
+    const auto fields = view_model.resultFields();
+    ASSERT_EQ(fields.size(), 3);
+    EXPECT_EQ(fields[1].toMap().value(QStringLiteral("name")).toString(),
+              QStringLiteral("velocity"));
+    EXPECT_EQ(fields[1].toMap().value(QStringLiteral("components")).toInt(), 3);
+    EXPECT_EQ(fields[2].toMap().value(QStringLiteral("association")).toString(),
+              QStringLiteral("cell"));
+    EXPECT_TRUE(fields[0].toMap().value(QStringLiteral("sectionable")).toBool());
+    EXPECT_EQ(ProjectViewModel::fieldLegendStops().size(), 3);
+    EXPECT_EQ(ProjectViewModel::fieldMissingColor(), QStringLiteral("#ffff00"));
+
+    // 非法选择被拒绝且不改变当前选择。
+    EXPECT_FALSE(
+        view_model.setSectionField(QStringLiteral("velocity"), QStringLiteral("cell"), -1));
+    EXPECT_EQ(view_model.errorCode(), QStringLiteral("project.command_invalid"));
+    EXPECT_FALSE(view_model.setSectionField(QStringLiteral("velocity"), QStringLiteral("node"), 3));
+    EXPECT_FALSE(
+        view_model.setSectionField(QStringLiteral("temperature"), QStringLiteral("node"), 1));
+    EXPECT_TRUE(view_model.sectionFieldName().isEmpty());
+
+    // 先选字段再启用切面：切面带逐顶点标量，色标显示有限值范围与缺失数。
+    ASSERT_TRUE(
+        view_model.setSectionField(QStringLiteral("temperature"), QStringLiteral("node"), 0));
+    EXPECT_EQ(view_model.sectionFieldComponent(), -1);
+    QSignalSpy meshChanged(&view_model, &ProjectViewModel::meshChanged);
+    ASSERT_TRUE(view_model.setSection(true, 1.0, 1.0, 1.0, 0.5));
+    ASSERT_TRUE(meshChanged.wait(10000));
+    auto mesh = view_model.mesh_snapshot();
+    ASSERT_NE(mesh, nullptr);
+    ASSERT_FALSE(mesh->vertices.empty());
+    EXPECT_EQ(mesh->scalars.size(), mesh->vertices.size());
+    EXPECT_TRUE(view_model.fieldLegendVisible());
+    EXPECT_EQ(view_model.fieldLegendTitle(), QStringLiteral("temperature"));
+    EXPECT_TRUE(view_model.fieldLegendHasRange());
+    EXPECT_GE(view_model.fieldLegendMin(), 300.0);
+    EXPECT_LE(view_model.fieldLegendMax(), 330.0);
+    EXPECT_GT(view_model.fieldMissingVertices(), 0.0);
+
+    // 换分量：重算切面，标题带分量名。
+    ASSERT_TRUE(view_model.setSectionField(QStringLiteral("velocity"), QStringLiteral("node"), 1));
+    ASSERT_TRUE(meshChanged.wait(10000));
+    EXPECT_EQ(view_model.fieldLegendTitle(), QStringLiteral("velocity [Y]"));
+    EXPECT_EQ(view_model.fieldMissingVertices(), 0.0);
+
+    // 清除字段：切面回到单色，色标隐藏；关闭切面同样隐藏。
+    ASSERT_TRUE(view_model.setSectionField(QString(), QString(), -1));
+    ASSERT_TRUE(meshChanged.wait(10000));
+    mesh = view_model.mesh_snapshot();
+    ASSERT_NE(mesh, nullptr);
+    EXPECT_TRUE(mesh->scalars.empty());
+    EXPECT_FALSE(view_model.fieldLegendVisible());
+    ASSERT_TRUE(view_model.setSectionField(QStringLiteral("material"), QStringLiteral("cell"), -1));
+    ASSERT_TRUE(meshChanged.wait(10000));
+    EXPECT_TRUE(view_model.fieldLegendVisible());
+    ASSERT_TRUE(view_model.setSection(false, 0.0, 0.0, 0.0, 0.5));
+    EXPECT_FALSE(view_model.fieldLegendVisible());
+    EXPECT_EQ(view_model.sectionFieldName(), QStringLiteral("material"));
+}
+
 TEST(ProjectViewModelTest, GeneratesVolumeMeshFromStepInTheBackgroundAndHonoursCancel) {
     QTemporaryDir fixture;
     ASSERT_TRUE(fixture.isValid());

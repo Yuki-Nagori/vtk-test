@@ -40,7 +40,7 @@ mod display;
 pub use display::MeshDisplayInput;
 use display::{
     diagnose_mesh_display, export_mesh_display, prepare_mesh_display,
-    project_service_mesh_display_input, section_mesh_display,
+    project_service_mesh_display_input, section_field_mesh_display, section_mesh_display,
 };
 mod progress;
 pub use progress::TaskProgress;
@@ -50,7 +50,7 @@ use progress::{
     task_progress_set_fraction, task_progress_share,
 };
 mod volume;
-use volume::project_service_volume_summary;
+use volume::{project_service_result_fields, project_service_volume_summary};
 mod limits;
 use limits::{
     default_large_mesh_limits, project_service_large_mesh_limits,
@@ -310,6 +310,54 @@ pub mod bridge {
         pub chunk_cache_mib: u64,
     }
 
+    /// 结果场摘要（task 029）：`association` 为 "node" / "cell"；`sectionable` 表示当前
+    /// 驻留方式下可做场剖面（驻留体网格，或派生分块文件带该字段）。
+    #[derive(Default, Debug, Clone)]
+    pub struct ResultFieldInfo {
+        pub name: String,
+        pub association: String,
+        pub components: u8,
+        pub units: String,
+        pub missing: u64,
+        pub has_range: bool,
+        pub min: f64,
+        pub max: f64,
+        pub sectionable: bool,
+    }
+
+    #[derive(Default)]
+    pub struct ResultFieldListResult {
+        pub fields: Vec<ResultFieldInfo>,
+        pub error: ProjectDiagnostic,
+    }
+
+    /// 场剖面请求（task 029）：`association` 为 "node" / "cell"，`component` 为 -1 取模、
+    /// 0..=2 取分量；平面参数与 `section_mesh_display` 相同。
+    #[derive(Default, Debug, Clone)]
+    pub struct FieldSectionRequest {
+        pub field_name: String,
+        pub association: String,
+        pub component: i32,
+        pub normal_x: f64,
+        pub normal_y: f64,
+        pub normal_z: f64,
+        pub fraction: f64,
+    }
+
+    /// 场剖面（task 029）：`scalars` 与三角面顶点一一对应，缺失值为 NaN；
+    /// 范围只统计有限值，`has_range` 为假表示全部缺失。
+    #[derive(Default)]
+    pub struct FieldSectionResult {
+        pub ready: bool,
+        pub coordinates: Vec<f64>,
+        pub scalars: Vec<f32>,
+        pub has_range: bool,
+        pub min: f64,
+        pub max: f64,
+        pub missing_vertices: u64,
+        pub error: ProjectDiagnostic,
+    }
+
     #[derive(Default)]
     pub struct AnimationFrameResult {
         pub ready: bool,
@@ -331,6 +379,11 @@ pub mod bridge {
             service: &ProjectService,
             import_id: &str,
         ) -> VolumeInfoResult;
+        /// 结果场摘要（只读 sidecar 头部与字段表）；无结果场返回空表。
+        fn project_service_result_fields(
+            service: &ProjectService,
+            import_id: &str,
+        ) -> ResultFieldListResult;
     }
 
     extern "Rust" {
@@ -387,6 +440,12 @@ pub mod bridge {
             fraction: f64,
             progress: &TaskProgress,
         ) -> AnimationFrameResult;
+        /// 带结果场着色的切面（task 029）。后台线程调用，取消时 ready 为假且无错误。
+        fn section_field_mesh_display(
+            input: Box<MeshDisplayInput>,
+            request: &FieldSectionRequest,
+            progress: &TaskProgress,
+        ) -> FieldSectionResult;
 
         fn project_service_new() -> Box<ProjectService>;
         #[rust_name = "project_service_execute_response"]
