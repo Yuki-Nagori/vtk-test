@@ -281,6 +281,8 @@ pub mod bridge {
     #[derive(Default)]
     pub struct VolumeInfoResult {
         pub available: bool,
+        /// 单元未驻留、命令按需从资产流式读取（task 025）。
+        pub streamed: bool,
         pub node_count: u64,
         pub tet_count: u64,
         pub min_dihedral_degrees: f64,

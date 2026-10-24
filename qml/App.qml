@@ -73,7 +73,7 @@ ApplicationWindow {
     readonly property bool canCreateOrOpen: !busy
     readonly property bool canSave: projectOpen && !busy
     readonly property bool canImport: projectOpen && !busy
-    readonly property bool canExport: meshActive && !busy && !projectModel.animationActive && !projectModel.sectionActive && projectModel.activeMeshLodStatus.length === 0
+    readonly property bool canExport: meshActive && !busy && !projectModel.animationActive && !projectModel.sectionActive
     readonly property bool canScreenshot: !busy
     readonly property bool canDiagnose: meshActive && !busy && !projectModel.animationActive && !projectModel.sectionActive && projectModel.activeMeshLodStatus.length === 0
     // 仅当诊断报告属于活动页签时展示，切换页签后需重新诊断。
@@ -675,7 +675,7 @@ ApplicationWindow {
                     onMoved: projectModel.setSection(true, projectModel.sectionNormalX, projectModel.sectionNormalY, projectModel.sectionNormalZ, value)
                 }
             }
-            // 大网格 LOD 提示（task 019）：显示的是简化网格，拾取为近似值，诊断/导出不可用。
+            // 大网格 LOD 提示（task 019/025）：显示的是简化网格，拾取为近似值；导出流式读取源资产，表面诊断不可用。
             Label {
                 objectName: "activeMeshLodStatus"
                 Layout.fillWidth: true

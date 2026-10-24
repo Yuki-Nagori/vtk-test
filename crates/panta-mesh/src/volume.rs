@@ -112,19 +112,9 @@ pub fn section_surface(
         return Err(VolumeError("section plane is degenerate".to_owned()));
     }
     let normal = normal.map(|value| value / length);
-    let distance: Vec<f64> = mesh
-        .nodes
-        .iter()
-        .map(|&point| dot(sub(point, origin), normal))
-        .collect();
+    let distance = plane_distances(&mesh.nodes, origin, normal);
     let mut triangles = Vec::new();
-    for face in &mesh.boundary {
-        let polygon = clip_triangle(
-            face.nodes
-                .map(|node| (mesh.nodes[node as usize], distance[node as usize])),
-        );
-        fan(&polygon, &mut triangles);
-    }
+    clip_boundary(&mesh.nodes, &distance, &mesh.boundary, &mut triangles);
     let total = mesh.tets.len() as u64;
     for (index, tet) in mesh.tets.iter().enumerate() {
         if index.is_multiple_of(crate::PROGRESS_STRIDE) {
@@ -133,30 +123,221 @@ pub fn section_surface(
             }
             progress.report(0.0, 1.0, index as u64, total);
         }
-        let kept = tet
-            .nodes
-            .iter()
-            .filter(|&&node| distance[node as usize] <= 0.0)
-            .count();
-        if kept == 0 || kept == 4 {
-            continue;
-        }
-        let mut points = Vec::with_capacity(4);
-        for i in 0..4 {
-            for j in i + 1..4 {
-                let (a, b) = (tet.nodes[i] as usize, tet.nodes[j] as usize);
-                if (distance[a] <= 0.0) != (distance[b] <= 0.0) {
-                    points.push(lerp_on_plane(
-                        mesh.nodes[a],
-                        distance[a],
-                        mesh.nodes[b],
-                        distance[b],
-                    ));
-                }
+        section_polygon(&mesh.nodes, &distance, tet, normal, &mut triangles);
+    }
+    progress.set_fraction(1.0);
+    Ok(Some(SurfaceMesh { triangles }))
+}
+
+/// 节点到平面（单位法向）的有符号距离。
+fn plane_distances(nodes: &[[f64; 3]], origin: [f64; 3], normal: [f64; 3]) -> Vec<f64> {
+    nodes
+        .iter()
+        .map(|&point| dot(sub(point, origin), normal))
+        .collect()
+}
+
+/// 外表面逐三角形裁剪，保留 `distance <= 0` 一侧。
+fn clip_boundary(
+    nodes: &[[f64; 3]],
+    distance: &[f64],
+    boundary: &[SurfaceTriangle],
+    output: &mut Vec<[[f64; 3]; 3]>,
+) {
+    for face in boundary {
+        let polygon = clip_triangle(
+            face.nodes
+                .map(|node| (nodes[node as usize], distance[node as usize])),
+        );
+        fan(&polygon, output);
+    }
+}
+
+/// 与平面相交的四面体截面多边形（三角扇）。
+fn section_polygon(
+    nodes: &[[f64; 3]],
+    distance: &[f64],
+    tet: &Tetrahedron,
+    normal: [f64; 3],
+    output: &mut Vec<[[f64; 3]; 3]>,
+) {
+    let kept = tet
+        .nodes
+        .iter()
+        .filter(|&&node| distance[node as usize] <= 0.0)
+        .count();
+    if kept == 0 || kept == 4 {
+        return;
+    }
+    let mut points = Vec::with_capacity(4);
+    for i in 0..4 {
+        for j in i + 1..4 {
+            let (a, b) = (tet.nodes[i] as usize, tet.nodes[j] as usize);
+            if (distance[a] <= 0.0) != (distance[b] <= 0.0) {
+                points.push(lerp_on_plane(nodes[a], distance[a], nodes[b], distance[b]));
             }
         }
-        order_around(&mut points, normal);
-        fan(&points, &mut triangles);
+    }
+    order_around(&mut points, normal);
+    fan(&points, output);
+}
+
+/// 节点在单位法向 `normal` 上投影区间的 `fraction`（截断到 0..=1）处的平面原点。
+pub fn section_plane_origin(nodes: &[[f64; 3]], normal: [f64; 3], fraction: f64) -> [f64; 3] {
+    let (low, high) =
+        nodes
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), point| {
+                let offset = dot(*point, normal);
+                (low.min(offset), high.max(offset))
+            });
+    let offset = low + (high - low) * fraction.clamp(0.0, 1.0);
+    normal.map(|value| value * offset)
+}
+
+/// 流式体网格操作的错误：资产读取失败，或参数无效。
+#[derive(Debug, Clone, PartialEq)]
+pub enum VolumeStreamError {
+    Asset(crate::MeshAssetError),
+    Invalid(String),
+}
+
+impl Display for VolumeStreamError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Asset(error) => write!(formatter, "{error}"),
+            Self::Invalid(detail) => write!(formatter, "{detail}"),
+        }
+    }
+}
+
+impl std::error::Error for VolumeStreamError {}
+
+impl From<crate::MeshAssetError> for VolumeStreamError {
+    fn from(error: crate::MeshAssetError) -> Self {
+        Self::Asset(error)
+    }
+}
+
+/// 从体网格资产流式构建外表面显示网格（task 025）：读入节点与边界三角形，不读四面体。
+/// 取消返回 `Ok(None)`。
+pub fn boundary_surface_streaming(
+    chunks: &mut crate::VolumeAssetChunks,
+    progress: Option<&crate::Progress>,
+) -> Result<Option<SurfaceMesh>, VolumeStreamError> {
+    let Some(nodes) = chunks.read_nodes(progress.map(|p| (p, 0.0, 0.8)))? else {
+        return Ok(None);
+    };
+    let Some(boundary) = chunks.read_boundary(progress.map(|p| (p, 0.8, 1.0)))? else {
+        return Ok(None);
+    };
+    Ok(Some(SurfaceMesh {
+        triangles: boundary
+            .iter()
+            .map(|face| face.nodes.map(|node| nodes[node as usize]))
+            .collect(),
+    }))
+}
+
+/// 流式四面体质量统计（task 025）：节点整体读入（24 B / 节点），四面体逐批读取并按块并行统计。
+/// 结果与 [`tet_quality`] 一致（平均值求和顺序不同，可能有末位舍入差）。取消返回 `Ok(None)`。
+pub fn tet_quality_streaming(
+    chunks: &mut crate::VolumeAssetChunks,
+    progress: &crate::Progress,
+) -> Result<Option<TetQuality>, VolumeStreamError> {
+    let Some(nodes) = chunks.read_nodes(Some((progress, 0.0, 0.2)))? else {
+        return Ok(None);
+    };
+    let mut quality = TetQuality {
+        tet_count: 0,
+        min_dihedral_degrees: f64::INFINITY,
+        max_aspect_ratio: 0.0,
+        mean_aspect_ratio: 0.0,
+        poor_count: 0,
+    };
+    let mut sum = 0.0;
+    let finished = chunks.visit_tets(Some((progress, 0.2, 0.99)), |batch| {
+        let partials: Vec<(f64, f64, f64, usize)> = std::thread::scope(|scope| {
+            let handles: Vec<_> = batch
+                .iter()
+                .map(|tets| {
+                    let nodes = &nodes;
+                    scope.spawn(move || {
+                        let mut partial = (f64::INFINITY, 0.0_f64, 0.0, 0_usize);
+                        for tet in tets {
+                            let (dihedral, aspect) =
+                                single_quality(tet.nodes.map(|node| nodes[node as usize]));
+                            partial.0 = partial.0.min(dihedral);
+                            partial.1 = partial.1.max(aspect);
+                            partial.2 += aspect;
+                            if dihedral < POOR_MIN_DIHEDRAL_DEGREES || aspect > POOR_ASPECT_RATIO {
+                                partial.3 += 1;
+                            }
+                        }
+                        partial
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap_or((0.0, f64::INFINITY, f64::NAN, 0)))
+                .collect()
+        });
+        for ((dihedral, aspect, partial_sum, poor), tets) in partials.into_iter().zip(batch) {
+            quality.tet_count += tets.len();
+            quality.min_dihedral_degrees = quality.min_dihedral_degrees.min(dihedral);
+            quality.max_aspect_ratio = quality.max_aspect_ratio.max(aspect);
+            quality.poor_count += poor;
+            sum += partial_sum;
+        }
+        !progress.is_cancelled()
+    })?;
+    if !finished {
+        return Ok(None);
+    }
+    if quality.tet_count == 0 {
+        quality.min_dihedral_degrees = 0.0;
+    } else {
+        quality.mean_aspect_ratio = sum / quality.tet_count as f64;
+    }
+    progress.set_fraction(1.0);
+    Ok(Some(quality))
+}
+
+/// 流式任意平面切面（task 025）：语义同 [`section_surface`] 与 [`section_plane_origin`]。
+/// 节点与外表面整体读入，四面体逐批读取；`normal` 不必单位化。取消返回 `Ok(None)`。
+pub fn section_plane_streaming(
+    chunks: &mut crate::VolumeAssetChunks,
+    normal: [f64; 3],
+    fraction: f64,
+    progress: &crate::Progress,
+) -> Result<Option<SurfaceMesh>, VolumeStreamError> {
+    let length = dot(normal, normal).sqrt();
+    if !length.is_finite() || length == 0.0 || !fraction.is_finite() {
+        return Err(VolumeStreamError::Invalid(
+            "section normal or position is invalid".to_owned(),
+        ));
+    }
+    let normal = normal.map(|value| value / length);
+    let Some(nodes) = chunks.read_nodes(Some((progress, 0.0, 0.15)))? else {
+        return Ok(None);
+    };
+    let Some(boundary) = chunks.read_boundary(Some((progress, 0.15, 0.2)))? else {
+        return Ok(None);
+    };
+    let origin = section_plane_origin(&nodes, normal, fraction);
+    let distance = plane_distances(&nodes, origin, normal);
+    let mut triangles = Vec::new();
+    clip_boundary(&nodes, &distance, &boundary, &mut triangles);
+    drop(boundary);
+    let finished = chunks.visit_tets(Some((progress, 0.2, 0.99)), |batch| {
+        for tet in batch.iter().flatten() {
+            section_polygon(&nodes, &distance, tet, normal, &mut triangles);
+        }
+        !progress.is_cancelled()
+    })?;
+    if !finished {
+        return Ok(None);
     }
     progress.set_fraction(1.0);
     Ok(Some(SurfaceMesh { triangles }))

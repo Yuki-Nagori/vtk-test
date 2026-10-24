@@ -32,6 +32,15 @@ impl ProjectService {
             if let Some(value) = outcome.mesh.take() {
                 self.cache_activation_result(&outcome.import_id, outcome.attempt, value);
                 self.set_mesh_lod_source(&outcome.import_id, outcome.lod_source_triangles);
+                match outcome.streamed_volume.take() {
+                    Some(counts) => {
+                        self.streamed_volumes
+                            .insert(outcome.import_id.clone(), counts);
+                    }
+                    None => {
+                        self.streamed_volumes.remove(&outcome.import_id);
+                    }
+                }
                 match outcome.volume.take() {
                     Some(volume) => {
                         self.volume_meshes.insert(outcome.import_id.clone(), volume);
@@ -118,6 +127,7 @@ mod tests {
             }),
             lod_source_triangles: 0,
             volume: None,
+            streamed_volume: None,
         }
     }
 

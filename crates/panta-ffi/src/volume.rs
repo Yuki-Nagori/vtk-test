@@ -8,13 +8,27 @@ pub(super) fn project_service_volume_summary(
     import_id: &str,
 ) -> bridge::VolumeInfoResult {
     let mut result = bridge::VolumeInfoResult::default();
-    match service.service.volume_for_import(import_id) {
-        Some(volume) => {
+    let streamed = service
+        .service
+        .streamed_asset_for_import(import_id)
+        .and_then(|asset| match asset.kind {
+            panta_core::project::StreamedKind::Volume(counts) => Some(counts),
+            panta_core::project::StreamedKind::Surface { .. } => None,
+        });
+    match (service.service.volume_for_import(import_id), streamed) {
+        (Some(volume), _) => {
             result.available = true;
             result.node_count = volume.nodes.len() as u64;
             result.tet_count = volume.tets.len() as u64;
         }
-        None => {
+        // 单元未驻留的体网格（task 025）：计数来自资产，命令按需流式读取。
+        (None, Some(counts)) => {
+            result.available = true;
+            result.streamed = true;
+            result.node_count = counts.nodes as u64;
+            result.tet_count = counts.tets as u64;
+        }
+        (None, None) => {
             result.error =
                 panta_core::project::ProjectError::VolumeUnavailable(import_id.to_owned()).into();
         }

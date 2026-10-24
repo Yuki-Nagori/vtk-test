@@ -11,7 +11,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError};
 
 use panta_import::ImportError;
-use panta_mesh::{MeshAsset, MeshAssetError, MeshAssetReader, SurfaceMesh, TetMesh};
+use panta_mesh::{
+    MeshAsset, MeshAssetError, MeshAssetReader, SurfaceMesh, TetMesh, VolumeStreamCounts,
+};
 
 pub(crate) const OUTCOME_CAPACITY: usize = 256;
 
@@ -53,14 +55,59 @@ pub struct Outcome {
     pub lod_source_triangles: u64,
     /// 体网格资产：`mesh` 为外表面，此处为原始四面体（task 021）。
     pub volume: Option<Arc<TetMesh>>,
+    /// 体网格单元数超过激活阈值：四面体不驻留，`mesh` 为流式提取的精确外表面（task 025）。
+    pub streamed_volume: Option<VolumeStreamCounts>,
 }
 
 /// 超过此面数的表面资产激活时改为流式构建显示 LOD，不整体读入（约 1.4 GiB 展开体积）。
 pub const LOD_ACTIVATION_TRIANGLES: u64 = 20_000_000;
 
-/// 激活成功的负载：网格与（若为 LOD）源资产面数。
-/// 第三项为体网格资产的四面体数据（task 021），显示网格为其外表面。
-pub(crate) type LoadedMesh = (SurfaceMesh, u64, Option<Arc<TetMesh>>);
+/// 超过此四面体数的体网格资产激活时不驻留单元（task 025）：只流式提取外表面显示，
+/// 质量统计、切面与 `.vtu` 导出按需从资产流式读取。驻留读取含完整拓扑校验，
+/// 实测 1010 万四面体峰值 1.8 GiB、15.8 s，而流式质量/切面同规模各约 0.3 s，
+/// 默认值取 1000 万以 8 GiB 内存机器为保守上限（基准见 task 025 文档）。
+pub const VOLUME_STREAM_ACTIVATION_CELLS: u64 = 10_000_000;
+
+/// 激活阈值：表面面数与体网格单元数（task 026 改为设置项）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ActivationLimits {
+    pub surface_triangles: u64,
+    pub volume_cells: u64,
+}
+
+impl ActivationLimits {
+    pub const DEFAULT: Self = Self {
+        surface_triangles: LOD_ACTIVATION_TRIANGLES,
+        volume_cells: VOLUME_STREAM_ACTIVATION_CELLS,
+    };
+    /// 完整读取（导出等只读命令）：不走 LOD 或流式激活。
+    pub(crate) const RESIDENT: Self = Self {
+        surface_triangles: u64::MAX,
+        volume_cells: u64::MAX,
+    };
+}
+
+/// 激活成功的负载。
+pub(crate) struct LoadedMesh {
+    pub(crate) mesh: SurfaceMesh,
+    /// 非 0：`mesh` 是显示 LOD，值为源资产面数（task 019）。
+    pub(crate) lod_source: u64,
+    /// 体网格资产的驻留四面体数据（task 021），显示网格为其外表面。
+    pub(crate) volume: Option<Arc<TetMesh>>,
+    /// 流式体网格（task 025）：单元未驻留，值为资产计数。
+    pub(crate) streamed_volume: Option<VolumeStreamCounts>,
+}
+
+impl LoadedMesh {
+    fn surface(mesh: SurfaceMesh) -> Self {
+        Self {
+            mesh,
+            lod_source: 0,
+            volume: None,
+            streamed_volume: None,
+        }
+    }
+}
 
 /// 资产读取、校验或后台调度的失败诊断。
 pub(crate) struct ActivationFailure {
@@ -252,13 +299,15 @@ fn publish(
         mesh: None,
         lod_source_triangles: 0,
         volume: None,
+        streamed_volume: None,
     };
     match result {
-        Ok(Some((mesh, lod_source, volume))) if !entry.cancel_requested.load(Ordering::SeqCst) => {
+        Ok(Some(loaded)) if !entry.cancel_requested.load(Ordering::SeqCst) => {
             outcome.kind = OutcomeKind::Succeeded;
-            outcome.mesh = Some(mesh);
-            outcome.lod_source_triangles = lod_source;
-            outcome.volume = volume;
+            outcome.mesh = Some(loaded.mesh);
+            outcome.lod_source_triangles = loaded.lod_source;
+            outcome.volume = loaded.volume;
+            outcome.streamed_volume = loaded.streamed_volume;
         }
         Ok(_) => {}
         Err(error) => {
@@ -282,7 +331,7 @@ fn run_attempt(
     let result = load_asset(
         request,
         || cancel_requested.load(Ordering::SeqCst),
-        LOD_ACTIVATION_TRIANGLES,
+        ActivationLimits::DEFAULT,
     );
     coordinator.complete(attempt, result);
 }
@@ -291,8 +340,8 @@ fn run_attempt(
 pub(crate) fn load_committed_surface(
     request: ActivationRequest,
 ) -> Result<SurfaceMesh, ActivationFailure> {
-    load_asset(request, || false, u64::MAX)?
-        .map(|(mesh, _, _)| mesh)
+    load_asset(request, || false, ActivationLimits::RESIDENT)?
+        .map(|loaded| loaded.mesh)
         .ok_or(ActivationFailure {
             code: "project.asset_read_failed",
             category: "io",
@@ -300,11 +349,12 @@ pub(crate) fn load_committed_surface(
         })
 }
 
-/// `lod_threshold`：v3 表面资产面数超过它时只构建显示 LOD（导出等完整读取传 `u64::MAX`）。
+/// `limits`：v3 表面资产面数超过阈值时只构建显示 LOD，v3 体网格单元数超过阈值时流式激活
+/// （导出等完整读取传 [`ActivationLimits::RESIDENT`]）。
 fn load_asset(
     request: ActivationRequest,
     cancelled: impl Fn() -> bool,
-    lod_threshold: u64,
+    limits: ActivationLimits,
 ) -> Result<Option<LoadedMesh>, ActivationFailure> {
     if cancelled() {
         return Ok(None);
@@ -321,7 +371,15 @@ fn load_asset(
         &asset_path,
         &request.expected_digest,
         &cancelled,
-        lod_threshold,
+        limits.surface_triangles,
+    )? {
+        return Ok(loaded);
+    }
+    if let Some(loaded) = load_streamed_volume(
+        &asset_path,
+        &request.expected_digest,
+        &cancelled,
+        limits.volume_cells,
     )? {
         return Ok(loaded);
     }
@@ -330,7 +388,7 @@ fn load_asset(
     };
     match asset {
         MeshAsset::Surface(mesh) if digest == request.expected_digest => {
-            Ok((!cancelled()).then_some((mesh, 0, None)))
+            Ok((!cancelled()).then_some(LoadedMesh::surface(mesh)))
         }
         MeshAsset::Surface(_) => Err(ActivationFailure {
             code: "project.asset_parse_failed",
@@ -339,7 +397,10 @@ fn load_asset(
         }),
         MeshAsset::Volume(volume) if digest == request.expected_digest => {
             let surface = panta_mesh::boundary_surface(&volume);
-            Ok((!cancelled()).then_some((surface, 0, Some(Arc::new(volume)))))
+            Ok((!cancelled()).then(|| LoadedMesh {
+                volume: Some(Arc::new(volume)),
+                ..LoadedMesh::surface(surface)
+            }))
         }
         MeshAsset::Volume(_) => Err(ActivationFailure {
             code: "project.asset_parse_failed",
@@ -377,10 +438,68 @@ fn load_lod(
     let budget = usize::try_from(lod_threshold / 2)
         .unwrap_or(usize::MAX)
         .min(panta_mesh::DEFAULT_LOD_TRIANGLE_BUDGET);
-    // 取消：LOD 在作用域线程中运行，当前线程轮询宿主取消并置位进度句柄，LOD 在批次边界停止。
+    let result = with_cancellation(cancelled, |progress| {
+        panta_mesh::build_surface_lod(path, budget, Some(progress))
+    })?;
+    match result {
+        Ok(Some(lod)) if !cancelled() => Ok(Some(Some(LoadedMesh {
+            lod_source: source,
+            ..LoadedMesh::surface(lod.mesh)
+        }))),
+        Ok(_) => Ok(Some(None)),
+        Err(error) => Err(stream_failure(path, error)),
+    }
+}
+
+/// 超过单元阈值的 v3 体网格：流式提取精确外表面（只驻留节点与外表面），单元不驻留。
+/// 外层 `None` 表示不适用（非 v3 体网格或未超阈值）。
+#[allow(clippy::type_complexity)]
+fn load_streamed_volume(
+    path: &std::path::Path,
+    expected_digest: &str,
+    cancelled: &impl Fn() -> bool,
+    cell_threshold: u64,
+) -> Result<Option<Option<LoadedMesh>>, ActivationFailure> {
+    let Ok(mut chunks) = panta_mesh::VolumeAssetChunks::open(path) else {
+        return Ok(None);
+    };
+    let counts = chunks.counts();
+    if counts.tets as u64 <= cell_threshold {
+        return Ok(None);
+    }
+    if chunks.digest() != expected_digest {
+        return Err(ActivationFailure {
+            code: "project.asset_parse_failed",
+            category: "format",
+            detail: path.display().to_string(),
+        });
+    }
+    let result = with_cancellation(cancelled, |progress| {
+        panta_mesh::boundary_surface_streaming(&mut chunks, Some(progress))
+    })?;
+    match result {
+        Ok(Some(surface)) if !cancelled() => Ok(Some(Some(LoadedMesh {
+            streamed_volume: Some(counts),
+            ..LoadedMesh::surface(surface)
+        }))),
+        Ok(_) => Ok(Some(None)),
+        Err(panta_mesh::VolumeStreamError::Asset(error)) => Err(stream_failure(path, error)),
+        Err(panta_mesh::VolumeStreamError::Invalid(detail)) => Err(ActivationFailure {
+            code: "project.asset_parse_failed",
+            category: "format",
+            detail,
+        }),
+    }
+}
+
+/// 在作用域线程中运行流式任务，当前线程轮询宿主取消并置位进度句柄，任务在批次边界停止。
+fn with_cancellation<T: Send>(
+    cancelled: &impl Fn() -> bool,
+    work: impl FnOnce(&panta_mesh::Progress) -> T + Send,
+) -> Result<T, ActivationFailure> {
     let progress = panta_mesh::Progress::new();
     let result = std::thread::scope(|scope| {
-        let worker = scope.spawn(|| panta_mesh::build_surface_lod(path, budget, Some(&progress)));
+        let worker = scope.spawn(|| work(&progress));
         while !worker.is_finished() {
             if cancelled() {
                 progress.cancel();
@@ -389,24 +508,25 @@ fn load_lod(
         }
         worker.join()
     });
-    let result = result.map_err(|_| ActivationFailure {
+    result.map_err(|_| ActivationFailure {
         code: "project.activation_worker_failed",
         category: "internal",
-        detail: "LOD worker panicked".to_owned(),
-    })?;
-    match result {
-        Ok(Some(lod)) if !cancelled() => Ok(Some(Some((lod.mesh, source, None)))),
-        Ok(_) => Ok(Some(None)),
-        Err(MeshAssetError::Io(kind)) => Err(ActivationFailure {
+        detail: "streaming worker panicked".to_owned(),
+    })
+}
+
+fn stream_failure(path: &std::path::Path, error: MeshAssetError) -> ActivationFailure {
+    match error {
+        MeshAssetError::Io(kind) => ActivationFailure {
             code: "project.asset_read_failed",
             category: "io",
             detail: format!("{}: {kind}", path.display()),
-        }),
-        Err(other) => Err(ActivationFailure {
+        },
+        other => ActivationFailure {
             code: "project.asset_parse_failed",
             category: "format",
             detail: other.to_string(),
-        }),
+        },
     }
 }
 
@@ -681,25 +801,70 @@ mod tests {
             relative_path: "big.pmesh".to_owned(),
             expected_digest: digest.clone(),
         };
-        let lod = load_asset(request(), || false, 1_000)
+        let small = ActivationLimits {
+            surface_triangles: 1_000,
+            volume_cells: 1_000,
+        };
+        let lod = load_asset(request(), || false, small)
             .map_err(|f| f.detail)?
             .ok_or("cancelled")?;
-        assert_eq!(lod.1, count as u64);
-        assert!(lod.0.triangles.len() < count);
-        let full = load_asset(request(), || false, u64::MAX)
+        assert_eq!(lod.lod_source, count as u64);
+        assert!(lod.mesh.triangles.len() < count);
+        let full = load_asset(request(), || false, ActivationLimits::RESIDENT)
             .map_err(|f| f.detail)?
             .ok_or("cancelled")?;
-        assert_eq!((full.0.triangles.len(), full.1), (count, 0));
+        assert_eq!((full.mesh.triangles.len(), full.lod_source), (count, 0));
         assert_eq!(
             load_committed_surface(request())
                 .ok()
                 .map(|m| m.triangles.len()),
             Some(count)
         );
-        assert!(matches!(load_asset(request(), || true, 1_000), Ok(None)));
+        assert!(matches!(load_asset(request(), || true, small), Ok(None)));
         let mut wrong = request();
         wrong.expected_digest = "sha256:other".to_owned();
-        assert!(load_asset(wrong, || false, 1_000).is_err());
+        assert!(load_asset(wrong, || false, small).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn large_volume_assets_activate_streamed_with_the_exact_boundary()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = crate::project::temp_directory::Fixture::new()?;
+        let block = panta_mesh::SyntheticTetBlock::with_cells_per_axis(6);
+        let file = File::create(fixture.root.join("volume.pmesh"))?;
+        let (_, digest) =
+            panta_mesh::write_volume_asset_streaming(file, block.counts(), &block, None)?
+                .ok_or("cancelled")?;
+        let request = || ActivationRequest {
+            project_root: fixture.root.clone(),
+            relative_path: "volume.pmesh".to_owned(),
+            expected_digest: digest.clone(),
+        };
+        let limits = ActivationLimits {
+            surface_triangles: u64::MAX,
+            volume_cells: 1_000,
+        };
+        let streamed = load_asset(request(), || false, limits)
+            .map_err(|f| f.detail)?
+            .ok_or("cancelled")?;
+        assert!(streamed.volume.is_none());
+        assert_eq!(streamed.lod_source, 0);
+        assert_eq!(streamed.streamed_volume, Some(block.counts()));
+        let resident = load_asset(request(), || false, ActivationLimits::DEFAULT)
+            .map_err(|f| f.detail)?
+            .ok_or("cancelled")?;
+        assert!(resident.streamed_volume.is_none());
+        assert_eq!(
+            resident.volume.map(|v| v.tets.len()),
+            Some(block.tet_count())
+        );
+        // 流式外表面与驻留外表面逐面一致。
+        assert_eq!(streamed.mesh, resident.mesh);
+        assert!(matches!(load_asset(request(), || true, limits), Ok(None)));
+        let mut wrong = request();
+        wrong.expected_digest = "sha256:other".to_owned();
+        assert!(load_asset(wrong, || false, limits).is_err());
         Ok(())
     }
 
@@ -752,24 +917,16 @@ mod tests {
 
         coordinator.complete(
             attempt.attempt,
-            Ok(Some((
-                SurfaceMesh {
-                    triangles: Vec::new(),
-                },
-                0,
-                None,
-            ))),
+            Ok(Some(LoadedMesh::surface(SurfaceMesh {
+                triangles: Vec::new(),
+            }))),
         );
         // 请求已消费后，迟到结果不再发布。
         coordinator.complete(
             attempt.attempt,
-            Ok(Some((
-                SurfaceMesh {
-                    triangles: Vec::new(),
-                },
-                0,
-                None,
-            ))),
+            Ok(Some(LoadedMesh::surface(SurfaceMesh {
+                triangles: Vec::new(),
+            }))),
         );
         let outcomes = coordinator.drain();
         assert_eq!(outcomes.len(), 1);
@@ -786,13 +943,9 @@ mod tests {
         assert!(coordinator.cancel(attempt.attempt));
         coordinator.complete(
             attempt.attempt,
-            Ok(Some((
-                SurfaceMesh {
-                    triangles: Vec::new(),
-                },
-                0,
-                None,
-            ))),
+            Ok(Some(LoadedMesh::surface(SurfaceMesh {
+                triangles: Vec::new(),
+            }))),
         );
         let outcomes = coordinator.drain();
         assert_eq!(outcomes.len(), 1);
@@ -835,13 +988,9 @@ mod tests {
         // 旧请求已移除，迟到网格就地释放。
         coordinator.complete(
             attempt.attempt,
-            Ok(Some((
-                SurfaceMesh {
-                    triangles: Vec::new(),
-                },
-                0,
-                None,
-            ))),
+            Ok(Some(LoadedMesh::surface(SurfaceMesh {
+                triangles: Vec::new(),
+            }))),
         );
         assert!(coordinator.drain().is_empty(), "迟到成功不得发布");
     }
@@ -864,13 +1013,9 @@ mod tests {
 
         coordinator.complete(
             attempt.attempt,
-            Ok(Some((
-                SurfaceMesh {
-                    triangles: Vec::new(),
-                },
-                0,
-                None,
-            ))),
+            Ok(Some(LoadedMesh::surface(SurfaceMesh {
+                triangles: Vec::new(),
+            }))),
         );
         // 成功结果已入队；随后代次推进（工程切换）：旧代次结果在 drain
         // 边界被过滤，坐标（含网格负载）就地释放，不跨会话发布。

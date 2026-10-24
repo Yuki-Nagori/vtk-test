@@ -15,7 +15,10 @@
 mod stream;
 mod v2;
 
-pub use stream::{SurfaceAssetChunks, Triangle, write_surface_asset_streaming};
+pub use stream::{
+    SurfaceAssetChunks, Triangle, VolumeAssetChunks, VolumeSource, VolumeStreamCounts,
+    write_surface_asset_streaming, write_volume_asset_streaming,
+};
 
 use crate::{SurfaceMesh, SurfaceTriangle, TetMesh, Tetrahedron, validate_tet_mesh};
 use sha2::{Digest, Sha256};
