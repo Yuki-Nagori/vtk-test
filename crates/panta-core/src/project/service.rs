@@ -197,10 +197,18 @@ impl ProjectService {
         let project_root = root.to_owned();
         let relative_path = asset_ref.relative_path.clone();
         let expected_digest = asset_ref.digest.clone();
+        let results = asset_ref
+            .results
+            .as_ref()
+            .map(|results| crate::activation::ResultRequest {
+                relative_path: results.relative_path.clone(),
+                digest: results.digest.clone(),
+            });
         Ok(crate::activation::ActivationRequest {
             project_root,
             relative_path,
             expected_digest,
+            results,
         })
     }
 

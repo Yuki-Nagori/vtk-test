@@ -161,6 +161,33 @@ mod tests {
             reopened.read_result_field(&record.id, "material", FieldAssociation::Node),
             Err(ProjectError::CommandInvalid(_))
         ));
+        // 激活请求带结果场引用（派生分块带场构建）；驻留切面可按字段着色。
+        let request = reopened.activation_request(&record.id)?;
+        assert!(
+            request
+                .results
+                .is_some_and(|results| results.relative_path.ends_with(".presult"))
+        );
+        let volume = service
+            .volume_for_import(&record.id)
+            .ok_or("volume missing")?;
+        let section = crate::project::section_plane_field(
+            &volume,
+            &material,
+            panta_mesh::FieldComponent::Magnitude,
+            [1.0, 1.0, 1.0],
+            0.5,
+            &panta_mesh::Progress::new(),
+        )?
+        .ok_or("cancelled")?;
+        assert!(!section.values.is_empty());
+        assert!(
+            section
+                .values
+                .iter()
+                .flatten()
+                .all(|value| *value == 1.0 || *value == 2.0)
+        );
 
         // sidecar 被改写（摘要不符）时拒绝读取，网格本身不受影响。
         let results = service

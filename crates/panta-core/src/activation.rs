@@ -30,6 +30,15 @@ pub(crate) struct ActivationRequest {
     pub project_root: PathBuf,
     pub relative_path: String,
     pub expected_digest: String,
+    /// 结果场 sidecar（task 029）：派生分块文件带场构建时使用。
+    pub results: Option<ResultRequest>,
+}
+
+/// 激活请求中的结果场引用：工程内相对路径与清单摘要。
+#[derive(Debug, Clone)]
+pub(crate) struct ResultRequest {
+    pub relative_path: String,
+    pub digest: String,
 }
 
 /// 每个进程内 attempt 至多发布一次的终态结果；`Expired` 无网格负载。
@@ -560,9 +569,21 @@ fn load_asset_with(
     )? {
         return Ok(loaded);
     }
-    if let Some(loaded) =
-        load_streamed_volume(&asset_path, &request.expected_digest, &cancelled, options)?
-    {
+    // 结果场路径不合法时按无结果场处理：几何激活不应因可选 sidecar 失败。
+    let results_path = request.results.as_ref().and_then(|results| {
+        crate::project::resolve_asset_path(&request.project_root, &results.relative_path)
+            .ok()
+            .map(|path| (path, results.digest.as_str()))
+    });
+    if let Some(loaded) = load_streamed_volume(
+        &asset_path,
+        &request.expected_digest,
+        results_path
+            .as_ref()
+            .map(|(path, digest)| crate::derived_chunks::ResultSource { path, digest }),
+        &cancelled,
+        options,
+    )? {
         return Ok(loaded);
     }
     let Some((asset, digest)) = read_mesh_asset(&asset_path, &cancelled)? else {
@@ -638,6 +659,7 @@ fn load_lod(
 fn load_streamed_volume(
     path: &std::path::Path,
     expected_digest: &str,
+    results: Option<crate::derived_chunks::ResultSource<'_>>,
     cancelled: &impl Fn() -> bool,
     options: &LoadOptions,
 ) -> Result<Option<Option<LoadedMesh>>, ActivationFailure> {
@@ -667,6 +689,7 @@ fn load_streamed_volume(
             let chunked_volume = crate::derived_chunks::open_or_build(
                 path,
                 expected_digest,
+                results,
                 counts,
                 options,
                 cancelled,
@@ -965,6 +988,7 @@ mod tests {
                     project_root: PathBuf::from("unused-project"),
                     relative_path: "unused.pmesh".to_owned(),
                     expected_digest: "sha256:test".to_owned(),
+                    results: None,
                 },
                 accept_activation_request,
             )
@@ -981,6 +1005,7 @@ mod tests {
                 project_root: root,
                 relative_path: relative_path.to_owned(),
                 expected_digest: "sha256:test".to_owned(),
+                results: None,
             },
             Arc::new(AtomicBool::new(false)),
         );
@@ -1003,6 +1028,7 @@ mod tests {
             project_root: fixture.root.clone(),
             relative_path: "big.pmesh".to_owned(),
             expected_digest: digest.clone(),
+            results: None,
         };
         let small = ActivationLimits {
             surface_triangles: 1_000,
@@ -1045,6 +1071,7 @@ mod tests {
             project_root: fixture.root.clone(),
             relative_path: "volume.pmesh".to_owned(),
             expected_digest: digest.clone(),
+            results: None,
         };
         let limits = ActivationLimits {
             surface_triangles: u64::MAX,
@@ -1102,6 +1129,7 @@ mod tests {
             project_root: fixture.root.clone(),
             relative_path: "volume.pmesh".to_owned(),
             expected_digest: digest.clone(),
+            results: None,
         };
         let cache = fixture.root.join("cache").join("volume-chunks");
         let mut options = LoadOptions {
@@ -1114,7 +1142,7 @@ mod tests {
                 derived_dir: Some(cache.clone()),
             },
         };
-        let target = cache.join(crate::derived_chunks::file_name(&digest).ok_or("digest")?);
+        let target = cache.join(crate::derived_chunks::file_name(&digest, None).ok_or("digest")?);
         let listing = || -> Result<Vec<String>, std::io::Error> {
             let mut names = std::fs::read_dir(&cache)?
                 .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
@@ -1176,6 +1204,189 @@ mod tests {
     }
 
     #[test]
+    fn derived_chunks_carry_result_fields_and_serve_field_sections()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::project::{
+            ProjectError, SharedChunks, StreamedAsset, StreamedKind, section_plane,
+            section_plane_field, streamed_section_plane, streamed_section_plane_field,
+        };
+        use panta_mesh::{FieldAssociation, FieldComponent, ResultField};
+        let fixture = crate::project::temp_directory::Fixture::new()?;
+        let block = panta_mesh::SyntheticTetBlock::with_cells_per_axis(6);
+        let file = File::create(fixture.root.join("volume.pmesh"))?;
+        let (_, digest) =
+            panta_mesh::write_volume_asset_streaming(file, block.counts(), &block, None)?
+                .ok_or("cancelled")?;
+        let mesh = panta_mesh::TetMesh {
+            nodes: (0..block.node_count()).map(|i| block.node(i)).collect(),
+            tets: (0..block.tet_count()).map(|i| block.tet(i)).collect(),
+            boundary: (0..block.boundary_count())
+                .map(|i| block.boundary_face(i))
+                .collect(),
+            region_count: 1,
+            boundary_group_count: 6,
+        };
+        let fields = vec![
+            ResultField {
+                name: "t".to_owned(),
+                association: FieldAssociation::Node,
+                components: 1,
+                units: String::new(),
+                values: mesh.nodes.iter().map(|p| p[0] - p[2]).collect(),
+            },
+            ResultField {
+                name: "id".to_owned(),
+                association: FieldAssociation::Cell,
+                components: 1,
+                units: String::new(),
+                values: (0..mesh.tets.len()).map(|i| i as f64).collect(),
+            },
+        ];
+        let (bytes, result_digest) = panta_mesh::encode_result_asset(&panta_mesh::ResultSet {
+            mesh_digest: digest.clone(),
+            node_count: mesh.nodes.len() as u64,
+            cell_count: mesh.tets.len() as u64,
+            fields: fields.clone(),
+        })?;
+        std::fs::write(fixture.root.join("volume.presult"), bytes)?;
+        let cache = fixture.root.join("cache");
+        let options = LoadOptions {
+            limits: ActivationLimits {
+                volume_cells: 1_000,
+                ..ActivationLimits::DEFAULT
+            },
+            environment: ActivationEnvironment {
+                available_memory: 0,
+                derived_dir: Some(cache.clone()),
+            },
+        };
+        let request = |results_digest: &str| ActivationRequest {
+            project_root: fixture.root.clone(),
+            relative_path: "volume.pmesh".to_owned(),
+            expected_digest: digest.clone(),
+            results: Some(ResultRequest {
+                relative_path: "volume.presult".to_owned(),
+                digest: results_digest.to_owned(),
+            }),
+        };
+        let loaded = load_asset_with(request(&result_digest), || false, &options)
+            .map_err(|f| f.detail)?
+            .ok_or("cancelled")?;
+        let chunks = loaded.chunked_volume.ok_or("chunks missing")?;
+        assert_eq!(chunks.fields().len(), 2);
+        let name =
+            crate::derived_chunks::file_name(&digest, Some(&result_digest)).ok_or("digest")?;
+        assert!(cache.join(&name).is_file());
+
+        let asset = StreamedAsset {
+            path: fixture.root.join("volume.pmesh"),
+            digest: digest.clone(),
+            kind: StreamedKind::Volume(block.counts()),
+            chunks: Some(SharedChunks(chunks)),
+        };
+        let progress = panta_mesh::Progress::new();
+        let sorted = |section: &panta_mesh::FieldSection| {
+            let mut keys: Vec<_> = section
+                .surface
+                .triangles
+                .iter()
+                .zip(&section.values)
+                .map(|(t, v)| (t.map(|p| p.map(f64::to_bits)), v.map(f64::to_bits)))
+                .collect();
+            keys.sort_unstable();
+            keys
+        };
+        for (field, association) in [
+            ("t", FieldAssociation::Node),
+            ("id", FieldAssociation::Cell),
+        ] {
+            let normal = [0.2, 1.0, 0.4];
+            let streamed = streamed_section_plane_field(
+                &asset,
+                field,
+                association,
+                FieldComponent::Magnitude,
+                normal,
+                0.4,
+                &progress,
+            )?
+            .ok_or("cancelled")?;
+            let plain =
+                streamed_section_plane(&asset, normal, 0.4, &progress)?.ok_or("cancelled")?;
+            assert_eq!(streamed.surface, plain);
+            let index = usize::from(association == FieldAssociation::Cell);
+            let resident = section_plane_field(
+                &mesh,
+                &fields[index],
+                FieldComponent::Magnitude,
+                normal,
+                0.4,
+                &progress,
+            )?
+            .ok_or("cancelled")?;
+            assert_eq!(
+                resident.surface,
+                section_plane(&mesh, normal, 0.4, &progress)?.ok_or("cancelled")?
+            );
+            assert_eq!(sorted(&streamed), sorted(&resident));
+        }
+        assert!(matches!(
+            streamed_section_plane_field(
+                &asset,
+                "t",
+                FieldAssociation::Cell,
+                FieldComponent::Magnitude,
+                [0.0, 0.0, 1.0],
+                0.5,
+                &progress
+            ),
+            Err(ProjectError::CommandInvalid(_))
+        ));
+        assert!(matches!(
+            streamed_section_plane_field(
+                &asset,
+                "t",
+                FieldAssociation::Node,
+                FieldComponent::Magnitude,
+                [0.0, 0.0, 0.0],
+                0.5,
+                &progress
+            ),
+            Err(ProjectError::CommandInvalid(_))
+        ));
+        // 逐次流式回退（无派生文件）不支持场剖面。
+        let fallback = StreamedAsset {
+            chunks: None,
+            ..asset.clone()
+        };
+        assert!(matches!(
+            streamed_section_plane_field(
+                &fallback,
+                "t",
+                FieldAssociation::Node,
+                FieldComponent::Magnitude,
+                [0.0, 0.0, 1.0],
+                0.5,
+                &progress
+            ),
+            Err(ProjectError::CommandInvalid(_))
+        ));
+        drop(asset);
+
+        // 结果摘要不符：按无结果场构建，几何派生文件照常可用。
+        let wrong = format!("sha256:{}", "0".repeat(64));
+        let plain = load_asset_with(request(&wrong), || false, &options)
+            .map_err(|f| f.detail)?
+            .ok_or("cancelled")?;
+        let chunks = plain.chunked_volume.ok_or("chunks missing")?;
+        assert!(chunks.fields().is_empty());
+        let plain_name = crate::derived_chunks::file_name(&digest, None).ok_or("digest")?;
+        assert!(cache.join(plain_name).is_file());
+        assert!(crate::derived_chunks::file_name(&digest, Some("md5:00")).is_none());
+        Ok(())
+    }
+
+    #[test]
     fn derived_chunk_cache_keeps_the_newest_files() -> Result<(), Box<dyn std::error::Error>> {
         let fixture = crate::project::temp_directory::Fixture::new()?;
         let base = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
@@ -1206,8 +1417,8 @@ mod tests {
             "notes.txt".to_owned(),
         ];
         assert_eq!(names, expected);
-        assert_eq!(crate::derived_chunks::file_name("sha256:short"), None);
-        assert_eq!(crate::derived_chunks::file_name("md5:00"), None);
+        assert_eq!(crate::derived_chunks::file_name("sha256:short", None), None);
+        assert_eq!(crate::derived_chunks::file_name("md5:00", None), None);
         Ok(())
     }
 
@@ -1491,6 +1702,7 @@ mod tests {
             project_root: PathBuf::from("unused-project"),
             relative_path: "unused.pmesh".to_owned(),
             expected_digest: "sha256:test".to_owned(),
+            results: None,
         };
         let first = coordinator
             .begin_with("import-1", request(), accept_activation_request)
@@ -1517,6 +1729,7 @@ mod tests {
                     project_root: PathBuf::from("unused-project"),
                     relative_path: "unused.pmesh".to_owned(),
                     expected_digest: "sha256:test".to_owned(),
+                    results: None,
                 },
                 |_coordinator, _attempt, _request, _cancel| {
                     Err(std::io::Error::other("thread pool exhausted"))
@@ -1574,6 +1787,7 @@ mod tests {
             project_root: PathBuf::from("unused-project"),
             relative_path: "unused.pmesh".to_owned(),
             expected_digest: "sha256:test".into(),
+            results: None,
         };
         for id in 0..OUTCOME_CAPACITY {
             let attempt = coordinator
@@ -1621,6 +1835,7 @@ mod tests {
                     project_root: PathBuf::from("unused-project"),
                     relative_path: "unused.pmesh".to_owned(),
                     expected_digest: "sha256:test".into(),
+                    results: None,
                 },
                 move |_, _, _, token| {
                     *saved

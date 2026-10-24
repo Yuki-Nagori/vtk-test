@@ -74,4 +74,5 @@ Netgen API 依据：[v6.2.2604 `nglib.h`](https://github.com/NGSolve/netgen/blob
 - 缺失值：任一分量非有限即计为缺失，数值原样保留（不替换为 0）；范围按标量值或多分量模长统计，忽略缺失值。读取字段时重算摘要并与字段表逐位比较。
 - 分块携带（029 PR 2a）：`.pchunk` v2 布局为 `头 16 B | 单元段 | 场段 | 表面段 | 块表（zstd）| 尾 32 B`。块表记录字段名、关联、分量数，每块每字段的范围（标量值 / 矢量模长，忽略 NaN，无有限值为 NaN）与值块位置。场段每个字段先放所有块的内部值（节点场按块内节点序、单元场按块内单元序），再放所有块的外表面值（与块外表面三角形同序：节点场每三角形 3 个顶点值，单元场 1 个所属单元值），每块一个 f64 小端 zstd 帧。构建入口 `build_chunked_volume_with_fields` / `build_chunked_from_asset_with_fields`，字段由 `FieldProvider` 逐个加载（`ResidentFields`、`ResultAssetReader`）。
 - 场剖面：驻留 `section_surface_field` 与分块 `ChunkedVolume::fine_section_field` 的几何与无场剖面位级一致；节点场先按分量线性插值再归约（模长或指定分量），单元场取所在单元值，被裁剪外表面三角形取其所属四面体值；缺失值按 NaN 传播。分块路径外表面值只常驻当前一个字段，命中块内部值按次合并读取、不进 LRU。
-- 规划：应用接入、派生缓存带场与字段诊断（029 PR 2b）；视口上色、字段选择与色标（029 PR 3）。
+- 应用接入（029 PR 2b）：激活请求携带清单中的 `.presult` 引用；派生分块文件在核对结果摘要、绑定网格摘要与计数后带场构建，文件名 `<资产摘要>-<结果摘要>.pchunk`，不符时按无场构建。工程 API：驻留 `section_plane_field`（字段经 `read_result_field` 整字段读取），单元未驻留 `streamed_section_plane_field`（只走派生分块；逐次流式回退返回 CommandInvalid）。
+- 规划：视口上色、字段选择与色标（029 PR 3）。
