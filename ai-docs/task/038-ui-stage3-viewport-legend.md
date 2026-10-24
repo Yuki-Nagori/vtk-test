@@ -55,7 +55,10 @@
 
 | 日期 | 环境 / 命令或场景 | 预期 | 实际结果 / 证据 |
 |---|---|---|---|
-| — | 待实施 | 见验收标准 | 未执行 |
+| 2026-10-24 | Linux x86_64，SDK 切到 vtk-test Release（#60）后 `cargo format / lint / quality / test --locked --workspace` | 全部通过 | 通过；ctest 73/73（含 `Visualization.PrimitiveScene`、`ProjectViewModelTest.ColorsSectionsByResultFieldAndShowsLegend`） |
+| 2026-10-24 | `Visualization.PrimitiveScene` 的 `scalar_bar_tracks_field_lookup_table_and_title` 等 | scalar bar 与 mapper 共用 LUT；标题含字段名 / 单位 / 区间口径；无标量时隐藏；背景渐变两色 | 通过 |
+| 2026-10-24 | `panta_qml_shell_module_test`，offscreen + software RHI 截图 | 无文档时视口区显示引导页（导入 / 新建 / 打开 / 最近工程） | 通过；`/workspace/shots/038/viewport-empty-state.png`、`sidebar-1280x720-dpr1.png` 等 7 张 |
+| 2026-10-24 | 真实 GPU 窗口：视口截图中的色标、CJK 字体、原生表面隐藏后引导页可见性、深色背景下边线 / 高亮对比度 | 目标平台人工确认 | 待验证（本机无 GPU，WebGPU 视口 offscreen 为空白） |
 
 ## 风险与回退
 
