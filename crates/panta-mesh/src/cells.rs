@@ -362,6 +362,52 @@ pub fn cell_source_nodes(kind: CellType, nodes: &[MeshIndex]) -> Vec<MeshIndex> 
     unique
 }
 
+/// 按 `map` 改写单元的节点号，追加到 `out`：多面体只改 `apex` 与面上节点，
+/// 保留面数与各面节点数（task 031 分块局部编号用）。
+pub(crate) fn map_cell_nodes(
+    kind: CellType,
+    nodes: &[MeshIndex],
+    out: &mut Vec<MeshIndex>,
+    mut map: impl FnMut(MeshIndex) -> MeshIndex,
+) {
+    if kind != CellType::Polyhedron {
+        out.extend(nodes.iter().map(|&node| map(node)));
+        return;
+    }
+    let Some((&apex, words)) = nodes.split_first() else {
+        return;
+    };
+    out.push(map(apex));
+    let Some(&face_count) = words.first() else {
+        return;
+    };
+    out.push(face_count);
+    let mut cursor = 1_usize;
+    while cursor < words.len() {
+        let count = words[cursor] as usize;
+        out.push(words[cursor]);
+        let end = (cursor + 1 + count).min(words.len());
+        out.extend(words[cursor + 1..end].iter().map(|&node| map(node)));
+        cursor = end;
+    }
+}
+
+/// 单元引用的节点号（多面体为 `apex` 加各面节点，不含面数与面节点数）。
+pub(crate) fn cell_node_refs(
+    kind: CellType,
+    nodes: &[MeshIndex],
+) -> Box<dyn Iterator<Item = MeshIndex> + '_> {
+    if kind != CellType::Polyhedron {
+        return Box::new(nodes.iter().copied());
+    }
+    match nodes.split_first() {
+        Some((&apex, words)) => {
+            Box::new(std::iter::once(apex).chain(faces(words).flatten().copied()))
+        }
+        None => Box::new(std::iter::empty()),
+    }
+}
+
 /// 流式读写的一批原始单元（task 031）：与 [`CellLayout`] 同样的类型 + offsets + 连接表，
 /// 但 offsets 从 0 起只覆盖本批，另带区域号；多面体连接为规范面流（含全局 `apex`）。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

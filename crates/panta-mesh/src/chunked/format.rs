@@ -12,6 +12,11 @@
 //! 块内每个拆分四面体的 `global_cells` 记原始单元 ID（非降序，同一单元的拆分四面体相邻），
 //! 混合块另存块内原始单元布局（类型 + 局部节点连接），供逐类型质量与单元场使用；
 //! 单元场按块内原始单元顺序存值。v2 文件视为无效，派生缓存会自动重建。
+//!
+//! v4（task 031）：块内布局可含多面体（VTK 42）。布局在类型字节之后先写连接表总字数，
+//! 多面体连接为规范面流 `[apex, nFaces, n0, ids…]`，`apex` 与面上节点为块内局部节点号
+//! （中心节点随拆分四面体一起进入块内节点），面数与面节点数原样保存；offsets 解码时按类型重建。
+//! 块内节点场值含中心节点（取所属单元各唯一节点值的平均，与驻留切面一致）。v3 文件视为无效并自动重建。
 
 use std::fs::File;
 use std::path::Path;
@@ -24,9 +29,9 @@ use crate::{CellType, SurfaceMesh, Tetrahedron};
 
 pub(crate) const HEAD_MAGIC: &[u8; 8] = b"PANTAOC1";
 pub(crate) const TAIL_MAGIC: &[u8; 8] = b"PANTAOCE";
-/// v2（task 029）：加入场段与文件级场表；v3（task 030）：原始单元 ID 与混合单元布局。
-/// 旧版本文件视为无效，派生缓存会重建。
-pub(crate) const FORMAT_VERSION: u32 = 3;
+/// v2（task 029）：加入场段与文件级场表；v3（task 030）：原始单元 ID 与混合单元布局；
+/// v4（task 031）：布局可含多面体面流。旧版本文件视为无效，派生缓存会重建。
+pub(crate) const FORMAT_VERSION: u32 = 4;
 pub(crate) const HEAD_LEN: u64 = 16;
 pub(crate) const TAIL_LEN: u64 = 32;
 /// 打开时一次读入的尾部窗口；块表不超过它时打开只需一次读。
@@ -529,9 +534,6 @@ impl<'a> Reader<'a> {
         }
         Ok(count)
     }
-    pub fn remaining(&self) -> usize {
-        self.data.len() - self.at
-    }
     pub fn finish(&self) -> Result<(), ChunkError> {
         if self.at == self.data.len() {
             Ok(())
@@ -568,6 +570,8 @@ pub(crate) fn encode_cells(cells: &ChunkCells) -> Vec<u8> {
             out.u32(layout.types.len() as u32);
             out.0
                 .extend(layout.types.iter().map(|kind| kind.vtk_code()));
+            // v4：连接表总字数（多面体面流长度不由类型决定）。
+            out.u32(layout.connectivity.len() as u32);
             layout.connectivity.iter().for_each(|&node| out.u32(node));
         }
     }
@@ -648,28 +652,25 @@ fn decode_layout(
                 .ok_or_else(|| ChunkError::Format(format!("cell type {code} unknown")))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let mut offsets = Vec::with_capacity(cell_count + 1);
-    offsets.push(0u32);
-    let mut total = 0usize;
-    for kind in &types {
-        total += kind
-            .fixed_node_count()
-            .ok_or_else(|| ChunkError::Format("polyhedron cells unsupported".to_owned()))?;
-        offsets.push(
-            u32::try_from(total)
-                .map_err(|_| ChunkError::Format("cell connectivity too long".to_owned()))?,
-        );
-    }
-    if total.saturating_mul(4) > reader.remaining() {
-        return Err(ChunkError::Format("count exceeds data".to_owned()));
-    }
+    let total = reader.count(4)?;
     let mut connectivity = Vec::with_capacity(total);
     for _ in 0..total {
-        let node = reader.u32()?;
-        if node as usize >= node_count {
+        connectivity.push(reader.u32()?);
+    }
+    let invalid = |_| ChunkError::Format("cell connectivity does not match the types".to_owned());
+    let offsets = crate::cell_offsets(&types, &connectivity)
+        .map_err(invalid)?
+        .into_iter()
+        .map(|offset| {
+            u32::try_from(offset)
+                .map_err(|_| ChunkError::Format("cell connectivity too long".to_owned()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for (cell, kind) in types.iter().enumerate() {
+        let nodes = &connectivity[offsets[cell] as usize..offsets[cell + 1] as usize];
+        if crate::cells::cell_node_refs(*kind, nodes).any(|node| node as usize >= node_count) {
             return Err(ChunkError::Format("cell node out of range".to_owned()));
         }
-        connectivity.push(node);
     }
     let mut tet_cells = Vec::with_capacity(global_cells.len());
     let mut cell = 0u32;

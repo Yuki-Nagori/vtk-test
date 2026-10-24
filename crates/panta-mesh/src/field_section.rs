@@ -200,11 +200,22 @@ pub(crate) fn check_field(
 /// 各多面体中心节点的节点场元组（按中心节点号顺序）：该单元不重复节点的算术平均，
 /// 任一节点非有限则结果非有限（按缺失值处理）。
 pub(crate) fn apex_tuples(mesh: &TetMesh, values: &[f64], components: usize) -> Vec<[f64; 3]> {
-    let Some(layout) = &mesh.cells else {
-        return Vec::new();
-    };
-    let source = mesh.source_node_count();
-    let mut apex = vec![[0.0; 3]; mesh.nodes.len() - source];
+    match &mesh.cells {
+        Some(layout) => apex_tuples_for(layout, mesh.nodes.len(), values, components),
+        None => Vec::new(),
+    }
+}
+
+/// 同 [`apex_tuples`]，按布局与总节点数（含中心节点）计算；分块构建也用它。
+pub(crate) fn apex_tuples_for(
+    layout: &crate::CellLayout,
+    node_count: usize,
+    values: &[f64],
+    components: usize,
+) -> Vec<[f64; 3]> {
+    let polyhedra = layout.polyhedron_count();
+    let source = node_count - polyhedra;
+    let mut apex = vec![[0.0; 3]; polyhedra];
     for (cell, kind) in layout.types.iter().enumerate() {
         if *kind != crate::CellType::Polyhedron {
             continue;

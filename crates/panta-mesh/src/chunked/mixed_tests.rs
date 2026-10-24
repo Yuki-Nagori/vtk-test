@@ -54,17 +54,20 @@ fn streamed(
     block: &SyntheticMixedBlock,
     name: &str,
 ) -> Result<(TempPath, TetMesh), Box<dyn Error>> {
+    streamed_source(block, block.counts(), name)
+}
+
+fn streamed_source<S: crate::VolumeSource>(
+    block: &S,
+    counts: crate::VolumeStreamCounts,
+    name: &str,
+) -> Result<(TempPath, TetMesh), Box<dyn Error>> {
     let path = TempPath(std::env::temp_dir().join(format!(
         "panta-mixed-chunk-{}-{name}.pmesh",
         std::process::id()
     )));
-    crate::write_volume_asset_streaming(
-        std::fs::File::create(&path.0)?,
-        block.counts(),
-        block,
-        None,
-    )?
-    .ok_or("cancelled")?;
+    crate::write_volume_asset_streaming(std::fs::File::create(&path.0)?, counts, block, None)?
+        .ok_or("cancelled")?;
     let MeshAsset::Volume(mesh) = crate::decode_mesh_asset(&std::fs::read(&path.0)?)? else {
         return Err("not a volume".into());
     };
@@ -211,13 +214,31 @@ fn cell_field(mesh: &TetMesh) -> ResultField {
     }
 }
 
+/// 节点场只覆盖源节点（多面体中心节点除外）。
 fn node_field(mesh: &TetMesh) -> ResultField {
     ResultField {
         name: "z".to_owned(),
         association: FieldAssociation::Node,
         components: 1,
         units: "mm".to_owned(),
-        values: mesh.nodes.iter().map(|p| p[2]).collect(),
+        values: mesh.nodes[..mesh.source_node_count()]
+            .iter()
+            .map(|p| p[2])
+            .collect(),
+    }
+}
+
+/// 三分量节点场（多面体中心节点值为各唯一节点的平均，按分量）。
+fn vector_field(mesh: &TetMesh) -> ResultField {
+    ResultField {
+        name: "u".to_owned(),
+        association: FieldAssociation::Node,
+        components: 3,
+        units: "m/s".to_owned(),
+        values: mesh.nodes[..mesh.source_node_count()]
+            .iter()
+            .flat_map(|p| [p[1] - 50.0, 0.3 * p[0], (0.05 * p[2]).sin()])
+            .collect(),
     }
 }
 
@@ -225,13 +246,63 @@ fn node_field(mesh: &TetMesh) -> ResultField {
 fn mixed_chunks_keep_original_cells_and_match_resident_algorithms() -> TestResult {
     let block = SyntheticMixedBlock::with_layers(5, 3, 2);
     let (path, mesh) = streamed(&block, "chunks")?;
-    let fields = vec![node_field(&mesh), cell_field(&mesh)];
+    let height = mesh.nodes.iter().map(|p| p[2]).fold(0.0, f64::max);
+    let planes = [
+        ([50.0, 50.0, 0.02 * height], [0.0, 0.0, 1.0]),
+        ([50.0, 50.0, 0.5 * height], [0.3, 0.2, 1.0]),
+        ([31.0, 47.0, 0.4 * height], [1.0, 0.1, 0.0]),
+    ];
+    assert_chunks_match_resident(&path, &mesh, block.type_counts(), 120, &planes)
+}
+
+/// 多面体（task 031 PR 2）：加密界面合成块经资产与驻留两条路径分块，面流映射回全局后与驻留一致，
+/// 正交质量、几何切面、标量 / 矢量节点场（含中心节点插值）与单元场切面逐位一致。
+#[test]
+fn polyhedral_chunks_match_resident_algorithms() -> TestResult {
+    let block = crate::SyntheticPolyBlock::with_cells_per_axis(4);
+    let (path, mesh) = streamed_source(&block, block.counts(), "poly")?;
+    let report = validate_tet_mesh(&mesh);
+    assert!(report.is_ok(), "{:?}", report.issues);
+    assert!((report.volume_mm3 - 1e6).abs() < 1e-6);
+    assert_eq!(mesh.cell_type_counts(), block.type_counts());
+    assert_eq!(mesh.tets.len(), block.tet_count());
+    // 解析边界与拆分四面体外表面一致（共形）。
+    let key = |mut nodes: [u32; 3]| {
+        nodes.sort_unstable();
+        nodes
+    };
+    let mut expected: Vec<_> = crate::boundary_faces(&mesh.tets)
+        .iter()
+        .map(|face| key(face.nodes))
+        .collect();
+    let mut actual: Vec<_> = mesh.boundary.iter().map(|face| key(face.nodes)).collect();
+    expected.sort_unstable();
+    actual.sort_unstable();
+    assert_eq!(actual, expected);
+    let (bytes, _) = crate::encode_mesh_asset(&MeshAsset::Volume(mesh.clone()))?;
+    assert_eq!(std::fs::read(&path.0)?, bytes);
+    let planes = [
+        ([50.0, 50.0, 75.0], [0.0, 0.0, 1.0]),
+        ([50.0, 50.0, 50.0], [0.3, 0.2, 1.0]),
+        ([31.0, 47.0, 60.0], [1.0, 0.1, 0.4]),
+    ];
+    assert_chunks_match_resident(&path, &mesh, block.type_counts(), 40, &planes)
+}
+
+fn assert_chunks_match_resident(
+    path: &TempPath,
+    mesh: &TetMesh,
+    type_counts: [u64; crate::CELL_TYPE_COUNT],
+    max_chunk_cells: usize,
+    planes: &[([f64; 3], [f64; 3])],
+) -> TestResult {
+    let fields = vec![node_field(mesh), cell_field(mesh), vector_field(mesh)];
     // 资产路径与驻留路径产出逐字节相同的 .pchunk。
     let mut from_mesh = Vec::new();
     build_chunked_volume_with_fields(
-        &mesh,
+        mesh,
         &mut ResidentFields(&fields),
-        options(120),
+        options(max_chunk_cells),
         &mut from_mesh,
         &Progress::new(),
     )?
@@ -241,7 +312,7 @@ fn mixed_chunks_keep_original_cells_and_match_resident_algorithms() -> TestResul
     let summary = build_chunked_from_asset_with_fields(
         &mut chunks,
         &mut ResidentFields(&fields),
-        options(120),
+        options(max_chunk_cells),
         &mut from_asset,
         &Progress::new(),
     )?
@@ -267,11 +338,13 @@ fn mixed_chunks_keep_original_cells_and_match_resident_algorithms() -> TestResul
             let global = cells.global_cells[first] as usize;
             seen[global] += 1;
             assert_eq!(chunk_layout.types[local], layout.types[global]);
-            let nodes: Vec<u32> = chunk_layout
-                .cell_nodes(local)
-                .iter()
-                .map(|&node| cells.global_nodes[node as usize] as u32)
-                .collect();
+            let mut nodes = Vec::new();
+            crate::cells::map_cell_nodes(
+                chunk_layout.types[local],
+                chunk_layout.cell_nodes(local),
+                &mut nodes,
+                |node| cells.global_nodes[node as usize] as u32,
+            );
             assert_eq!(nodes, layout.cell_nodes(global));
         }
         for (index, tet) in cells.tets.iter().enumerate() {
@@ -289,21 +362,16 @@ fn mixed_chunks_keep_original_cells_and_match_resident_algorithms() -> TestResul
     assert!(seen.iter().all(|&count| count == 1));
 
     // 逐类型质量与驻留统计一致。
-    let expected = tet_quality(&mesh, &Progress::new()).ok_or("cancel")?;
+    let expected = tet_quality(mesh, &Progress::new()).ok_or("cancel")?;
     let actual = volume.quality(&|| false)?.ok_or("cancel")?;
     assert_quality_eq(&actual, &expected);
-    assert_eq!(actual.by_type.map(|q| q.count as u64), block.type_counts());
-    assert_eq!(actual.tet_count, block.type_counts()[0] as usize);
+    assert_eq!(actual.by_type.map(|q| q.count as u64), type_counts);
+    assert_eq!(actual.tet_count, type_counts[0] as usize);
 
-    // 几何切面与单元场 / 节点场切面与驻留一致；切过边界层、过渡层与核心。
-    let height = mesh.nodes.iter().map(|p| p[2]).fold(0.0, f64::max);
-    for (origin, normal) in [
-        ([50.0, 50.0, 0.02 * height], [0.0, 0.0, 1.0]),
-        ([50.0, 50.0, 0.5 * height], [0.3, 0.2, 1.0]),
-        ([31.0, 47.0, 0.4 * height], [1.0, 0.1, 0.0]),
-    ] {
+    // 几何切面与单元场 / 节点场切面与驻留一致。
+    for &(origin, normal) in planes {
         let plane = SectionPlane::new(origin, normal)?;
-        let plain = section_surface(&mesh, origin, normal, &Progress::new())?.ok_or("cancel")?;
+        let plain = section_surface(mesh, origin, normal, &Progress::new())?.ok_or("cancel")?;
         let chunked = volume.fine_section(&plane, &|| false)?.ok_or("cancel")?;
         assert!(!plain.triangles.is_empty());
         assert_eq!(
@@ -312,7 +380,7 @@ fn mixed_chunks_keep_original_cells_and_match_resident_algorithms() -> TestResul
         );
         for (index, field) in fields.iter().enumerate() {
             let resident = section_surface_field(
-                &mesh,
+                mesh,
                 field,
                 FieldComponent::Magnitude,
                 origin,
