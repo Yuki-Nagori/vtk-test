@@ -39,7 +39,7 @@ mod display;
 pub use display::MeshDisplayInput;
 use display::{
     diagnose_mesh_display, export_mesh_display, prepare_mesh_display,
-    project_service_mesh_display_input,
+    project_service_mesh_display_input, section_mesh_display,
 };
 mod progress;
 pub use progress::TaskProgress;
@@ -48,9 +48,7 @@ use progress::{
     task_progress_cancel, task_progress_fraction, task_progress_new, task_progress_share,
 };
 mod volume;
-use volume::{
-    project_service_export_volume_vtu, project_service_volume_info, project_service_volume_section,
-};
+use volume::project_service_volume_summary;
 mod animation;
 use animation::{
     AnimationSequence, animation_cached_frames, animation_frame, animation_frame_count,
@@ -252,6 +250,14 @@ pub mod bridge {
         pub non_manifold_edge_count: u64,
         pub inconsistent_orientation_edge_count: u64,
         pub clean: bool,
+        /// 体网格文档（task 022）：以下质量字段有效。
+        pub volume_available: bool,
+        pub node_count: u64,
+        pub tet_count: u64,
+        pub min_dihedral_degrees: f64,
+        pub max_aspect_ratio: f64,
+        pub mean_aspect_ratio: f64,
+        pub poor_count: u64,
     }
 
     /// 网格质量诊断结果；失败 value 不可消费。
@@ -298,22 +304,11 @@ pub mod bridge {
         fn animation_frame_name(sequence: &AnimationSequence, index: u64) -> String;
         fn animation_request(sequence: &mut AnimationSequence, index: u64);
         fn animation_frame(sequence: &mut AnimationSequence, index: u64) -> AnimationFrameResult;
-        fn project_service_volume_info(
+        /// 体网格节点/单元计数摘要；质量字段留空，由后台诊断填充。
+        fn project_service_volume_summary(
             service: &ProjectService,
             import_id: &str,
         ) -> VolumeInfoResult;
-        /// 单切面显示坐标，复用帧结果结构（ready + 连续三角坐标）。
-        fn project_service_volume_section(
-            service: &ProjectService,
-            import_id: &str,
-            axis: u32,
-            fraction: f64,
-        ) -> AnimationFrameResult;
-        fn project_service_export_volume_vtu(
-            service: &ProjectService,
-            import_id: &str,
-            path: &str,
-        ) -> ProjectDiagnostic;
     }
 
     extern "Rust" {
@@ -358,6 +353,13 @@ pub mod bridge {
             path: &str,
             progress: &TaskProgress,
         ) -> ProjectDiagnostic;
+        /// 体网格轴向切面显示坐标；后台线程调用，取消时 ready 为假且无错误。
+        fn section_mesh_display(
+            input: Box<MeshDisplayInput>,
+            axis: u32,
+            fraction: f64,
+            progress: &TaskProgress,
+        ) -> AnimationFrameResult;
 
         fn project_service_new() -> Box<ProjectService>;
         #[rust_name = "project_service_execute_response"]

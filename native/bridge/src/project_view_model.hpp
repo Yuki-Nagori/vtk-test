@@ -335,7 +335,11 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     QTimer m_taskProgressPoll;
     void tick_animation();
     void refresh_volume();
-    bool apply_section();
+    /// 后台计算切面（task 022）：同时最多一个任务，参数变化时取消在途任务并在完成后重跑最新意图。
+    void request_section();
+    bool m_sectionPending = false;
+    bool m_sectionDirty = false;
+    std::optional<rust::Box<panta::ffi::TaskProgress>> m_sectionProgress;
     bool m_volumeAvailable = false;
     QString m_volumeInfo;
     bool m_sectionActive = false;

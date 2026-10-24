@@ -591,7 +591,7 @@ pub fn export_mesh_file_with_progress(
         .map_err(export_error)
 }
 
-fn export_error(error: panta_import::export::ExportError) -> ProjectError {
+pub(super) fn export_error(error: panta_import::export::ExportError) -> ProjectError {
     use panta_import::export::ExportError;
     match error {
         ExportError::UnsupportedFormat(path) => ProjectError::ExportUnsupportedFormat(path),

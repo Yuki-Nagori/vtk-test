@@ -338,9 +338,9 @@ void ProjectViewModel::prepareActiveMesh() {
             m_activeLodSourceTriangles = prepared->lodSourceTriangles;
             m_activeMesh = std::move(prepared->mesh);
             refresh_volume();
-            if (m_sectionActive && m_volumeAvailable)
-                apply_section();
             emit meshChanged();
+            if (m_sectionActive && m_volumeAvailable)
+                request_section();
         },
         Qt::QueuedConnection);
     try {
@@ -394,16 +394,7 @@ bool ProjectViewModel::beginExportActiveMeshUrl(const QUrl& url) {
         return fail(conversionError);
     if (m_activeDocumentId.isEmpty())
         return fail(QStringLiteral("project.mesh_not_resident"), QStringLiteral("state"));
-    if (m_volumeAvailable && path.endsWith(QStringLiteral(".vtu"), Qt::CaseInsensitive)) {
-        // 体网格导出 .vtu 写四面体单元（首期同步执行）；其他格式仍导出外表面。
-        const auto diagnostic = panta::ffi::project_service_export_volume_vtu(
-            *m_service, m_activeDocumentId.toStdString(), boundaryPath);
-        const bool succeeded = diagnostic.code.empty();
-        if (!succeeded)
-            fail(diagnostic);
-        emit exportFinished(path, succeeded);
-        return succeeded;
-    }
+    // 体网格文档导出 .vtu 时由 Rust 写四面体单元（task 022 后台化）；其他格式导出外表面。
     using Input = rust::Box<panta::ffi::MeshDisplayInput>;
     using Result = std::shared_ptr<panta::ffi::ProjectDiagnostic>;
     using Watcher = QFutureWatcher<Result>;
@@ -503,7 +494,18 @@ bool ProjectViewModel::beginDiagnoseActiveMesh() {
                     {QStringLiteral("nonManifoldEdgeCount"), count(value.non_manifold_edge_count)},
                     {QStringLiteral("inconsistentOrientationEdgeCount"),
                      count(value.inconsistent_orientation_edge_count)},
+                    {QStringLiteral("volumeAvailable"), value.volume_available},
                 };
+                if (value.volume_available) {
+                    m_meshQuality.insert(QStringLiteral("nodeCount"), count(value.node_count));
+                    m_meshQuality.insert(QStringLiteral("tetCount"), count(value.tet_count));
+                    m_meshQuality.insert(QStringLiteral("minDihedralDegrees"),
+                                         value.min_dihedral_degrees);
+                    m_meshQuality.insert(QStringLiteral("maxAspectRatio"), value.max_aspect_ratio);
+                    m_meshQuality.insert(QStringLiteral("meanAspectRatio"),
+                                         value.mean_aspect_ratio);
+                    m_meshQuality.insert(QStringLiteral("poorTetCount"), count(value.poor_count));
+                }
             } else if (report) {
                 m_meshQuality.clear();
                 fail(report->error);
@@ -958,6 +960,9 @@ void ProjectViewModel::refresh_workspace(bool forceActiveNotification) {
         m_volumeAvailable = false;
         m_volumeInfo.clear();
         m_sectionActive = false;
+        m_sectionDirty = false;
+        if (m_sectionProgress)
+            panta::ffi::task_progress_cancel(**m_sectionProgress);
         emit volumeChanged();
         if (m_animation) {
             // 切换文档即退出序列查看（保守：序列不与文档并存）。
@@ -1172,45 +1177,109 @@ void panta::bridge::ProjectViewModel::tick_animation() {
 }
 
 void panta::bridge::ProjectViewModel::refresh_volume() {
+    // 只读计数摘要；质量统计在后台诊断中计算并显示在诊断面板（task 022）。
     const auto info =
-        panta::ffi::project_service_volume_info(*m_service, m_activeDocumentId.toStdString());
+        panta::ffi::project_service_volume_summary(*m_service, m_activeDocumentId.toStdString());
     m_volumeAvailable = info.available;
-    m_volumeInfo = info.available
-                       ? QStringLiteral("体网格：%1 节点 / %2 四面体\n最小二面角 %3°，长宽比 "
-                                        "最大 %4 / 平均 %5\n劣质单元 %6")
-                             .arg(info.node_count)
-                             .arg(info.tet_count)
-                             .arg(info.min_dihedral_degrees, 0, 'f', 2)
-                             .arg(info.max_aspect_ratio, 0, 'f', 2)
-                             .arg(info.mean_aspect_ratio, 0, 'f', 2)
-                             .arg(info.poor_count)
-                       : QString();
+    m_volumeInfo = info.available ? QStringLiteral("体网格：%1 节点 / %2 四面体\n"
+                                                   "质量统计见“诊断网格”结果")
+                                        .arg(info.node_count)
+                                        .arg(info.tet_count)
+                                  : QString();
     if (!m_volumeAvailable)
         m_sectionActive = false;
     emit volumeChanged();
 }
 
-bool panta::bridge::ProjectViewModel::apply_section() {
-    const auto section = panta::ffi::project_service_volume_section(
-        *m_service, m_activeDocumentId.toStdString(), static_cast<std::uint32_t>(m_sectionAxis),
-        m_sectionFraction);
-    if (!section.error.code.empty())
-        return fail(section.error);
-    try {
-        auto mesh = std::make_shared<panta::visualization::SurfaceMeshSnapshot>();
-        mesh->project_revision = panta::ffi::project_service_current(*m_service).value.revision;
-        mesh->vertices.reserve(section.coordinates.size() / 3);
-        for (std::size_t offset = 0; offset + 2 < section.coordinates.size(); offset += 3)
-            mesh->vertices.push_back({section.coordinates[offset], section.coordinates[offset + 1],
-                                      section.coordinates[offset + 2]});
-        m_activeMeshTriangles = mesh->vertices.size() / 3;
-        m_activeLodSourceTriangles = 0;
-        m_activeMesh = std::move(mesh);
-    } catch (const std::exception& error) {
-        return fail(QStringLiteral("project.mesh_allocation_failed"), QStringLiteral("resource"),
-                    QString::fromUtf8(error.what()));
+void panta::bridge::ProjectViewModel::request_section() {
+    if (m_sectionPending) {
+        // 合并为最新意图：取消在途任务，完成回调里按当前参数重跑。
+        m_sectionDirty = true;
+        if (m_sectionProgress)
+            panta::ffi::task_progress_cancel(**m_sectionProgress);
+        return;
     }
-    return true;
+    if (!m_sectionActive || !m_volumeAvailable || m_activeDocumentId.isEmpty())
+        return;
+    using Input = rust::Box<panta::ffi::MeshDisplayInput>;
+    struct Section {
+        panta::ffi::AnimationFrameResult frame;
+    };
+    using Result = std::shared_ptr<Section>;
+    using Watcher = QFutureWatcher<Result>;
+    const auto input =
+        std::make_shared<std::optional<Input>>(panta::ffi::project_service_mesh_display_input(
+            *m_service, m_activeDocumentId.toStdString()));
+    auto hostProgress = panta::ffi::task_progress_new();
+    const auto progress = std::make_shared<rust::Box<panta::ffi::TaskProgress>>(
+        panta::ffi::task_progress_share(*hostProgress));
+    const auto axis = static_cast<std::uint32_t>(m_sectionAxis);
+    const double fraction = m_sectionFraction;
+    const auto selection = m_meshSelection;
+    const auto current = panta::ffi::project_service_current(*m_service);
+    if (!current.error.code.empty())
+        return;
+    const auto revision = current.value.revision;
+    const auto result = std::make_shared<QPromise<Result>>();
+    auto watcher = std::make_unique<Watcher>();
+    result->start();
+    watcher->setFuture(result->future());
+    connect(watcher.get(), &Watcher::finished, watcher.get(), &QObject::deleteLater);
+    connect(
+        watcher.get(), &Watcher::finished, this,
+        [this, future = result->future(), selection, revision] {
+            m_sectionPending = false;
+            m_sectionProgress.reset();
+            const auto section = future.result();
+            if (m_sectionDirty) {
+                m_sectionDirty = false;
+                request_section();
+                return;
+            }
+            // 结果已过期（切换文档、关闭切面或进入动画）时丢弃。
+            if (!section || selection != m_meshSelection || !m_sectionActive || m_animation)
+                return;
+            if (!section->frame.error.code.empty()) {
+                fail(section->frame.error);
+                return;
+            }
+            if (!section->frame.ready)
+                return;
+            try {
+                auto mesh = std::make_shared<panta::visualization::SurfaceMeshSnapshot>();
+                mesh->project_revision = revision;
+                const auto& coordinates = section->frame.coordinates;
+                mesh->vertices.reserve(coordinates.size() / 3);
+                for (std::size_t offset = 0; offset + 2 < coordinates.size(); offset += 3)
+                    mesh->vertices.push_back(
+                        {coordinates[offset], coordinates[offset + 1], coordinates[offset + 2]});
+                m_activeMeshTriangles = mesh->vertices.size() / 3;
+                m_activeLodSourceTriangles = 0;
+                m_activeMesh = std::move(mesh);
+            } catch (const std::exception& error) {
+                fail(QStringLiteral("project.mesh_allocation_failed"), QStringLiteral("resource"),
+                     QString::fromUtf8(error.what()));
+                return;
+            }
+            emit meshChanged();
+        },
+        Qt::QueuedConnection);
+    try {
+        startBackgroundWaiter([input, result, progress, axis, fraction] {
+            auto section = std::make_shared<Section>();
+            section->frame = panta::ffi::section_mesh_display(std::move(input->value()), axis,
+                                                              fraction, **progress);
+            input->reset();
+            result->addResult(section);
+            result->finish();
+        });
+    } catch (const std::system_error& error) {
+        fail(QStringLiteral("project.io"), QStringLiteral("io"), QString::fromUtf8(error.what()));
+        return;
+    }
+    watcher.release()->setParent(this);
+    m_sectionPending = true;
+    m_sectionProgress.emplace(std::move(hostProgress));
 }
 
 bool panta::bridge::ProjectViewModel::setSection(bool enabled, int axis, double fraction) {
@@ -1224,11 +1293,11 @@ bool panta::bridge::ProjectViewModel::setSection(bool enabled, int axis, double 
     m_sectionActive = enabled;
     emit volumeChanged();
     if (enabled) {
-        if (!apply_section())
-            return false;
-        emit meshChanged();
+        request_section();
         return true;
     }
+    if (m_sectionPending && m_sectionProgress)
+        panta::ffi::task_progress_cancel(**m_sectionProgress);
     if (wasActive) {
         m_activeMesh.reset();
         emit meshChanged();

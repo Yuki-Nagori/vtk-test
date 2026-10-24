@@ -108,6 +108,7 @@ pub fn export_surface_mesh_with_progress(
             progress,
             written: 0,
             estimate,
+            start: 0.4,
         };
         write_with_progress(mesh, format, &mut writer, progress)?;
         if progress.is_cancelled() {
@@ -182,12 +183,13 @@ fn estimated_bytes(mesh: &SurfaceMesh, format: ExportFormat) -> u64 {
     .max(1)
 }
 
-/// 统计写出字节并映射到 40–99% 进度；取消时以 Interrupted 中止写出。
+/// 统计写出字节并映射到 `start`–99% 进度；取消时以 Interrupted 中止写出。
 struct ProgressWriter<'a, W: Write> {
     inner: W,
     progress: &'a Progress,
     written: u64,
     estimate: u64,
+    start: f64,
 }
 
 impl<W: Write> Write for ProgressWriter<'_, W> {
@@ -202,8 +204,12 @@ impl<W: Write> Write for ProgressWriter<'_, W> {
                     "export cancelled",
                 ));
             }
-            self.progress
-                .report(0.4, 0.99, self.written.min(self.estimate), self.estimate);
+            self.progress.report(
+                self.start,
+                0.99,
+                self.written.min(self.estimate),
+                self.estimate,
+            );
         }
         Ok(count)
     }
@@ -476,17 +482,41 @@ fn base64(bytes: &[u8]) -> Vec<u8> {
 mod tests;
 
 /// 体网格导出 VTU（ASCII，原始节点与线性四面体单元，坐标为毫米），原子替换目标（task 021）。
-pub fn export_tet_mesh_vtu(mesh: &panta_mesh::TetMesh, path: &Path) -> Result<(), ExportError> {
+/// 按估算字节报告 0–99% 进度，原子替换后到 100%。
+/// 取消时删除临时文件并返回 [`ExportError::Cancelled`]，目标文件不变。
+pub fn export_tet_mesh_vtu(
+    mesh: &panta_mesh::TetMesh,
+    path: &Path,
+    progress: &Progress,
+) -> Result<(), ExportError> {
     let temporary = temporary_path(path);
     let result = (|| {
-        let mut writer = BufWriter::with_capacity(1 << 20, File::create(&temporary)?);
-        write_tet_mesh_vtu(mesh, &mut writer)?;
+        // ASCII：每节点约 3×20 字节，每单元连接/偏移/类型约 40 字节。
+        let estimate = mesh.nodes.len() as u64 * 60 + mesh.tets.len() as u64 * 40 + 512;
+        let mut writer = ProgressWriter {
+            inner: BufWriter::with_capacity(1 << 20, File::create(&temporary)?),
+            progress,
+            written: 0,
+            estimate,
+            start: 0.0,
+        };
+        write_tet_mesh_vtu(mesh, &mut writer).map_err(|error| match error {
+            ExportError::Io(io) if io.kind() == io::ErrorKind::Interrupted => {
+                ExportError::Cancelled
+            }
+            other => other,
+        })?;
+        if progress.is_cancelled() {
+            return Err(ExportError::Cancelled);
+        }
         let file = writer
+            .inner
             .into_inner()
             .map_err(io::IntoInnerError::into_error)?;
         file.sync_all()?;
         drop(file);
         fs::rename(&temporary, path)?;
+        progress.set_fraction(1.0);
         Ok(())
     })();
     if result.is_err() {

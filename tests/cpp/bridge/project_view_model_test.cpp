@@ -19,6 +19,7 @@
 #include <QtCore/qcontainerfwd.h>
 #include <QtTest/qtest.h>
 #include <array>
+#include <cmath>
 #include <functional>
 #include <gtest/gtest.h>
 #include <memory>
@@ -1208,4 +1209,92 @@ TEST(ProjectViewModelTest, ReportsProgressAndCancelsDiagnosticsAndExport) {
     EXPECT_TRUE(exported.takeFirst().at(1).toBool());
     EXPECT_TRUE(QFileInfo::exists(target));
     EXPECT_EQ(view_model.exportProgress(), -1.0);
+}
+
+TEST(ProjectViewModelTest, RunsVolumeQualitySectionAndVtuExportInTheBackground) {
+    QTemporaryDir fixture;
+    ASSERT_TRUE(fixture.isValid());
+    const QString sourcePath = QDir(fixture.path()).filePath(QStringLiteral("tet.vtu"));
+    QFile source(sourcePath);
+    ASSERT_TRUE(source.open(QIODevice::WriteOnly | QIODevice::Text));
+    ASSERT_GT(source.write(R"(<?xml version="1.0"?>
+<VTKFile type="UnstructuredGrid" version="0.1" byte_order="LittleEndian" header_type="UInt32">
+  <UnstructuredGrid>
+    <Piece NumberOfPoints="4" NumberOfCells="1">
+      <Points>
+        <DataArray type="Float32" NumberOfComponents="3" format="ascii">
+          0 0 0 1 0 0 0 1 0 0 0 1
+        </DataArray>
+      </Points>
+      <Cells>
+        <DataArray type="Int32" Name="connectivity" format="ascii">0 1 2 3</DataArray>
+        <DataArray type="Int32" Name="offsets" format="ascii">4</DataArray>
+        <DataArray type="UInt8" Name="types" format="ascii">10</DataArray>
+      </Cells>
+    </Piece>
+  </UnstructuredGrid>
+</VTKFile>
+)"),
+              0);
+    source.close();
+
+    HeldBackgroundViewModel view_model;
+    ASSERT_TRUE(finish_project_operation(
+        view_model, view_model.createProject(QStringLiteral("Volume"), fixture.path())));
+    ASSERT_TRUE(view_model.importStl(sourcePath, QStringLiteral("solid-3d"),
+                                     QStringLiteral("millimeters"), false));
+    ASSERT_TRUE(wait_for_active_mesh(view_model, view_model.activeDocumentId()));
+    ASSERT_TRUE(view_model.volumeAvailable());
+
+    // 体网格质量在后台诊断中计算并进入诊断面板数据。
+    QSignalSpy diagnosed(&view_model, &ProjectViewModel::diagnosticsFinished);
+    ASSERT_TRUE(view_model.beginDiagnoseActiveMesh());
+    ASSERT_TRUE(diagnosed.wait(10000));
+    EXPECT_TRUE(diagnosed.takeFirst().at(0).toBool());
+    const QVariantMap quality = view_model.meshQuality();
+    EXPECT_TRUE(quality.value(QStringLiteral("volumeAvailable")).toBool());
+    EXPECT_EQ(quality.value(QStringLiteral("tetCount")).toULongLong(), 1U);
+    EXPECT_EQ(quality.value(QStringLiteral("nodeCount")).toULongLong(), 4U);
+    EXPECT_GT(quality.value(QStringLiteral("minDihedralDegrees")).toDouble(), 0.0);
+
+    // 切面在后台计算；连续请求合并为最新意图。
+    view_model.holdWork = true;
+    QSignalSpy meshChanged(&view_model, &ProjectViewModel::meshChanged);
+    ASSERT_TRUE(view_model.setSection(true, 0, 0.5));
+    ASSERT_EQ(view_model.held.size(), 1U);
+    ASSERT_TRUE(view_model.setSection(true, 0, 0.25));
+    ASSERT_EQ(view_model.held.size(), 1U);
+    view_model.releaseFirst();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return view_model.held.size() == 1U; }, 10000));
+    EXPECT_EQ(meshChanged.count(), 0);
+    view_model.releaseFirst();
+    ASSERT_TRUE(meshChanged.wait(10000));
+    ASSERT_NE(view_model.mesh_snapshot(), nullptr);
+    const auto& vertices = view_model.mesh_snapshot()->vertices;
+    ASSERT_FALSE(vertices.empty());
+    EXPECT_EQ(vertices.size() % 3, 0U);
+    bool onPlane = false;
+    bool beyondPlane = false;
+    bool behindPlane = false;
+    for (const auto& vertex : vertices) {
+        onPlane = onPlane || std::abs(vertex[0] - 0.25) < 1e-9;
+        beyondPlane = beyondPlane || vertex[0] > 0.25 + 1e-9;
+        behindPlane = behindPlane || vertex[0] < 0.25 - 1e-9;
+    }
+    // 最新意图（x=0.25）生效：切口落在该平面，且只保留一侧。
+    EXPECT_TRUE(onPlane);
+    EXPECT_FALSE(beyondPlane && behindPlane);
+    view_model.holdWork = false;
+
+    // 关闭切面后 .vtu 导出在后台写四面体单元。
+    ASSERT_TRUE(view_model.setSection(false, 0, 0.25));
+    ASSERT_TRUE(wait_for_active_mesh(view_model, view_model.activeDocumentId()));
+    const QString target = QDir(fixture.path()).filePath(QStringLiteral("out.vtu"));
+    QSignalSpy exported(&view_model, &ProjectViewModel::exportFinished);
+    ASSERT_TRUE(view_model.beginExportActiveMeshUrl(QUrl::fromLocalFile(target)));
+    ASSERT_TRUE(exported.wait(10000));
+    EXPECT_TRUE(exported.takeFirst().at(1).toBool());
+    QFile written(target);
+    ASSERT_TRUE(written.open(QIODevice::ReadOnly));
+    EXPECT_TRUE(written.readAll().contains("NumberOfCells=\"1\""));
 }

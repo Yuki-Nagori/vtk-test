@@ -162,6 +162,26 @@ fn tet_volume_round_trips_through_vtu_and_rejects_other_cells()
     );
     let quadratic = legacy.replace("CELL_TYPES 1\n10", "CELL_TYPES 1\n12");
     assert!(parse_vtk_legacy_grid(quadratic.as_bytes()).is_err());
+    let directory = std::env::temp_dir().join(format!("panta-tet-export-{}", std::process::id()));
+    std::fs::create_dir_all(&directory)?;
+    let done = Progress::new();
+    let target = directory.join("ok.vtu");
+    export_tet_mesh_vtu(&mesh, &target, &done)?;
+    assert_eq!(done.fraction(), 1.0);
+    assert_eq!(parse_vtu_grid(&std::fs::read(&target)?)?.tets.len(), 2);
+    let cancelled = Progress::new();
+    cancelled.cancel();
+    let target = directory.join("cancelled.vtu");
+    assert!(matches!(
+        export_tet_mesh_vtu(&mesh, &target, &cancelled),
+        Err(ExportError::Cancelled)
+    ));
+    assert_eq!(
+        std::fs::read_dir(&directory)?.count(),
+        1,
+        "取消不留目标与 .partial"
+    );
+    std::fs::remove_dir_all(&directory)?;
     let polydata = "# vtk DataFile Version 4.2\nt\nASCII\nDATASET POLYDATA\nPOINTS 3 double\n0 0 0 1 0 0 0 1 0\nPOLYGONS 1 4\n3 0 1 2\n";
     assert!(parse_vtk_legacy_grid(polydata.as_bytes()).is_err());
     Ok(())

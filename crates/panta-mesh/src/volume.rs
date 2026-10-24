@@ -100,11 +100,13 @@ pub fn boundary_surface(mesh: &TetMesh) -> SurfaceMesh {
 
 /// 单平面切面显示：保留 `dot(p - origin, normal) <= 0` 一侧的外表面（逐三角形裁剪），
 /// 并加入与平面相交单元的截面多边形（法向沿 `normal`）。`normal` 不必单位化。
+/// 每 [`crate::PROGRESS_STRIDE`] 个单元报告进度并查询取消；取消返回 `Ok(None)`。
 pub fn section_surface(
     mesh: &TetMesh,
     origin: [f64; 3],
     normal: [f64; 3],
-) -> Result<SurfaceMesh, VolumeError> {
+    progress: &crate::Progress,
+) -> Result<Option<SurfaceMesh>, VolumeError> {
     let length = dot(normal, normal).sqrt();
     if !length.is_finite() || length == 0.0 || origin.iter().any(|value| !value.is_finite()) {
         return Err(VolumeError("section plane is degenerate".to_owned()));
@@ -123,7 +125,14 @@ pub fn section_surface(
         );
         fan(&polygon, &mut triangles);
     }
-    for tet in &mesh.tets {
+    let total = mesh.tets.len() as u64;
+    for (index, tet) in mesh.tets.iter().enumerate() {
+        if index.is_multiple_of(crate::PROGRESS_STRIDE) {
+            if progress.is_cancelled() {
+                return Ok(None);
+            }
+            progress.report(0.0, 1.0, index as u64, total);
+        }
         let kept = tet
             .nodes
             .iter()
@@ -149,7 +158,8 @@ pub fn section_surface(
         order_around(&mut points, normal);
         fan(&points, &mut triangles);
     }
-    Ok(SurfaceMesh { triangles })
+    progress.set_fraction(1.0);
+    Ok(Some(SurfaceMesh { triangles }))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -164,8 +174,8 @@ pub struct TetQuality {
     pub poor_count: usize,
 }
 
-/// 体网格质量统计；`on_progress` 收到 0..=1。
-pub fn tet_quality(mesh: &TetMesh, on_progress: &dyn Fn(f64)) -> TetQuality {
+/// 体网格质量统计；每 [`crate::PROGRESS_STRIDE`] 个单元报告进度并查询取消，取消返回 `None`。
+pub fn tet_quality(mesh: &TetMesh, progress: &crate::Progress) -> Option<TetQuality> {
     let mut quality = TetQuality {
         tet_count: mesh.tets.len(),
         min_dihedral_degrees: f64::INFINITY,
@@ -174,8 +184,14 @@ pub fn tet_quality(mesh: &TetMesh, on_progress: &dyn Fn(f64)) -> TetQuality {
         poor_count: 0,
     };
     let mut sum = 0.0;
-    on_progress(0.0);
+    let total = mesh.tets.len() as u64;
     for (index, tet) in mesh.tets.iter().enumerate() {
+        if index.is_multiple_of(crate::PROGRESS_STRIDE) {
+            if progress.is_cancelled() {
+                return None;
+            }
+            progress.report(0.0, 1.0, index as u64, total);
+        }
         let (dihedral, aspect) = single_quality(tet.nodes.map(|node| mesh.nodes[node as usize]));
         quality.min_dihedral_degrees = quality.min_dihedral_degrees.min(dihedral);
         quality.max_aspect_ratio = quality.max_aspect_ratio.max(aspect);
@@ -183,17 +199,14 @@ pub fn tet_quality(mesh: &TetMesh, on_progress: &dyn Fn(f64)) -> TetQuality {
         if dihedral < POOR_MIN_DIHEDRAL_DEGREES || aspect > POOR_ASPECT_RATIO {
             quality.poor_count += 1;
         }
-        if (index + 1).is_multiple_of(crate::PROGRESS_STRIDE) {
-            on_progress((index + 1) as f64 / mesh.tets.len() as f64);
-        }
     }
     if mesh.tets.is_empty() {
         quality.min_dihedral_degrees = 0.0;
     } else {
         quality.mean_aspect_ratio = sum / mesh.tets.len() as f64;
     }
-    on_progress(1.0);
-    quality
+    progress.set_fraction(1.0);
+    Some(quality)
 }
 
 /// 返回（最小二面角°，纵横比）；退化单元为（0，∞）。
@@ -363,11 +376,18 @@ mod tests {
     #[test]
     fn section_closes_the_kept_half() -> TestResult {
         let mesh = cube()?;
-        let section = section_surface(&mesh, [0.5, 0.5, 0.3], [0.0, 0.0, 1.0])?;
+        let progress = crate::Progress::new();
+        let section = section_surface(&mesh, [0.5, 0.5, 0.3], [0.0, 0.0, 1.0], &progress)?
+            .ok_or("section cancelled")?;
         assert!((signed_volume(&section) - 0.3).abs() < 1e-12);
-        let tilted = section_surface(&mesh, [0.5, 0.5, 0.5], [1.0, 1.0, 1.0])?;
+        assert_eq!(progress.fraction(), 1.0);
+        let tilted = section_surface(&mesh, [0.5, 0.5, 0.5], [1.0, 1.0, 1.0], &progress)?
+            .ok_or("section cancelled")?;
         assert!((signed_volume(&tilted) - 0.5).abs() < 1e-12);
-        assert!(section_surface(&mesh, [0.0; 3], [0.0; 3]).is_err());
+        assert!(section_surface(&mesh, [0.0; 3], [0.0; 3], &progress).is_err());
+        let cancelled = crate::Progress::new();
+        cancelled.cancel();
+        assert!(section_surface(&mesh, [0.5; 3], [0.0, 0.0, 1.0], &cancelled)?.is_none());
         Ok(())
     }
 
@@ -383,7 +403,9 @@ mod tests {
             ],
             vec![[0, 1, 2, 3]],
         )?;
-        let quality = tet_quality(&regular, &|_| {});
+        let progress = crate::Progress::new();
+        let quality = tet_quality(&regular, &progress).ok_or("quality cancelled")?;
+        assert_eq!(progress.fraction(), 1.0);
         assert!((quality.max_aspect_ratio - 1.0).abs() < 1e-9);
         assert!((quality.min_dihedral_degrees - 70.528_779_365_509_31).abs() < 1e-9);
         assert_eq!(quality.poor_count, 0);
@@ -396,7 +418,11 @@ mod tests {
             ],
             vec![[0, 1, 2, 3]],
         )?;
-        assert_eq!(tet_quality(&sliver, &|_| {}).poor_count, 1);
+        let sliver_quality = tet_quality(&sliver, &progress).ok_or("quality cancelled")?;
+        assert_eq!(sliver_quality.poor_count, 1);
+        let cancelled = crate::Progress::new();
+        cancelled.cancel();
+        assert!(tet_quality(&sliver, &cancelled).is_none());
         Ok(())
     }
 

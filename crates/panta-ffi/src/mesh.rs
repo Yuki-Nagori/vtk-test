@@ -86,7 +86,9 @@ pub(super) fn mesh_tet_quality(data: bridge::TetMeshData) -> bridge::VolumeInfoR
             return result;
         }
     };
-    let quality = panta_mesh::tet_quality(&mesh, &|_| {});
+    let Some(quality) = panta_mesh::tet_quality(&mesh, &panta_mesh::Progress::new()) else {
+        return result;
+    };
     result.available = true;
     result.node_count = mesh.nodes.len() as u64;
     result.tet_count = quality.tet_count as u64;
@@ -106,7 +108,11 @@ pub(super) fn mesh_tet_export_vtu(
         Ok(mesh) => mesh,
         Err(error) => return error,
     };
-    match panta_core::project::export_tet_mesh_vtu(&mesh, std::path::Path::new(path)) {
+    match panta_core::project::export_tet_mesh_vtu(
+        &mesh,
+        std::path::Path::new(path),
+        &panta_mesh::Progress::new(),
+    ) {
         Ok(()) => bridge::ProjectDiagnostic::default(),
         Err(error) => error.into(),
     }
