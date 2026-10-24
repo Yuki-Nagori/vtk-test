@@ -633,6 +633,7 @@ pub fn parse_openfoam_grid(snapshot: &[u8]) -> FormatResult<RawGrid> {
     let mut region_offsets = Vec::with_capacity(case.regions.len() + 1);
     let mut faces = CellFaces::default();
     let mut stream: Vec<u64> = Vec::new();
+    let mut face_quality = panta_mesh::FaceQuality::default();
     let total_points: usize = case.regions.iter().map(|region| region.points.len()).sum();
     for (region_index, region) in case.regions.iter().enumerate() {
         let node_offset =
@@ -644,6 +645,14 @@ pub fn parse_openfoam_grid(snapshot: &[u8]) -> FormatResult<RawGrid> {
         } else {
             region.name.clone()
         });
+        face_quality.merge(&panta_mesh::poly_mesh_face_quality(
+            &region.points,
+            &region.face_ends,
+            &region.face_nodes,
+            &region.owner,
+            &region.neighbour,
+            region.cell_count,
+        ));
         let (starts, cell_faces) = cell_faces(region)?;
         let fans = degenerate_face_fans(region);
         for cell in 0..region.cell_count {
@@ -704,6 +713,7 @@ pub fn parse_openfoam_grid(snapshot: &[u8]) -> FormatResult<RawGrid> {
     }
     region_offsets.push(grid.types.len());
     grid.boundary = Some(boundary);
+    grid.face_quality = Some(face_quality);
     grid.skipped_fields = case.skipped;
     merge_fields(&mut grid, &case.regions, &case.fields, &region_offsets);
     Ok(grid)

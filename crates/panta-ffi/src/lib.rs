@@ -270,6 +270,10 @@ pub mod bridge {
         pub cell_count: u64,
         /// 按单元类型的缩放雅可比摘要（中文，一类一行）。
         pub cell_quality_summary: String,
+        /// 面邻接质量摘要（task 032 PR 2，checkMesh 口径；中文多行）；空表示来源无面邻接。
+        pub face_quality_summary: String,
+        /// 存在严重非正交面、偏高偏斜面或劣质正交质量单元。
+        pub face_quality_warning: bool,
     }
 
     /// 网格质量诊断结果；失败 value 不可消费。

@@ -108,6 +108,39 @@ pub struct ImportRecord {
     /// 边界组名（按组下标，task 032；OpenFOAM patch，多区域为 `区域/patch`）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub boundary_group_names: Vec<String>,
+    /// 按来源面邻接计算的面质量（task 032 PR 2，checkMesh 口径；仅 OpenFOAM）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub face_quality: Option<FaceQualityRecord>,
+}
+
+/// 面邻接质量的工程记录（来自 [`panta_mesh::FaceQuality`]）：导入时一次算好，诊断面板直接展示。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FaceQualityRecord {
+    pub internal_faces: u64,
+    pub boundary_faces: u64,
+    pub max_non_orthogonality_degrees: f64,
+    pub mean_non_orthogonality_degrees: f64,
+    pub severe_non_orthogonal_faces: u64,
+    pub max_skewness: f64,
+    pub high_skew_faces: u64,
+    pub min_orthogonal_quality: f64,
+    pub poor_orthogonal_cells: u64,
+}
+
+impl From<&panta_mesh::FaceQuality> for FaceQualityRecord {
+    fn from(quality: &panta_mesh::FaceQuality) -> Self {
+        Self {
+            internal_faces: quality.internal_faces,
+            boundary_faces: quality.boundary_faces,
+            max_non_orthogonality_degrees: quality.max_non_orthogonality_degrees(),
+            mean_non_orthogonality_degrees: quality.mean_non_orthogonality_degrees(),
+            severe_non_orthogonal_faces: quality.severe_non_orthogonal_faces,
+            max_skewness: quality.max_skewness,
+            high_skew_faces: quality.high_skew_faces,
+            min_orthogonal_quality: quality.min_orthogonal_quality,
+            poor_orthogonal_cells: quality.poor_orthogonal_cells,
+        }
+    }
 }
 
 /// 生成体网格的工程记录信息；来源 STEP 不复制进工程，只记录名称与摘要。
@@ -595,6 +628,7 @@ impl PreparedStl {
             skipped_result_fields: Vec::new(),
             region_names: Vec::new(),
             boundary_group_names: Vec::new(),
+            face_quality: None,
         }
     }
 

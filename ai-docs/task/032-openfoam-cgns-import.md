@@ -1,7 +1,7 @@
 # 032 — OpenFOAM / CGNS 导入与基于面邻接的非正交性 / 偏斜度
 
 - 状态：in-progress
-- 阶段：PR 1（任务文档 + OpenFOAM polyMesh / 结果场 / 多区域 / patch + 米单位）实施中；PR 2（非正交性 / 偏斜度）、PR 3（CGNS，经纯 Rust HDF5）待实施
+- 阶段：PR 1（任务文档 + OpenFOAM polyMesh / 结果场 / 多区域 / patch + 米单位）已合并；PR 2（非正交性 / 偏斜度）实施中；PR 3（CGNS，经纯 Rust HDF5）待实施
 - 依赖：[029](029-result-fields.md)、[030](030-mixed-cells.md)、[031](031-polyhedron-cells.md)
 - 优先级：P1
 - 负责人：Grok Bot
@@ -118,6 +118,10 @@ PR 3（CGNS）：见上表。
 | 日期 | 环境 / 命令或场景 | 预期 | 实际结果 / 证据 |
 |---|---|---|---|
 | 2026-10-24 | PR 1：`cargo test -p panta-io openfoam`（12）、`cargo test -p panta-core openfoam` | ascii / binary / gz 多面体 / 多区域 / 表面 / 坏输入 / 源变化 | ascii 12 hex、体积 1e-4 m³、3 组（12 / 28 / 24 三角形）；binary 与 ascii 一致；poly 160 点、12 hex + 36 多面体、体积 1e-4（与 checkMesh 一致）；multi 区域 [fluid, solid]，T 范围 300–400 K、单位 K；张量场记入 skipped；缺 owner / 坏 owner / decomposed 均明确报错；改 `0.01/p` 后提交报「源已变化」 |
+| 2026-10-24 | PR 1：`cargo format`、`cargo quality`、`cargo test --locked --workspace`（CTest 69/69）、offscreen 启动 8 s | 全部通过 | 通过；启动 exit 124（超时即正常） |
+| 2026-10-24 | PR 1：CI 40083065576 与 nightly 40083070826（Windows / macOS）（本行由 PR 2 补记） | 全绿 | 全绿；squash 合并为 main 7a52c06（2026-10-24 17:54 UTC+8） |
+| 2026-10-24 | PR 2：`cargo test -p panta-io face_quality`，夹具 `skew`（扰动 4×3×2 blockMesh）、`skewdual`（其 polyDualMesh）、`poly` 与 OpenFOAM v1912 checkMesh 对照 | 内部面数一致，最大 / 平均非正交角与最大偏斜度相对误差 ≤ 1e-6 | skew：46 内部面，32.663972° / 21.620442°，偏斜 1.4240861；skewdual：133 内部面，41.626226° / 21.297343°，偏斜 2.4449241；poly：104 内部面，0° / 0°，偏斜 1.0000001——全部在 1e-6 内一致 |
+| 2026-10-24 | PR 2：`cargo format`、`cargo quality`、`cargo test --locked --workspace`（CTest 69/69）、offscreen 启动 8 s；`panta-ffi` 诊断测试（带 `face_quality` 时摘要与结论）、`panta-core` 多区域算例记录 `face_quality` | 全部通过 | 通过；启动 exit 124（超时即正常） |
 
 ## 风险与回退
 
@@ -138,6 +142,13 @@ PR 3（CGNS）：见上表。
   - 单位新增「米」（`meters`，×1000 到毫米）；OpenFOAM 选中后对话框默认「米 + 实体 3D」，用户可改。记录尺寸沿用来源单位，与其他格式一致。显示名取算例目录名。
   - ImportRecord 新增可选 `region_names` / `boundary_group_names`（serde default、空时不写），记录版本不变，旧工程可读。
   - 动画序列打开对话框与导出格式不加 OpenFOAM（时间序列归后续「播放 + 时序结果场」task）。
+
+- 2026-10-24（PR 2）：
+  - 质量在导入时按 OpenFOAM 原生 owner / neighbour 与原始多边形面计算（逐区域、节点偏移前），不用导入侧改写后的三角形子面，使面数与平均值和 checkMesh 一致；结果跨区域合并（保留余弦和与计数，平均值按全部内部面计）。
+  - 偏斜度边界面归一化系数取 0.4（内部面 0.2），与 checkMesh 的 boundaryFaceSkewness 一致；夹具最大偏斜度逐位对上验证了内部面与边界面两种口径。
+  - **保守决策**：只给全网格汇总（最大 / 平均 / 超阈值计数），不做逐单元「所属面最大值」字段与着色，也不为 VTU / VTK 等来源按面节点哈希建邻接——两者都需要新增持久化数组或在诊断时重建邻接（大网格内存与时间成本），列为候选后续 task，未实施。
+  - **保守决策**：结果存入 ImportRecord 可选字段 `face_quality`（serde default，记录版本不变），诊断面板直接读取、不重算；旧工程与非 OpenFOAM 来源不显示该行。严重非正交 / 偏高偏斜 / 劣质正交质量任一计数非 0 时质量结论为「存在问题」。
+  - 正交质量（Fluent 定义）checkMesh 不报告，无法交叉核对；`poly` 对偶网格的边界单元约 0.148（逐单元正交质量同一网格最小 0.100），量级一致，判断为对偶网格边界单元的真实特征。测试只断言其落在 (0, 1]。
 
 ## 完成摘要
 

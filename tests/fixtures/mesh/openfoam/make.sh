@@ -47,3 +47,9 @@ rm -rf binary && cp -r ascii binary && mv binary/ascii.foam binary/binary.foam
 # 多面体：polyDualMesh
 mkcase poly 3 3 2
 (cd poly && blockMesh >log.bm && polyDualMesh 80 -overwrite >log.dual && icoFoam >log.ico)
+# 非正交 / 偏斜（032 PR 2）：斜六面体块 + 渐变 + 确定性扰动，及其对偶网格
+mkcase skew 4 3 2
+sed -i 's/^vertices .*/vertices ((0 0 0) (1 0 0) (1.2 1 0) (0.3 1 0) (0.1 0 0.4) (1 0.1 0.5) (1.3 1.1 0.6) (0.4 1 0.4));/; s/(4 3 2) simpleGrading (1 1 1)/(4 3 2) simpleGrading (3 1 0.5)/' skew/system/blockMeshDict
+(cd skew && blockMesh >log.bm && python3 ../perturb.py constant/polyMesh/points 0.006 && checkMesh >log.check)
+rm -rf skewdual && cp -r skew skewdual && mv skewdual/skew.foam skewdual/skewdual.foam
+(cd skewdual && polyDualMesh 80 -overwrite >log.dual && checkMesh >log.check)

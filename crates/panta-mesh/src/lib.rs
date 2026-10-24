@@ -12,6 +12,7 @@ mod cell_quality;
 mod cells;
 pub mod chunked;
 mod diagnostics;
+mod face_quality;
 mod field_section;
 mod lod;
 #[cfg(test)]
@@ -43,6 +44,9 @@ pub use cells::{
 pub use diagnostics::{
     DEFAULT_RELATIVE_WELD_TOLERANCE, DiagnosticError, DiagnosticOptions, SurfaceDiagnostics,
     diagnose_surface, diagnose_surface_with_progress,
+};
+pub use face_quality::{
+    FaceQuality, HIGH_SKEWNESS, SEVERE_NON_ORTHOGONALITY_DEGREES, poly_mesh_face_quality,
 };
 pub use field_section::{FieldComponent, FieldSection, section_surface_field};
 pub use lod::{DEFAULT_LOD_TRIANGLE_BUDGET, SurfaceLod, build_surface_lod, simplify_surface};

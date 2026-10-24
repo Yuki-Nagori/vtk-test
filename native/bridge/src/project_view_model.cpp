@@ -516,6 +516,10 @@ bool ProjectViewModel::beginDiagnoseActiveMesh() {
                     m_meshQuality.insert(QStringLiteral("cellCount"), count(value.cell_count));
                     m_meshQuality.insert(QStringLiteral("cellQualitySummary"),
                                          QString::fromUtf8(value.cell_quality_summary));
+                    m_meshQuality.insert(QStringLiteral("faceQualitySummary"),
+                                         QString::fromUtf8(value.face_quality_summary));
+                    m_meshQuality.insert(QStringLiteral("faceQualityWarning"),
+                                         value.face_quality_warning);
                 }
             } else if (report) {
                 m_meshQuality.clear();

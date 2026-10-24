@@ -87,6 +87,31 @@ pub(crate) fn cell_quality_summary(quality: &panta_mesh::TetQuality) -> String {
         .join("\n")
 }
 
+/// 面邻接质量（task 032 PR 2）：非正交角 / 偏斜度按 checkMesh 口径，正交质量按 Fluent 定义。
+pub(crate) fn face_quality_summary(quality: &panta_core::project::FaceQualityRecord) -> String {
+    format!(
+        "内部面 {} / 边界面 {}\n非正交角 最大 {:.2}° / 平均 {:.2}°，超过 {:.0}° {}\n偏斜度 最大 {:.3}，超过 {:.0} {}\n正交质量 最小 {:.3}，低于 {:.2} {}",
+        quality.internal_faces,
+        quality.boundary_faces,
+        quality.max_non_orthogonality_degrees,
+        quality.mean_non_orthogonality_degrees,
+        panta_mesh::SEVERE_NON_ORTHOGONALITY_DEGREES,
+        quality.severe_non_orthogonal_faces,
+        quality.max_skewness,
+        panta_mesh::HIGH_SKEWNESS,
+        quality.high_skew_faces,
+        quality.min_orthogonal_quality,
+        panta_mesh::POOR_ORTHOGONAL_QUALITY,
+        quality.poor_orthogonal_cells
+    )
+}
+
+pub(crate) fn face_quality_warning(quality: &panta_core::project::FaceQualityRecord) -> bool {
+    quality.severe_non_orthogonal_faces > 0
+        || quality.high_skew_faces > 0
+        || quality.poor_orthogonal_cells > 0
+}
+
 /// 结果场摘要（task 029）：GUI 线程同步调用，只读 sidecar 头部与字段表（KiB 级）。
 pub(super) fn project_service_result_fields(
     service: &ProjectService,
