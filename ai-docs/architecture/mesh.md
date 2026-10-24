@@ -33,7 +33,7 @@ Rust 拥有资产身份、来源 revision、转换 / 网格任务策略、领域
 
 Netgen API 依据：[v6.2.2604 `nglib.h`](https://github.com/NGSolve/netgen/blob/v6.2.2604/nglib/nglib.h)。最终能否对特定输入直接体网格化，仍由未来网格任务的封闭性、方向、容差及失败诊断测试决定。
 
-工程 schema 4 在 `.panta` 中保存 `mesh_assets` 索引，Mesh payload 以工程内相对路径旁置，打开工程不立即读取网格。`crates/panta-mesh/src/asset/mod.rs` 定义 sidecar v4（task 030；块布局与 v3 相同，只新增混合单元流，v3 继续可读）：56 B 头部（类型、毫米单位、目录 SHA-256）后接分块目录，数据块按 64 B 对齐、每块约 4 MiB 未压缩记录、独立 Zstandard 压缩（不可压缩时原样保存）并带块级 SHA-256；资产摘要为目录摘要。目录条目为 LOD 层级、时间步和块内过滤器预留字段，v3 / v4 要求为 0、读取端显式拒绝非 0 值。`MeshAssetReader` 先校验头部与目录，再按批读取数据块并多线程解码，批次间响应取消。v2（单 Zstandard 流 + 整段摘要）只读兼容见 [task 011](../task/011-mesh-asset-chunked-storage.md) 与清理任务 [012](../task/012-mesh-asset-v2-removal.md)。解码验证版本、摘要与范围后构造领域 Mesh；路径授权由工程服务负责。SurfaceMesh 保留完整三角面顶点语义，新导入不复制来源 STL，旧 schema 不自动迁移。
+工程 schema 4 在 `.panta` 中保存 `mesh_assets` 索引，Mesh payload 以工程内相对路径旁置，打开工程不立即读取网格。`crates/panta-mesh/src/asset/mod.rs` 定义 sidecar v5（task 031 新增多面体面流流；v4 为 task 030 的混合单元流；块布局与 v3 相同，v3 / v4 继续可读）：56 B 头部（类型、毫米单位、目录 SHA-256）后接分块目录，数据块按 64 B 对齐、每块约 4 MiB 未压缩记录、独立 Zstandard 压缩（不可压缩时原样保存）并带块级 SHA-256；资产摘要为目录摘要。目录条目为 LOD 层级、时间步和块内过滤器预留字段，v3–v5 要求为 0、读取端显式拒绝非 0 值。`MeshAssetReader` 先校验头部与目录，再按批读取数据块并多线程解码，批次间响应取消。v2（单 Zstandard 流 + 整段摘要）只读兼容见 [task 011](../task/011-mesh-asset-chunked-storage.md) 与清理任务 [012](../task/012-mesh-asset-v2-removal.md)。解码验证版本、摘要与范围后构造领域 Mesh；路径授权由工程服务负责。SurfaceMesh 保留完整三角面顶点语义，新导入不复制来源 STL，旧 schema 不自动迁移。
 
 ## 原生混合单元（task 030）
 
@@ -49,6 +49,16 @@ Netgen API 依据：[v6.2.2604 `nglib.h`](https://github.com/NGSolve/netgen/blob
 - 单元对应：单元场长度、场剖面单元值、外表面所属单元、校验消息（`cell N (类型) sub-tetrahedron K ...`）都按原始单元号；拆分四面体只是内部计算单位。
 - 质量（030 PR 2）：每类单元给 Verdict 风格缩放雅可比（tet `√2·6V/max 角点边长积`；hex 8 角点 + 中心主轴；wedge 6 角点 × `2/√3`；pyramid 4 个底角 × `√2`；理想单元为 1，≤ 0 为反转或退化），统计最小值、平均值与低于 0.2 的劣质数。最小二面角与长宽比只统计原生四面体（拆分出的四面体不计）。劣质单元总数 = 四面体按二面角 / 长宽比规则 + 其他类型按缩放雅可比规则。驻留、流式（逐原始单元）与分块路径共用同一累加器。
 - 分块（PR 3，`.pchunk` v3）：混合资产同样生成派生分块文件。k-d 划分以原始单元为单位（按单元节点质心），一个单元的全部拆分四面体落在同一块；块表与块头加原始单元数。块内 `global_cells` 记每个拆分四面体所属的原始单元 ID（非降序），非纯四面体块在单元段末尾追加块内单元布局（u32 单元数、每单元 1 B VTK 编码、块内局部节点连接；纯四面体块写 0）。单元场的块内值、外表面值与场范围都按原始单元；逐类型质量在块内按原始单元计算。v2 文件因版本不符被拒绝，应用派生缓存自动重建；复用时另核对原始单元数。构建内存估算对混合资产另加每拆分四面体 4 B、每原始单元 41 B。流式写出 `write_volume_asset_streaming` 在 `cells != tets` 时写 `VolumeCells` / `VolumeCellSummary`，逐条校验区域、节点范围与可拆分性，并核对拆分四面体总数。
+
+### 多面体单元（task 031）
+
+- 布局：`CellType::Polyhedron`（VTK 42）在 `CellLayout.connectivity` 中占 `[apex, nFaces, n0, ids…, n1, ids…]`，即 VTK 旧版序列化面流前加辅助中心节点号；`offsets` 仍是逐单元 n + 1 偏移，`cell_offsets(types, connectivity)` 按面流自描述长度计算。面须闭合、一致定向（每条有向边恰与反向边配对一次），整体内向的面流在构建时翻转。
+- 拆分：每个面从最小全局节点号扇形三角化（四边形面与 030 的最小下标对角线一致，因此与相邻 hex / wedge / pyramid 共形），每个三角形与中心节点组成四面体 `[m, b, a, apex]`。中心节点是三角化表面的体积质心，作为普通节点追加在节点数组末尾：第 k 个多面体的中心节点号 = 源节点数 + k，`TetMesh::source_node_count()` / `VolumeStreamCounts::source_nodes()` = 节点数 − 多面体数。凹单元（存在非正体积拆分四面体）由校验拒绝。
+- 节点场：长度按源节点计；中心节点的值取所属单元不重复节点的算术平均（线性场在凸单元内精确再现）。外表面不含中心节点。
+- 资产 v5：新写一律 v5，v3 / v4 继续可读。多面体的 `VolumeCells` 记录为 `[42, region, apex, 面流字数, u32::MAX × 6]`；面流（去掉 apex 的 `[nFaces, n0, ids…]`）写入新流 `VolumePolyFaces`（流 10，u32 记录），第 i 个面流块存第 i 个单元块中多面体的面流（按单元顺序，可为 0 条记录），任一单元块可独立解码。目录要求流号非降序，面流块写在 `VolumeCellSummary` 之后。v5 的 `VolumeCellSummary` 有 2 条记录（拆分四面体数、多面体数），v4 为 1 条。含多面体的资产单元块固定 16384 单元。`VolumeAssetChunks::visit_cells` 以 `CellBlock`（类型、区域、扁平连接、偏移）按块给出原始单元。
+- 质量：ParaView / Verdict 的 Mesh Quality 不支持多面体。逐单元计算 Fluent 定义的正交质量（各面面积向量与“单元中心→面中心”向量夹角余弦的最小值，不含邻接项），劣质阈值 0.15；邻接相关的非正交性 / 偏斜度留待 OpenFOAM 导入用 owner / neighbour 计算。
+- 过渡限制（031 PR 1）：`.pchunk` 构建、VTU 导出与 VTU / 旧版 VTK 导入暂时拒绝多面体并给出明确错误，分别在 PR 2 / PR 3 支持。
+
 
 ## 生成流程
 

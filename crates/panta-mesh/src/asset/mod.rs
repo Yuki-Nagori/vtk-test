@@ -2,7 +2,9 @@
 //!
 //! v4（task 030）在 v3 容器上为体网格增加原生混合单元流 `VolumeCells` 与
 //! `VolumeCellSummary`；纯四面体与表面资产的块布局与 v3 相同，仅头部版本号不同。
-//! v3 资产继续只读；结果场 sidecar 的容器头部版本保持 3。
+//! v5（task 031）增加多面体：`VolumeCells` 记录可为多面体（中心节点 + 面流字数），
+//! 面流放在与单元块一一配对的 `VolumePolyFaces` 中，`VolumeCellSummary` 增加多面体数。
+//! v3 / v4 资产继续只读；结果场 sidecar 的容器头部版本保持 3。
 //!
 //! 容器布局（全部小端）：
 //!
@@ -25,7 +27,7 @@ pub use result::{
     ResultSet, encode_result_asset,
 };
 pub use stream::{
-    CellRecord, SurfaceAssetChunks, Triangle, VolumeAssetChunks, VolumeSource, VolumeStreamCounts,
+    SurfaceAssetChunks, Triangle, VolumeAssetChunks, VolumeSource, VolumeStreamCounts,
     write_surface_asset_streaming, write_volume_asset_streaming,
 };
 
@@ -38,9 +40,14 @@ use std::io::{self, Read};
 use std::ops::Range;
 
 const MAGIC: &[u8; 8] = b"PNTMESH\0";
-pub const MESH_ASSET_FORMAT_VERSION: u32 = 4;
-/// 上一版网格容器：仍可读取，不含混合单元流。
+pub const MESH_ASSET_FORMAT_VERSION: u32 = 5;
+/// 上一版网格容器（task 030）：仍可读取，混合单元不含多面体。
+const V4: u32 = 4;
+/// 更早的网格容器：仍可读取，不含混合单元流。
 const V3: u32 = 3;
+/// 含多面体时每个单元块的单元数（task 031）：单元块约 640 KiB，配对面流块一般为数 MiB；
+/// 单元块与面流块按下标配对，因此两者共用同一组区间。
+const POLY_CELLS_PER_CHUNK: usize = 16 * 1024;
 /// 结果场 sidecar 的容器头部版本（task 029 起固定，不随网格格式升级）。
 const RESULT_CONTAINER_VERSION: u32 = V3;
 const HEADER_SIZE: usize = 56;
@@ -82,9 +89,13 @@ enum Stream {
     ResultValues = 7,
     /// 原生单元（v4，task 030）：VTK 类型码 u32 + region u32 + 8 × u32 节点，
     /// 未用节点槽为 `u32::MAX`。混合网格以此代替 `VolumeTets`。
+    /// 多面体（v5，task 031）的 8 个槽为 `[中心节点, 面流字数, MAX × 6]`。
     VolumeCells = 8,
-    /// 混合单元摘要（v4）：拆分后的四面体数 u64，恰好一条记录。
+    /// 混合单元摘要：拆分后的四面体数 u64（v4 一条记录）；v5 两条：四面体数、多面体数。
     VolumeCellSummary = 9,
+    /// 多面体面流（v5，task 031）：u32 字，`nFaces, (n, ids…)…` 依单元顺序拼接；
+    /// 第 i 块对应第 i 个 `VolumeCells` 块（可为 0 条记录）。
+    VolumePolyFaces = 10,
 }
 
 impl Stream {
@@ -99,6 +110,7 @@ impl Stream {
             7 => Self::ResultValues,
             8 => Self::VolumeCells,
             9 => Self::VolumeCellSummary,
+            10 => Self::VolumePolyFaces,
             _ => return None,
         })
     }
@@ -114,6 +126,7 @@ impl Stream {
             Self::ResultValues => 8,
             Self::VolumeCells => 40,
             Self::VolumeCellSummary => 8,
+            Self::VolumePolyFaces => 4,
         }
     }
 
@@ -204,7 +217,7 @@ pub fn encode_mesh_asset(mesh: &MeshAsset) -> Result<(Vec<u8>, String), MeshAsse
     }
 }
 
-/// 以 v4 分块布局编码；各块并行重排、压缩与哈希，返回完整文件字节与资产摘要。
+/// 以 v5 分块布局编码；各块并行重排、压缩与哈希，返回完整文件字节与资产摘要。
 pub fn encode_mesh_asset_ref(mesh: MeshAssetRef<'_>) -> Result<(Vec<u8>, String), MeshAssetError> {
     match mesh {
         MeshAssetRef::Surface(mesh) => {
@@ -239,8 +252,17 @@ pub fn encode_mesh_asset_ref(mesh: MeshAssetRef<'_>) -> Result<(Vec<u8>, String)
             }
             jobs.extend(chunk_jobs(Stream::VolumeBoundary, mesh.boundary.len()));
             if let Some(cells) = &mesh.cells {
-                jobs.extend(chunk_jobs(Stream::VolumeCells, cells.cell_count()));
-                jobs.push((Stream::VolumeCellSummary, 0..1));
+                let polyhedra = cells.polyhedron_count() > 0;
+                let cell_jobs = cell_chunk_jobs(cells.cell_count(), polyhedra);
+                jobs.extend(cell_jobs.iter().cloned());
+                jobs.push((Stream::VolumeCellSummary, 0..2));
+                if polyhedra {
+                    jobs.extend(
+                        cell_jobs
+                            .into_iter()
+                            .map(|(_, range)| (Stream::VolumePolyFaces, range)),
+                    );
+                }
             }
             let chunks = encode_chunks(&jobs, |job, raw| {
                 encode_volume_records(mesh, job, raw);
@@ -255,6 +277,22 @@ fn chunk_jobs(stream: Stream, records: usize) -> Vec<(Stream, Range<usize>)> {
     (0..records)
         .step_by(step)
         .map(|start| (stream, start..(start + step).min(records)))
+        .collect()
+}
+
+/// 单元块区间：含多面体时每块 [`POLY_CELLS_PER_CHUNK`] 个单元，否则按 4 MiB 目标。
+fn cell_chunk_jobs(cells: usize, polyhedra: bool) -> Vec<(Stream, Range<usize>)> {
+    if !polyhedra {
+        return chunk_jobs(Stream::VolumeCells, cells);
+    }
+    (0..cells)
+        .step_by(POLY_CELLS_PER_CHUNK)
+        .map(|start| {
+            (
+                Stream::VolumeCells,
+                start..(start + POLY_CELLS_PER_CHUNK).min(cells),
+            )
+        })
         .collect()
 }
 
@@ -295,41 +333,74 @@ fn encode_volume_records(
                 let first = cells
                     .tet_cells
                     .partition_point(|&owner| (owner as usize) < cell);
-                encode_cell_record(
+                let encoded = encode_cell_record(
                     cells.types[cell],
                     mesh.tets[first].region,
                     cells.cell_nodes(cell),
                     raw,
                 );
+                if encoded.is_none() {
+                    raw.clear();
+                    return;
+                }
+            }
+        }
+        Stream::VolumePolyFaces => {
+            let Some(cells) = &mesh.cells else { return };
+            for cell in range {
+                if cells.types[cell] == CellType::Polyhedron {
+                    for word in &cells.cell_nodes(cell)[1..] {
+                        raw.extend_from_slice(&word.to_le_bytes());
+                    }
+                }
             }
         }
         Stream::VolumeCellSummary => {
             raw.extend_from_slice(&(mesh.tets.len() as u64).to_le_bytes());
+            let polyhedra = mesh
+                .cells
+                .as_ref()
+                .map_or(0, |cells| cells.polyhedron_count());
+            raw.extend_from_slice(&(polyhedra as u64).to_le_bytes());
         }
         Stream::SurfaceTriangles | Stream::ResultTable | Stream::ResultValues => {}
     }
 }
 
-/// 40 B 原生单元记录，见 [`Stream::VolumeCells`]。
-pub(super) fn encode_cell_record(kind: CellType, region: u32, nodes: &[u32], raw: &mut Vec<u8>) {
+/// 40 B 原生单元记录，见 [`Stream::VolumeCells`]。多面体 `nodes` 为规范面流
+/// `[apex, nFaces, …]`，记录只写中心节点与面流字数（面流本身写入 `VolumePolyFaces`）；
+/// 固定节点类型的节点数超过 8 或面流字数超出 u32 时返回 `None`（不写入）。
+pub(super) fn encode_cell_record(
+    kind: CellType,
+    region: u32,
+    nodes: &[u32],
+    raw: &mut Vec<u8>,
+) -> Option<()> {
+    let mut slots = [u32::MAX; 8];
+    if kind == CellType::Polyhedron {
+        slots[0] = *nodes.first()?;
+        slots[1] = u32::try_from(nodes.len() - 1).ok()?;
+    } else {
+        slots.get_mut(..nodes.len())?.copy_from_slice(nodes);
+    }
     raw.extend_from_slice(&u32::from(kind.vtk_code()).to_le_bytes());
     raw.extend_from_slice(&region.to_le_bytes());
-    for slot in 0..8 {
-        let node = nodes.get(slot).copied().unwrap_or(u32::MAX);
+    for node in slots {
         raw.extend_from_slice(&node.to_le_bytes());
     }
+    Some(())
 }
 
-/// 解析 40 B 原生单元记录：返回类型、区域与节点（截取到类型节点数）。
+/// 解析 40 B 原生单元记录：返回类型、区域与 8 个槽；已用槽数之后必须为 `u32::MAX`
+/// （多面体用 2 个槽：中心节点与面流字数）。
 pub(super) fn decode_cell_record(record: &[u8; 40]) -> Option<(CellType, u32, [u32; 8])> {
     let (values, _) = record.as_chunks::<4>();
     let code = u32::from_le_bytes(values[0]);
     let kind = u8::try_from(code).ok().and_then(CellType::from_vtk)?;
     let region = u32::from_le_bytes(values[1]);
     let nodes: [u32; 8] = std::array::from_fn(|slot| u32::from_le_bytes(values[2 + slot]));
-    let padding_ok = nodes[kind.node_count()..]
-        .iter()
-        .all(|&node| node == u32::MAX);
+    let used = kind.fixed_node_count().unwrap_or(2);
+    let padding_ok = nodes[used..].iter().all(|&node| node == u32::MAX);
     padding_ok.then_some((kind, region, nodes))
 }
 
@@ -351,17 +422,26 @@ where
     let fill = &fill;
     parallel_map(jobs.len(), |index| {
         let (stream, range) = jobs[index].clone();
-        let record_count = range.len();
-        let raw_len = record_count
+        // 多面体面流块的区间是单元区间，记录（u32 字）数在填充后才知道。
+        let variable = stream == Stream::VolumePolyFaces;
+        let expected = range
+            .len()
             .checked_mul(stream.record_bytes())
             .ok_or(MeshAssetError::SizeOverflow)?;
         let mut raw = Vec::new();
-        raw.try_reserve_exact(raw_len)
-            .map_err(|_| MeshAssetError::AllocationFailed)?;
+        if !variable {
+            raw.try_reserve_exact(expected)
+                .map_err(|_| MeshAssetError::AllocationFailed)?;
+        }
         fill((stream, range), &mut raw);
-        if raw.len() != raw_len {
+        if variable {
+            if raw.len() > CHUNK_RAW_LIMIT_BYTES {
+                return Err(MeshAssetError::SizeOverflow);
+            }
+        } else if raw.len() != expected {
             return Err(MeshAssetError::InvalidMesh);
         }
+        let record_count = raw.len() / stream.record_bytes();
         // 未焊接三角形中相邻面共享的顶点是逐字节重复，直接压缩即可命中；
         // 实测字节平面重排会打断这些重复，使体积约翻倍，因此不做过滤。
         let compressed = zstd::bulk::compress(&raw, ZSTD_LEVEL).map_err(map_codec_error)?;
@@ -457,7 +537,7 @@ fn map_codec_error(error: io::Error) -> MeshAssetError {
 /// 工程清单可登记的 sidecar 版本：当前写入版本，以及仍可只读的旧版本。
 pub fn is_readable_mesh_asset_version(version: u32) -> bool {
     // COMPAT(task 011; remove-task 012): 清单中 v2 资产仍可激活，见 v2.rs。
-    version == MESH_ASSET_FORMAT_VERSION || version == V3 || version == v2::VERSION
+    version == MESH_ASSET_FORMAT_VERSION || version == V4 || version == V3 || version == v2::VERSION
 }
 
 /// 从完整固定长度头部验证格式并返回总字节长度，以便流式读取端先拒绝异常文件。
@@ -486,7 +566,7 @@ fn container_encoded_len(header: &[u8], result: bool) -> Result<usize, MeshAsset
         return Err(MeshAssetError::UnsupportedUnits(header[13]));
     }
     match version {
-        MESH_ASSET_FORMAT_VERSION | V3 => {
+        MESH_ASSET_FORMAT_VERSION | V4 | V3 => {
             if header[14] != 0 || header[15] != 0 {
                 return Err(MeshAssetError::InvalidHeader);
             }
@@ -544,8 +624,9 @@ fn parse_layout(header: &[u8], toc: &[u8], total_len: u64) -> Result<Layout, Mes
             SURFACE_KIND => stream == Stream::SurfaceTriangles,
             TET_KIND => {
                 (Stream::VolumeCounts..=Stream::VolumeBoundary).contains(&stream)
-                    || (version >= MESH_ASSET_FORMAT_VERSION
+                    || (version >= V4
                         && matches!(stream, Stream::VolumeCells | Stream::VolumeCellSummary))
+                    || (version >= MESH_ASSET_FORMAT_VERSION && stream == Stream::VolumePolyFaces)
             }
             RESULT_KIND => matches!(stream, Stream::ResultTable | Stream::ResultValues),
             _ => false,
@@ -572,7 +653,8 @@ fn parse_layout(header: &[u8], toc: &[u8], total_len: u64) -> Result<Layout, Mes
         let end = offset
             .checked_add(stored_len)
             .ok_or(MeshAssetError::InvalidLength)?;
-        if record_count == 0
+        // 面流块与单元块按下标配对，不含多面体的单元块对应 0 条记录的面流块。
+        if (record_count == 0 && stream != Stream::VolumePolyFaces)
             || raw_len > CHUNK_RAW_LIMIT_BYTES
             || !offset.is_multiple_of(CHUNK_ALIGNMENT)
             || offset < cursor
@@ -605,15 +687,26 @@ fn parse_layout(header: &[u8], toc: &[u8], total_len: u64) -> Result<Layout, Mes
         if counts != 1 {
             return Err(MeshAssetError::UnsupportedLayout);
         }
-        // 纯四面体与混合单元二选一：混合资产不含四面体流，且摘要恰好一条记录。
+        // 纯四面体与混合单元二选一：混合资产不含四面体流，摘要 v4 一条、v5 两条记录；
+        // 多面体面流块数与单元块数相同（按下标配对）。
         let has = |stream: Stream| chunks.iter().any(|chunk| chunk.stream == stream);
+        let count = |stream: Stream| chunks.iter().filter(|chunk| chunk.stream == stream).count();
         let summary = chunks
             .iter()
             .filter(|chunk| chunk.stream == Stream::VolumeCellSummary)
             .map(|chunk| chunk.record_count)
             .sum::<usize>();
+        let summary_records = if version >= MESH_ASSET_FORMAT_VERSION {
+            2
+        } else {
+            1
+        };
+        let faces = count(Stream::VolumePolyFaces);
         let mixed = has(Stream::VolumeCells);
-        if (mixed && (has(Stream::VolumeTets) || summary != 1)) || (!mixed && summary != 0) {
+        if (mixed && (has(Stream::VolumeTets) || summary != summary_records))
+            || (!mixed && (summary != 0 || faces != 0))
+            || (faces != 0 && faces != count(Stream::VolumeCells))
+        {
             return Err(MeshAssetError::UnsupportedLayout);
         }
     }
@@ -820,7 +913,7 @@ enum DecodeSink {
     },
     Volume {
         /// 按 `stream - VolumeCounts` 下标收集的原始记录（结果场流位置不使用）。
-        raw: [Vec<u8>; 8],
+        raw: [Vec<u8>; 9],
     },
 }
 
@@ -942,8 +1035,18 @@ fn decode_surface_records(
     Ok(())
 }
 
-fn decode_volume(raw: &[Vec<u8>; 8]) -> Result<TetMesh, MeshAssetError> {
-    let [counts, nodes, tets, boundary, _, _, cells, summary] = raw;
+fn decode_volume(raw: &[Vec<u8>; 9]) -> Result<TetMesh, MeshAssetError> {
+    let [
+        counts,
+        nodes,
+        tets,
+        boundary,
+        _,
+        _,
+        cells,
+        summary,
+        poly_faces,
+    ] = raw;
     let (counts, _) = counts.as_chunks::<4>();
     let [region_count, boundary_group_count] = [0, 1].map(|index| {
         counts
@@ -1000,33 +1103,56 @@ fn decode_volume(raw: &[Vec<u8>; 8]) -> Result<TetMesh, MeshAssetError> {
         regions
             .try_reserve_exact(records.len())
             .map_err(|_| MeshAssetError::AllocationFailed)?;
+        let (words, _) = poly_faces.as_chunks::<4>();
         connectivity
-            .try_reserve_exact(records.len().saturating_mul(8))
+            .try_reserve_exact(records.len().saturating_mul(8).saturating_add(words.len()))
             .map_err(|_| MeshAssetError::AllocationFailed)?;
+        // 面流按单元顺序拼接：块按下标配对且顺序一致，因此整体拼接后仍按单元顺序消费。
+        let mut cursor = 0_usize;
         for record in records {
             let (kind, region, nodes) =
                 decode_cell_record(record).ok_or(MeshAssetError::InvalidMesh)?;
             types.push(kind);
             regions.push(region);
-            connectivity.extend_from_slice(&nodes[..kind.node_count()]);
+            if kind == CellType::Polyhedron {
+                let end = cursor
+                    .checked_add(nodes[1] as usize)
+                    .filter(|&end| end <= words.len())
+                    .ok_or(MeshAssetError::InvalidMesh)?;
+                connectivity.push(nodes[0]);
+                connectivity.extend(
+                    words[cursor..end]
+                        .iter()
+                        .map(|word| u32::from_le_bytes(*word)),
+                );
+                cursor = end;
+            } else {
+                connectivity.extend_from_slice(&nodes[..kind.fixed_node_count().unwrap_or(0)]);
+            }
         }
-        let offsets = crate::cell_offsets(&types, connectivity.len())
-            .map_err(|_| MeshAssetError::InvalidMesh)?;
-        if connectivity
-            .iter()
-            .any(|&node| node as usize >= decoded_nodes.len())
-        {
+        if cursor != words.len() {
             return Err(MeshAssetError::InvalidMesh);
         }
+        let offsets =
+            crate::cell_offsets(&types, &connectivity).map_err(|_| MeshAssetError::InvalidMesh)?;
+        // 节点范围（含多面体中心节点约定）在 `validate_tet_mesh` 中逐单元校验；
+        // 拆分只读连接关系，不按节点下标取坐标。
         let (tets, tet_cells) =
             crate::cells::decompose_cells(&types, &offsets, &connectivity, |cell| regions[cell])
                 .map_err(|_| MeshAssetError::InvalidMesh)?;
-        let declared = summary
+        let declared: Vec<u64> = summary
             .as_chunks::<8>()
             .0
-            .first()
-            .map(|value| u64::from_le_bytes(*value));
-        if declared != Some(tets.len() as u64) {
+            .iter()
+            .map(|value| u64::from_le_bytes(*value))
+            .collect();
+        let polyhedra = types
+            .iter()
+            .filter(|&&kind| kind == CellType::Polyhedron)
+            .count() as u64;
+        if declared.first() != Some(&(tets.len() as u64))
+            || declared.get(1).copied().unwrap_or(0) != polyhedra
+        {
             return Err(MeshAssetError::InvalidMesh);
         }
         decoded_tets = tets;

@@ -190,6 +190,43 @@ fn tet_volume_round_trips_through_vtu_and_rejects_other_cells()
     Ok(())
 }
 
+/// 多面体导出随 task 031 PR 3 提供；此前拒绝，且不留临时文件。
+#[test]
+fn polyhedron_meshes_are_rejected_by_vtu_export_until_supported()
+-> Result<(), Box<dyn std::error::Error>> {
+    let nodes: Vec<[f64; 3]> = (0..8_u32)
+        .map(|corner| {
+            let (x, y) = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)][corner as usize % 4];
+            [x, y, f64::from(corner / 4)]
+        })
+        .collect();
+    let mut connectivity = vec![u32::MAX, 6];
+    for face in [
+        [0, 3, 2, 1],
+        [4, 5, 6, 7],
+        [0, 1, 5, 4],
+        [1, 2, 6, 5],
+        [2, 3, 7, 6],
+        [3, 0, 4, 7],
+    ] {
+        connectivity.push(4);
+        connectivity.extend(face);
+    }
+    let types = vec![panta_mesh::CellType::Polyhedron];
+    let offsets =
+        panta_mesh::cell_offsets(&types, &connectivity).map_err(|cell| format!("{cell}"))?;
+    let mesh = panta_mesh::volume_mesh_from_cells(nodes, types, offsets, connectivity)?;
+    let directory = std::env::temp_dir().join(format!("panta-poly-export-{}", std::process::id()));
+    std::fs::create_dir_all(&directory)?;
+    let result = export_tet_mesh_vtu(&mesh, &directory.join("poly.vtu"), &Progress::new());
+    assert!(
+        matches!(&result, Err(ExportError::UnsupportedFormat(reason)) if reason.contains("polyhedron"))
+    );
+    assert_eq!(std::fs::read_dir(&directory)?.count(), 0);
+    std::fs::remove_dir_all(&directory)?;
+    Ok(())
+}
+
 mod streamed {
     use super::{assert_exact, sample};
     use crate::export::{
@@ -346,7 +383,7 @@ CELL_DATA 4\nSCALARS id double 1\nLOOKUP_TABLE default\n0 1 2 3\n";
         assert_eq!(field.values, vec![0.0, 1.0, 2.0, 3.0]);
         let mesh = grid.take_mesh()?;
         assert_eq!(mesh.cell_count(), 4);
-        assert_eq!(mesh.cell_type_counts(), [1, 1, 1, 1]);
+        assert_eq!(mesh.cell_type_counts(), [1, 1, 1, 1, 0]);
         assert!(panta_mesh::validate_tet_mesh(&mesh).is_ok());
         let layout = mesh.cells.as_ref().ok_or("mixed layout")?;
 

@@ -9,7 +9,8 @@ pub struct MeshDisplayInput {
     /// 体网格文档的四面体快照（task 022）：诊断追加质量统计、`.vtu` 导出写四面体、切面在后台计算。
     volume: Option<Arc<panta_mesh::TetMesh>>,
     /// 需要流式访问的完整资产（task 025）：表面 LOD 的源资产，或单元未驻留的体网格资产。
-    streamed: Option<panta_core::project::StreamedAsset>,
+    /// 与 `results` 同为 `Arc`，使输入保持小体积（计数随单元类型增长，task 031）。
+    streamed: Option<Arc<panta_core::project::StreamedAsset>>,
     /// 结果 sidecar 句柄（task 029）：驻留体网格场剖面在后台读取字段（单字段缓存）。
     /// `Arc` 保持输入体积小（与其他快照字段同为共享句柄）。
     results: Option<Arc<panta_core::project::ResultFieldSource>>,
@@ -18,12 +19,12 @@ pub struct MeshDisplayInput {
 impl MeshDisplayInput {
     fn streamed_volume(&self) -> Option<&panta_core::project::StreamedAsset> {
         self.streamed
-            .as_ref()
+            .as_deref()
             .filter(|asset| matches!(asset.kind, panta_core::project::StreamedKind::Volume(_)))
     }
 
     fn streamed_surface(&self) -> Option<&panta_core::project::StreamedAsset> {
-        self.streamed.as_ref().filter(|asset| {
+        self.streamed.as_deref().filter(|asset| {
             matches!(
                 asset.kind,
                 panta_core::project::StreamedKind::Surface { .. }
@@ -80,7 +81,7 @@ pub(super) fn project_service_mesh_display_input(
         mesh,
         lod_source_triangles,
         volume,
-        streamed,
+        streamed: streamed.map(Arc::new),
         results,
     })
 }
@@ -542,12 +543,12 @@ mod tests {
                 mesh: Ok((Arc::new(boundary.clone()), 1)),
                 lod_source_triangles: 0,
                 volume: None,
-                streamed: Some(StreamedAsset {
+                streamed: Some(Arc::new(StreamedAsset {
                     path: volume_path.clone(),
                     digest: digest.clone(),
                     kind: StreamedKind::Volume(block.counts()),
                     chunks: None,
-                }),
+                })),
                 results: None,
             })
         };
@@ -584,12 +585,12 @@ mod tests {
                 mesh: Ok((Arc::new(lod.clone()), 1)),
                 lod_source_triangles: 5_000,
                 volume: None,
-                streamed: Some(StreamedAsset {
+                streamed: Some(Arc::new(StreamedAsset {
                     path: surface_path.clone(),
                     digest: digest.to_owned(),
                     kind: StreamedKind::Surface { triangles: 5_000 },
                     chunks: None,
-                }),
+                })),
                 results: None,
             })
         };

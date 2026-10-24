@@ -169,11 +169,11 @@ fn streaming_writer_rejects_invalid_mixed_records() -> TestResult {
         fn boundary(&self, range: std::ops::Range<usize>, out: &mut Vec<crate::SurfaceTriangle>) {
             self.block.boundary(range, out);
         }
-        fn cells(&self, range: std::ops::Range<usize>, out: &mut Vec<crate::CellRecord>) {
-            let start = out.len();
+        fn cells(&self, range: std::ops::Range<usize>, out: &mut crate::CellBlock) {
+            let start = out.connectivity.len();
             self.block.cells(range, out);
             if self.node_out_of_range {
-                out[start].2[0] = u32::MAX - 1;
+                out.connectivity[start] = u32::MAX - 1;
             }
         }
     }

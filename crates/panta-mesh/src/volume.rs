@@ -69,14 +69,18 @@ pub fn tet_mesh_from_cells(
     Ok(mesh)
 }
 
-/// 由节点与 VTK 风格混合单元（类型 + offsets + 连接表）构建体网格（task 030）。
+/// 由节点与 VTK 风格混合单元（类型 + offsets + 连接表）构建体网格（task 030 / 031）。
 ///
 /// 全为四面体时等价于 [`tet_mesh_from_cells`]，不携带单元布局。否则每个单元按
 /// 最小全局节点号规则共形拆分；拆分四面体全为负体积的单元改写为镜像节点顺序，
 /// 正负混杂（翻转或严重扭曲）的单元由领域校验拒绝。外表面为拆分后只被一个四面体
 /// 引用的三角面（四边形边界面表现为两个三角形），单区域、单边界组。
+///
+/// 多面体（task 031）连接为规范面流 `[apex, nFaces, n0, ids…, …]`，输入的 `apex` 槽位
+/// 被忽略：其体积质心作为辅助中心节点按多面体顺序追加到 `nodes` 末尾并写回槽位。
+/// 整体负体积（面朝内）的多面体翻转全部面；凹单元会产生非正体积拆分四面体而被拒绝。
 pub fn volume_mesh_from_cells(
-    nodes: Vec<[f64; 3]>,
+    mut nodes: Vec<[f64; 3]>,
     types: Vec<CellType>,
     offsets: Vec<u64>,
     mut connectivity: Vec<MeshIndex>,
@@ -89,7 +93,7 @@ pub fn volume_mesh_from_cells(
             "cell count exceeds the u32 index range".to_owned(),
         ));
     }
-    match cell_offsets(&types, connectivity.len()) {
+    match cell_offsets(&types, &connectivity) {
         Ok(expected) if expected == offsets => {}
         _ => {
             return Err(VolumeError(
@@ -97,13 +101,30 @@ pub fn volume_mesh_from_cells(
             ));
         }
     }
-    if let Some(index) = connectivity
+    let source_nodes = nodes.len();
+    let polyhedra = types
         .iter()
-        .position(|&node| node as usize >= nodes.len())
-    {
-        return Err(VolumeError(format!(
-            "cell connectivity entry {index} references node outside the node range"
-        )));
+        .filter(|&&kind| kind == CellType::Polyhedron)
+        .count();
+    if u32::try_from(source_nodes + polyhedra).is_err() {
+        return Err(VolumeError(
+            "node count including polyhedron centre nodes exceeds the u32 index range".to_owned(),
+        ));
+    }
+    for (cell, &kind) in types.iter().enumerate() {
+        let local = &connectivity[offsets[cell] as usize..offsets[cell + 1] as usize];
+        let outside = |node: &MeshIndex| *node as usize >= source_nodes;
+        let invalid = if kind == CellType::Polyhedron {
+            crate::faces(&local[1..]).flatten().any(outside)
+        } else {
+            local.iter().any(outside)
+        };
+        if invalid {
+            return Err(VolumeError(format!(
+                "cell {cell} ({}) references node outside the node range",
+                kind.name()
+            )));
+        }
     }
     if types.iter().all(|&kind| kind == CellType::Tetra) {
         let cells = connectivity.as_chunks::<4>().0.to_vec();
@@ -115,16 +136,39 @@ pub fn volume_mesh_from_cells(
     for (cell, &kind) in types.iter().enumerate() {
         let range = offsets[cell] as usize..offsets[cell + 1] as usize;
         let local = &mut connectivity[range];
+        let invalid = |crate::InvalidCell| {
+            VolumeError(if kind == CellType::Polyhedron {
+                format!(
+                    "cell {cell} (polyhedron) faces do not form a closed consistently oriented surface"
+                )
+            } else {
+                format!("cell {cell} ({}) repeats a node", kind.name())
+            })
+        };
         scratch.clear();
-        decompose_cell(kind, local, &mut scratch).map_err(|crate::InvalidCell| {
-            VolumeError(format!("cell {cell} ({}) repeats a node", kind.name()))
-        })?;
-        if scratch.iter().all(|&tet| signed_volume6(&nodes, tet) < 0.0) {
-            mirror_cell(kind, local);
+        if kind == CellType::Polyhedron {
+            local[0] = MeshIndex::MAX;
+            decompose_cell(kind, local, &mut scratch).map_err(invalid)?;
+            let Some((volume6, centre)) = polyhedron_centroid(&nodes[..source_nodes], &scratch)
+            else {
+                return Err(VolumeError(format!(
+                    "cell {cell} (polyhedron) has zero or non-finite volume"
+                )));
+            };
+            if volume6 < 0.0 {
+                mirror_cell(kind, local);
+            }
+            local[0] = nodes.len() as MeshIndex;
+            nodes.push(centre);
             scratch.clear();
-            decompose_cell(kind, local, &mut scratch).map_err(|crate::InvalidCell| {
-                VolumeError(format!("cell {cell} ({}) repeats a node", kind.name()))
-            })?;
+            decompose_cell(kind, local, &mut scratch).map_err(invalid)?;
+        } else {
+            decompose_cell(kind, local, &mut scratch).map_err(invalid)?;
+            if scratch.iter().all(|&tet| signed_volume6(&nodes, tet) < 0.0) {
+                mirror_cell(kind, local);
+                scratch.clear();
+                decompose_cell(kind, local, &mut scratch).map_err(invalid)?;
+            }
         }
         for &tet in &scratch {
             tets.push(Tetrahedron {
@@ -163,6 +207,39 @@ pub fn volume_mesh_from_cells(
         )));
     }
     Ok(mesh)
+}
+
+/// 多面体的（6 × 有向体积，体积质心）：`fan` 为以 `MeshIndex::MAX` 作占位顶点的扇形
+/// 拆分四面体。闭合曲面的体积与质心与参考点无关，参考点取三角形角点平均以减小舍入。
+/// 质心对整体翻转不变（各项体积同时变号）；体积为 0 或非有限时返回 `None`。
+pub(crate) fn polyhedron_centroid(
+    nodes: &[[f64; 3]],
+    fan: &[[MeshIndex; 4]],
+) -> Option<(f64, [f64; 3])> {
+    let mut reference = [0.0; 3];
+    for tet in fan {
+        for &node in &tet[..3] {
+            reference = add(reference, nodes[node as usize]);
+        }
+    }
+    let reference = scale(reference, 1.0 / (3 * fan.len().max(1)) as f64);
+    let mut volume6 = 0.0;
+    let mut moment = [0.0; 3];
+    for tet in fan {
+        let [a, b, c] = [tet[0], tet[1], tet[2]].map(|node| nodes[node as usize]);
+        let v = dot(sub(b, a), cross(sub(c, a), sub(reference, a)));
+        volume6 += v;
+        let centre = scale(add(add(a, b), add(c, reference)), 0.25);
+        moment = add(moment, scale(centre, v));
+    }
+    if !volume6.is_finite() || volume6 == 0.0 {
+        return None;
+    }
+    let centre = scale(moment, 1.0 / volume6);
+    centre
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some((volume6, centre))
 }
 
 /// 把拆分四面体的问题翻译成原始单元编号，便于定位源文件中的单元。
@@ -381,8 +458,8 @@ pub fn tet_quality_streaming(
     let finished = if chunks.is_mixed() {
         chunks.visit_cells(Some((progress, 0.2, 0.99)), |batch| {
             for partial in parallel_partials(batch, |partial, cells| {
-                for (kind, _, cell) in cells {
-                    partial.add_cell(*kind, &cell[..kind.node_count()], &nodes);
+                for (kind, _, cell) in cells.iter() {
+                    partial.add_cell(kind, cell, &nodes);
                 }
             }) {
                 total.merge(&partial);
@@ -409,9 +486,9 @@ pub fn tet_quality_streaming(
 }
 
 /// 每个子块一个线程统计部分结果（线程 panic 时该块记为空）。
-fn parallel_partials<T: Sync>(
-    batch: &[Vec<T>],
-    work: impl Fn(&mut QualityPartial, &[T]) + Sync,
+fn parallel_partials<C: Sync>(
+    batch: &[C],
+    work: impl Fn(&mut QualityPartial, &C) + Sync,
 ) -> Vec<QualityPartial> {
     std::thread::scope(|scope| {
         let work = &work;
@@ -481,10 +558,12 @@ pub struct TetQuality {
     pub max_aspect_ratio: f64,
     pub mean_aspect_ratio: f64,
     /// 劣质原始单元数：四面体按最小二面角低于 [`POOR_MIN_DIHEDRAL_DEGREES`] 或纵横比高于
-    /// [`POOR_ASPECT_RATIO`]，其余类型按缩放雅可比低于 [`crate::POOR_SCALED_JACOBIAN`]。
+    /// [`POOR_ASPECT_RATIO`]，多面体按正交质量低于 [`crate::POOR_ORTHOGONAL_QUALITY`]，
+    /// 其余类型按缩放雅可比低于 [`crate::POOR_SCALED_JACOBIAN`]。
     pub poor_count: usize,
-    /// 各类型的缩放雅可比汇总（task 030），顺序同 [`CellType::ALL`]，四面体也包含在内。
-    pub by_type: [crate::CellTypeQuality; 4],
+    /// 各类型的缩放雅可比汇总（task 030；多面体为正交质量，task 031），顺序同
+    /// [`CellType::ALL`]，四面体也包含在内。
+    pub by_type: [crate::CellTypeQuality; crate::CELL_TYPE_COUNT],
 }
 
 /// 体网格质量统计；每 [`crate::PROGRESS_STRIDE`] 个单元报告进度并查询取消，取消返回 `None`。
@@ -538,6 +617,15 @@ impl Default for QualityPartial {
 impl QualityPartial {
     /// 计入一个原始单元；`cell` 为其全局节点号（VTK 局部顺序）。
     pub(crate) fn add_cell(&mut self, kind: CellType, cell: &[MeshIndex], nodes: &[[f64; 3]]) {
+        if kind == CellType::Polyhedron {
+            let value = crate::cell_quality::polyhedron_orthogonal_quality(cell, nodes);
+            self.types
+                .add_value(kind, value, crate::POOR_ORTHOGONAL_QUALITY);
+            if value.is_nan() || value < crate::POOR_ORTHOGONAL_QUALITY {
+                self.poor += 1;
+            }
+            return;
+        }
         let mut points = [[0.0; 3]; 8];
         for (point, &node) in points.iter_mut().zip(cell) {
             *point = nodes[node as usize];

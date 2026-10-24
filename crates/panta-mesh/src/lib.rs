@@ -16,6 +16,8 @@ mod field_section;
 mod lod;
 #[cfg(test)]
 mod mixed_tests;
+#[cfg(test)]
+mod poly_tests;
 // 唯一的 unsafe 例外：只读文件映射（task 028，见 standards/rust.md）。
 #[allow(unsafe_code)]
 pub mod mapped;
@@ -23,17 +25,20 @@ mod progress;
 mod synthetic;
 mod volume;
 pub use asset::{
-    CellRecord, FieldAssociation, FieldSummary, MESH_ASSET_FORMAT_VERSION, MeshAsset,
-    MeshAssetError, MeshAssetReader, MeshAssetRef, RESULT_ASSET_FORMAT_VERSION, ResultAssetReader,
-    ResultField, ResultSet, SurfaceAssetChunks, Triangle, VolumeAssetChunks, VolumeSource,
-    VolumeStreamCounts, decode_mesh_asset, decode_mesh_asset_with_digest, encode_mesh_asset,
-    encode_mesh_asset_ref, encode_result_asset, is_readable_mesh_asset_version,
-    mesh_asset_encoded_len, surface_mesh_expanded_bytes, write_surface_asset_streaming,
-    write_volume_asset_streaming,
+    FieldAssociation, FieldSummary, MESH_ASSET_FORMAT_VERSION, MeshAsset, MeshAssetError,
+    MeshAssetReader, MeshAssetRef, RESULT_ASSET_FORMAT_VERSION, ResultAssetReader, ResultField,
+    ResultSet, SurfaceAssetChunks, Triangle, VolumeAssetChunks, VolumeSource, VolumeStreamCounts,
+    decode_mesh_asset, decode_mesh_asset_with_digest, encode_mesh_asset, encode_mesh_asset_ref,
+    encode_result_asset, is_readable_mesh_asset_version, mesh_asset_encoded_len,
+    surface_mesh_expanded_bytes, write_surface_asset_streaming, write_volume_asset_streaming,
 };
-pub use cell_quality::{CellTypeQuality, POOR_SCALED_JACOBIAN, scaled_jacobian};
+pub use cell_quality::{
+    CellTypeQuality, POOR_ORTHOGONAL_QUALITY, POOR_SCALED_JACOBIAN, polyhedron_orthogonal_quality,
+    scaled_jacobian,
+};
 pub use cells::{
-    CellLayout, CellType, InvalidCell, VTK_POLYHEDRON, cell_offsets, decompose_cell, mirror_cell,
+    CELL_TYPE_COUNT, CellBlock, CellLayout, CellType, InvalidCell, VTK_POLYHEDRON, cell_offsets,
+    cell_source_nodes, decompose_cell, decompose_polyhedron, face_stream_len, faces, mirror_cell,
 };
 pub use diagnostics::{
     DEFAULT_RELATIVE_WELD_TOLERANCE, DiagnosticError, DiagnosticOptions, SurfaceDiagnostics,
@@ -271,12 +276,22 @@ impl TetMesh {
     }
 
     /// 各类型原始单元数，顺序同 [`CellType::ALL`]。
-    pub fn cell_type_counts(&self) -> [u64; 4] {
+    pub fn cell_type_counts(&self) -> [u64; CELL_TYPE_COUNT] {
         self.cells
             .as_ref()
-            .map_or([self.tets.len() as u64, 0, 0, 0], |cells| {
+            .map_or([self.tets.len() as u64, 0, 0, 0, 0], |cells| {
                 cells.type_counts()
             })
+    }
+
+    /// 源节点数（task 031）：不含追加在末尾的多面体辅助中心节点。
+    /// 节点场、导出与显示的节点数都以此为准。
+    pub fn source_node_count(&self) -> usize {
+        self.nodes.len().saturating_sub(
+            self.cells
+                .as_ref()
+                .map_or(0, |cells| cells.polyhedron_count()),
+        )
     }
 
     /// 原始单元的区域号（取其拆分四面体的区域，校验保证一致）。
@@ -513,16 +528,47 @@ fn validate_cell_layout(mesh: &TetMesh, cells: &CellLayout, issues: &mut Vec<Str
         issues.push("cell count exceeds the u32 index range".to_owned());
         return;
     }
-    match cell_offsets(&cells.types, cells.connectivity.len()) {
+    match cell_offsets(&cells.types, &cells.connectivity) {
         Ok(offsets) if offsets == cells.offsets => {}
         _ => {
             issues.push("cell offsets do not match cell types and connectivity".to_owned());
             return;
         }
     }
+    // 多面体辅助中心节点（task 031）：第 k 个多面体的 apex 必须是源节点数 + k，
+    // 源节点只能出现在单元面上，中心节点不能被其他单元引用。
+    let polyhedra = cells.polyhedron_count();
+    let Some(source_nodes) = mesh.nodes.len().checked_sub(polyhedra) else {
+        issues.push("mesh has fewer nodes than polyhedron centre nodes".to_owned());
+        return;
+    };
+    let mut next_apex = source_nodes;
+    for (cell, &kind) in cells.types.iter().enumerate() {
+        let nodes = cells.cell_nodes(cell);
+        let outside = |node: &MeshIndex| *node as usize >= source_nodes;
+        let invalid = if kind == CellType::Polyhedron {
+            if nodes.first().map(|&apex| apex as usize) != Some(next_apex) {
+                issues.push(format!(
+                    "cell {cell} (polyhedron) centre node is not node {next_apex}"
+                ));
+                return;
+            }
+            next_apex += 1;
+            faces(&nodes[1..]).flatten().any(outside)
+        } else {
+            nodes.iter().any(outside)
+        };
+        if invalid {
+            issues.push(format!(
+                "cell {cell} ({}) references a polyhedron centre node or a node outside the node range",
+                kind.name()
+            ));
+            return;
+        }
+    }
     match cells::decompose_cells(&cells.types, &cells.offsets, &cells.connectivity, |_| 0) {
         Err(cell) => issues.push(format!(
-            "cell {cell} repeats a node and cannot be decomposed"
+            "cell {cell} repeats a node or (polyhedron) has an open or inconsistently oriented face set and cannot be decomposed"
         )),
         Ok((tets, tet_cells)) => {
             let same_nodes = tets.len() == mesh.tets.len()

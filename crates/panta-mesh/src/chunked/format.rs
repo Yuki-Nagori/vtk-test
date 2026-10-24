@@ -652,7 +652,9 @@ fn decode_layout(
     offsets.push(0u32);
     let mut total = 0usize;
     for kind in &types {
-        total += kind.node_count();
+        total += kind
+            .fixed_node_count()
+            .ok_or_else(|| ChunkError::Format("polyhedron cells unsupported".to_owned()))?;
         offsets.push(
             u32::try_from(total)
                 .map_err(|_| ChunkError::Format("cell connectivity too long".to_owned()))?,
