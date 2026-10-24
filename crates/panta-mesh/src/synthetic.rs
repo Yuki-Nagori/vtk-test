@@ -1,4 +1,4 @@
-//! 合成测试网格（task 019 / 025 / 030 基准）：参数化起伏圆环面、四面体立方体与混合单元边界层块，
+//! 合成测试网格（task 019 / 025 / 030 / 031 基准）：参数化起伏圆环面、四面体立方体、混合单元边界层块与多面体加密界面块，
 //! 按下标确定性生成任意规模，可按块并行生成而无需持有整个网格。
 
 use crate::asset::Triangle;
@@ -640,6 +640,273 @@ impl crate::VolumeSource for SyntheticMixedBlock {
         for index in range {
             let (kind, region, nodes) = self.cell(index);
             out.push(kind, region, &nodes[..kind.fixed_node_count().unwrap_or(0)]);
+        }
+    }
+}
+
+/// 合成多面体网格（task 031 基准）：模拟 snappyHexMesh 加密界面两侧的“细六面体 + 带分裂面的粗多面体”。
+///
+/// 边长 100 mm 的立方体，粗网格每轴 `n`（偶数）格、细网格每轴 `2n` 格，各轴坐标按
+/// `t + 0.04 sin(2πt)` 非均匀分布（单元仍是长方体，面平面）：
+/// - 下半（z 细层 `0..n`）：`(2n)² × n` 个细六面体，区域 0；
+/// - 上半（z 粗层 `n/2..n`）：`n² × n/2` 个粗多面体（VTK 42），区域 1。每个粗单元的 6 个面各分成
+///   2 × 2 个四边形（面中心与棱中点为细格节点），共 24 个面、14 + 12 个面上节点——与下方细六面体
+///   的顶面、相邻粗单元的面逐一共形，正是加密界面上悬挂节点粗单元的常见形态。
+///
+/// 节点：细格节点（上半不含粗单元体心）在前，之后每个多面体一个中心节点（长方体体心 = 体积质心），
+/// 顺序同多面体单元顺序。单元：先全部细六面体，再全部多面体。
+/// 边界组 0..6 依次为 x−、x+、y−、y+、z−、z+；四边形边界面按最小下标对角线剖分，与单元拆分一致。
+#[derive(Debug, Clone)]
+pub struct SyntheticPolyBlock {
+    n: usize,
+    hexes: usize,
+    polyhedra: usize,
+    lattice: usize,
+    tets: usize,
+}
+
+impl SyntheticPolyBlock {
+    /// 取使原始单元数（4.5 n³）最接近 `target_cells` 的偶数 `n`（至少 2）。
+    pub fn new(target_cells: usize) -> Self {
+        let cells = |n: usize| 4 * n.pow(3) + n.pow(3) / 2;
+        let mut n = 2;
+        while cells(n + 2).abs_diff(target_cells) < cells(n).abs_diff(target_cells) {
+            n += 2;
+        }
+        Self::with_cells_per_axis(n)
+    }
+
+    /// 粗网格每轴 `n` 格（向上取偶数，至少 2）。
+    pub fn with_cells_per_axis(n: usize) -> Self {
+        let n = n.max(2).next_multiple_of(2);
+        let fine = 2 * n;
+        let side = fine + 1;
+        let hexes = fine * fine * n;
+        let polyhedra = n * n * (n / 2);
+        let lattice =
+            (n + 1) * side * side + (n / 2) * (side * side - n * n) + (n / 2) * side * side;
+        let mut block = Self {
+            n,
+            hexes,
+            polyhedra,
+            lattice,
+            tets: 0,
+        };
+        let mut scratch = Vec::with_capacity(6);
+        let hex_tets: usize = (0..hexes)
+            .map(|cell| {
+                scratch.clear();
+                let _ = crate::cells::decompose_cell(
+                    crate::CellType::Hexahedron,
+                    &block.hexahedron(cell),
+                    &mut scratch,
+                );
+                scratch.len()
+            })
+            .sum();
+        block.tets = hex_tets + 48 * polyhedra;
+        block
+    }
+
+    pub fn cells_per_axis(&self) -> usize {
+        self.n
+    }
+
+    pub fn node_count(&self) -> usize {
+        self.lattice + self.polyhedra
+    }
+
+    pub fn cell_count(&self) -> usize {
+        self.hexes + self.polyhedra
+    }
+
+    pub fn polyhedron_count(&self) -> usize {
+        self.polyhedra
+    }
+
+    /// 拆分后的四面体数（每个多面体 24 面 × 2 = 48 个）。
+    pub fn tet_count(&self) -> usize {
+        self.tets
+    }
+
+    /// 各类型原始单元数，顺序同 [`crate::CellType::ALL`]。
+    pub fn type_counts(&self) -> [u64; crate::CELL_TYPE_COUNT] {
+        [0, self.hexes as u64, 0, 0, self.polyhedra as u64]
+    }
+
+    pub fn boundary_count(&self) -> usize {
+        12 * (2 * self.n).pow(2)
+    }
+
+    pub fn counts(&self) -> crate::VolumeStreamCounts {
+        crate::VolumeStreamCounts {
+            nodes: self.node_count(),
+            tets: self.tet_count(),
+            cells: self.cell_count(),
+            boundary: self.boundary_count(),
+            region_count: 2,
+            boundary_group_count: 6,
+            polyhedra: self.polyhedra,
+        }
+    }
+
+    fn coordinate(&self, fine: usize) -> f64 {
+        let t = fine as f64 / (2 * self.n) as f64;
+        BLOCK_EDGE_MM * (t + 0.04 * (TAU * t).sin())
+    }
+
+    /// 细格节点 `(i, j, l)` 的下标；上半的粗单元体心（三坐标皆奇）不存在。
+    fn lattice_index(&self, [i, j, l]: [usize; 3]) -> u32 {
+        let n = self.n;
+        let side = 2 * n + 1;
+        let plane = side * side;
+        if l <= n {
+            return ((l * side + j) * side + i) as u32;
+        }
+        let p = l - (n + 1);
+        let start = (n + 1) * plane + p.div_ceil(2) * (plane - n * n) + (p / 2) * plane;
+        let within = if l % 2 == 1 {
+            let row = j.div_ceil(2) * side + (j / 2) * (n + 1);
+            row + if j % 2 == 0 { i } else { i / 2 }
+        } else {
+            j * side + i
+        };
+        (start + within) as u32
+    }
+
+    /// 第 `index` 个节点坐标。
+    pub fn node(&self, index: usize) -> [f64; 3] {
+        let n = self.n;
+        if index >= self.lattice {
+            let k = index - self.lattice;
+            let cell = [k % n, (k / n) % n, n / 2 + k / (n * n)];
+            return cell.map(|c| 0.5 * (self.coordinate(2 * c) + self.coordinate(2 * c + 2)));
+        }
+        let side = 2 * n + 1;
+        let plane = side * side;
+        let base = (n + 1) * plane;
+        let [i, j, l] = if index < base {
+            [index % side, (index / side) % side, index / plane]
+        } else {
+            let odd = plane - n * n;
+            let (pair, rest) = (
+                (index - base) / (odd + plane),
+                (index - base) % (odd + plane),
+            );
+            if rest < odd {
+                let rows = side + n + 1;
+                let (row, offset) = (rest / rows, rest % rows);
+                if offset < side {
+                    [offset, 2 * row, n + 1 + 2 * pair]
+                } else {
+                    [2 * (offset - side), 2 * row + 1, n + 1 + 2 * pair]
+                }
+            } else {
+                let rest = rest - odd;
+                [rest % side, rest / side, n + 2 + 2 * pair]
+            }
+        };
+        [self.coordinate(i), self.coordinate(j), self.coordinate(l)]
+    }
+
+    fn hexahedron(&self, index: usize) -> [u32; 8] {
+        let fine = 2 * self.n;
+        let (i, j, l) = (index % fine, (index / fine) % fine, index / (fine * fine));
+        let g = |di: usize, dj: usize, dl: usize| self.lattice_index([i + di, j + dj, l + dl]);
+        [
+            g(0, 0, 0),
+            g(1, 0, 0),
+            g(1, 1, 0),
+            g(0, 1, 0),
+            g(0, 0, 1),
+            g(1, 0, 1),
+            g(1, 1, 1),
+            g(0, 1, 1),
+        ]
+    }
+
+    /// 法向沿 `+axis` 的细格四边形：`axis` 坐标为 `fixed`，另两轴（循环顺序）自 `(u, v)` 起。
+    fn quad(&self, axis: usize, fixed: usize, u: usize, v: usize) -> [u32; 4] {
+        let point = |du: usize, dv: usize| {
+            let mut ijk = [0; 3];
+            ijk[axis] = fixed;
+            ijk[(axis + 1) % 3] = u + du;
+            ijk[(axis + 2) % 3] = v + dv;
+            self.lattice_index(ijk)
+        };
+        [point(0, 0), point(1, 0), point(1, 1), point(0, 1)]
+    }
+
+    /// 第 `k` 个多面体的规范面流 `[apex, 24, 4, a, b, c, d, …]`（各面朝外）。
+    pub fn polyhedron(&self, k: usize) -> Vec<u32> {
+        let n = self.n;
+        let cell = [k % n, (k / n) % n, n / 2 + k / (n * n)];
+        let mut stream = Vec::with_capacity(2 + 24 * 5);
+        stream.push((self.lattice + k) as u32);
+        stream.push(24);
+        for axis in 0..3 {
+            for high in [false, true] {
+                let fixed = 2 * cell[axis] + if high { 2 } else { 0 };
+                let (b, c) = (cell[(axis + 1) % 3], cell[(axis + 2) % 3]);
+                for (du, dv) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                    let mut quad = self.quad(axis, fixed, 2 * b + du, 2 * c + dv);
+                    if !high {
+                        quad.reverse();
+                    }
+                    stream.push(4);
+                    stream.extend_from_slice(&quad);
+                }
+            }
+        }
+        stream
+    }
+
+    /// 第 `index` 个边界三角形，法向朝外。
+    pub fn boundary_face(&self, index: usize) -> crate::SurfaceTriangle {
+        let fine = 2 * self.n;
+        let per_side = 2 * fine * fine;
+        let (side, local) = (index / per_side, index % per_side);
+        let (square, half) = (local / 2, local % 2);
+        let (axis, high) = (side / 2, side % 2 == 1);
+        let mut quad = self.quad(
+            axis,
+            if high { fine } else { 0 },
+            square % fine,
+            square / fine,
+        );
+        if !high {
+            quad.reverse();
+        }
+        crate::SurfaceTriangle {
+            nodes: split_quad(quad)[half],
+            group: side as u32,
+        }
+    }
+}
+
+impl crate::VolumeSource for SyntheticPolyBlock {
+    fn nodes(&self, range: Range<usize>, out: &mut Vec<[f64; 3]>) {
+        out.extend(range.map(|index| self.node(index)));
+    }
+
+    /// 混合单元源不提供四面体流（写入端改用 [`Self::cells`]）。
+    fn tets(&self, _range: Range<usize>, _out: &mut Vec<crate::Tetrahedron>) {}
+
+    fn boundary(&self, range: Range<usize>, out: &mut Vec<crate::SurfaceTriangle>) {
+        out.extend(range.map(|index| self.boundary_face(index)));
+    }
+
+    fn cells(&self, range: Range<usize>, out: &mut crate::CellBlock) {
+        for index in range {
+            if index < self.hexes {
+                out.push(crate::CellType::Hexahedron, 0, &self.hexahedron(index));
+            } else {
+                out.push(
+                    crate::CellType::Polyhedron,
+                    1,
+                    &self.polyhedron(index - self.hexes),
+                );
+            }
         }
     }
 }

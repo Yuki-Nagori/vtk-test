@@ -390,17 +390,56 @@ fn v4_mixed_assets_stay_readable() -> TestResult {
 }
 
 #[test]
-fn chunked_build_rejects_polyhedra_until_pchunk_supports_them() {
+fn pchunk_v4_holds_polyhedra_and_rejects_v3_and_full_length_node_fields() -> TestResult {
+    use crate::chunked::{ChunkBuildOptions, ChunkedVolume, ResidentFields};
     let mesh = poly_mesh();
-    let result = crate::chunked::build_chunked_volume(
-        &mesh,
-        crate::chunked::ChunkBuildOptions::default(),
-        std::io::sink(),
-        &crate::Progress::new(),
-    );
-    assert!(
-        matches!(result, Err(crate::chunked::ChunkError::Invalid(message)) if message.contains("polyhedron"))
-    );
+    let field = |len: usize| crate::ResultField {
+        name: "x".to_owned(),
+        association: crate::FieldAssociation::Node,
+        components: 1,
+        units: String::new(),
+        values: mesh.nodes[..len].iter().map(|node| node[0]).collect(),
+    };
+    let options = ChunkBuildOptions {
+        max_chunk_cells: 1,
+        simplify_ratio: 4,
+    };
+    let build = |fields: &[crate::ResultField]| {
+        let mut bytes = Vec::new();
+        crate::chunked::build_chunked_volume_with_fields(
+            &mesh,
+            &mut ResidentFields(fields),
+            options,
+            &mut bytes,
+            &crate::Progress::new(),
+        )
+        .map(|summary| (summary, bytes))
+    };
+    // 节点场含中心节点长度时拒绝（与驻留切面同规则）。
+    assert!(build(&[field(mesh.nodes.len())]).is_err());
+    let (summary, bytes) = build(&[field(mesh.source_node_count())])?;
+    let summary = summary.ok_or("cancelled")?;
+    assert_eq!(summary.cell_count, 3);
+    assert_eq!(summary.node_count, mesh.nodes.len() as u64);
+    assert_eq!(u32::from_le_bytes(bytes[8..12].try_into()?), 4);
+    let directory = std::env::temp_dir().join(format!("panta-poly-pchunk-{}", std::process::id()));
+    std::fs::create_dir_all(&directory)?;
+    let path = directory.join("poly.pchunk");
+    std::fs::write(&path, &bytes)?;
+    let volume = ChunkedVolume::open_file(&path, usize::MAX)?;
+    assert_eq!(volume.headers().len(), 3);
+    let expected = crate::tet_quality(&mesh, &crate::Progress::new()).ok_or("cancelled")?;
+    let actual = volume.quality(&|| false)?.ok_or("cancelled")?;
+    assert_eq!(actual.by_type, expected.by_type);
+    assert_eq!(actual.poor_count, expected.poor_count);
+    drop(volume);
+    // v3（task 030）文件无法表示多面体：版本不符即拒绝，派生缓存因此重建。
+    let mut old = bytes;
+    old[8..12].copy_from_slice(&3_u32.to_le_bytes());
+    std::fs::write(&path, &old)?;
+    assert!(ChunkedVolume::open_file(&path, usize::MAX).is_err());
+    std::fs::remove_dir_all(&directory)?;
+    Ok(())
 }
 
 #[test]

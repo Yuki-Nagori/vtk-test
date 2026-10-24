@@ -194,6 +194,8 @@ impl TetSource for crate::SyntheticTetBlock {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChunkBuildOptions {
     /// 每块原始单元数上限；k-d 中位数二分，实际块大小在上限的一半到上限之间。
+    /// 含多面体的网格另要求每块拆分四面体数不超过 `6 × max_chunk_cells`（与纯六面体块同量级），
+    /// 避免一个多面体拆成几十个四面体时块过大（task 031）。
     pub max_chunk_cells: usize,
     /// 简化外表面相对完整外表面的面数比例分母。
     pub simplify_ratio: usize,
@@ -301,15 +303,6 @@ pub fn build_chunked_volume_with_fields<W: Write>(
             "tet count {tet_count} outside 1..=u32::MAX"
         )));
     }
-    if source
-        .cell_layout()
-        .is_some_and(|layout| layout.polyhedron_count() > 0)
-    {
-        // task 031 PR 1：`.pchunk` v3 不能表示多面体，PR 2 升级 `.pchunk` 后支持。
-        return Err(ChunkError::Invalid(
-            "polyhedron cells are not supported by the chunked format yet".to_owned(),
-        ));
-    }
     if options.max_chunk_cells == 0 || options.simplify_ratio == 0 {
         return Err(ChunkError::Invalid(
             "chunk options must be positive".to_owned(),
@@ -319,7 +312,15 @@ pub fn build_chunked_volume_with_fields<W: Write>(
     let mut items = centroids(source, &cells);
     progress.set_fraction(0.1);
     let mut leaves = Vec::new();
-    split(&mut items, 0, options.max_chunk_cells, 0, &mut leaves);
+    let has_polyhedra = cells
+        .layout
+        .is_some_and(|layout| layout.polyhedron_count() > 0);
+    let limit = Limit {
+        cells: options.max_chunk_cells,
+        tets: has_polyhedra.then(|| options.max_chunk_cells.saturating_mul(6)),
+        map: &cells,
+    };
+    split(&mut items, 0, &limit, 0, &mut leaves);
     leaves.sort_unstable_by_key(|range| range.0);
     let leaves = morton_order(&items, leaves);
     progress.set_fraction(0.2);
@@ -417,8 +418,9 @@ pub fn build_chunked_volume_with_fields<W: Write>(
     }
 
     for (field_index, info) in infos.iter().enumerate() {
-        let field = fields.load(field_index)?;
+        let mut field = fields.load(field_index)?;
         check_field(&field, info, source, cells.count)?;
+        append_apex_values(&mut field, &cells, source.node_count());
         for header in &mut headers {
             header.field_ranges.push([f64::NAN; 2]);
             header.field_blocks.push(FieldBlock::default());
@@ -540,14 +542,9 @@ pub fn build_chunked_from_asset_with_fields<W: Write>(
         regions
             .try_reserve_exact(counts.cells)
             .map_err(|_| memory())?;
-        let mut polyhedron = false;
         let finished = asset
             .visit_cells(Some((progress, 0.05, 0.25)), |batch| {
                 for (kind, region, nodes) in batch.iter().flat_map(CellBlock::iter) {
-                    if kind == CellType::Polyhedron {
-                        polyhedron = true;
-                        return false;
-                    }
                     types.push(kind);
                     regions.push(region);
                     connectivity.extend_from_slice(nodes);
@@ -555,21 +552,16 @@ pub fn build_chunked_from_asset_with_fields<W: Write>(
                 !progress.is_cancelled()
             })
             .map_err(asset_error)?;
-        if polyhedron {
-            // task 031 PR 1：`.pchunk` v3 不能表示多面体，PR 2 升级 `.pchunk` 后支持。
-            return Err(ChunkError::Invalid(
-                "polyhedron cells are not supported by the chunked format yet".to_owned(),
-            ));
-        }
         if !finished {
             return Ok(None);
         }
         let invalid = |_| ChunkError::Format("mixed cell stream invalid".to_owned());
         let offsets = crate::cell_offsets(&types, &connectivity).map_err(invalid)?;
-        if connectivity
-            .iter()
-            .any(|&node| node as usize >= nodes.len())
-        {
+        let out_of_range = types.iter().enumerate().any(|(cell, &kind)| {
+            let cell_nodes = &connectivity[offsets[cell] as usize..offsets[cell + 1] as usize];
+            crate::cells::cell_node_refs(kind, cell_nodes).any(|node| node as usize >= nodes.len())
+        });
+        if out_of_range {
             return Err(ChunkError::Format(
                 "mixed cell node out of range".to_owned(),
             ));
@@ -641,6 +633,10 @@ fn centroids(source: &dyn TetSource, cells: &CellMap<'_>) -> Vec<Item> {
                     let id = part * per + offset;
                     let tet;
                     let nodes = match cells.layout {
+                        // 多面体只取中心节点（体积质心），面流中的面数不是节点号。
+                        Some(layout) if layout.types[id] == CellType::Polyhedron => {
+                            &layout.cell_nodes(id)[..1]
+                        }
                         Some(layout) => layout.cell_nodes(id),
                         None => {
                             tet = source.tet(id).nodes;
@@ -664,15 +660,36 @@ fn centroids(source: &dyn TetSource, cells: &CellMap<'_>) -> Vec<Item> {
     items
 }
 
-/// k-d 中位数二分：沿质心包围盒最长轴切分，直到不超过 `limit`。顶层几层并行。
+/// 块大小上限：原始单元数，以及（含多面体时）拆分四面体数。
+struct Limit<'a> {
+    cells: usize,
+    tets: Option<usize>,
+    map: &'a CellMap<'a>,
+}
+
+impl Limit<'_> {
+    fn fits(&self, items: &[Item]) -> bool {
+        items.len() <= self.cells
+            && (items.len() <= 1
+                || self.tets.is_none_or(|limit| {
+                    items
+                        .iter()
+                        .map(|item| self.map.tets(item.id as usize).len())
+                        .sum::<usize>()
+                        <= limit
+                }))
+    }
+}
+
+/// k-d 中位数二分：沿质心包围盒最长轴切分，直到满足 `limit`。顶层几层并行。
 fn split(
     items: &mut [Item],
     base: usize,
-    limit: usize,
+    limit: &Limit<'_>,
     depth: u32,
     leaves: &mut Vec<(usize, usize)>,
 ) {
-    if items.len() <= limit {
+    if limit.fits(items) {
         leaves.push((base, base + items.len()));
         return;
     }
@@ -888,13 +905,14 @@ fn encode_leaf(
         };
         chunk.offsets.push(0);
         for (local_cell, &id) in ids.iter().enumerate() {
-            chunk.types.push(layout.types[id as usize]);
-            chunk.connectivity.extend(
-                layout
-                    .cell_nodes(id as usize)
-                    .iter()
-                    .map(|&node| local(node)),
+            let kind = layout.types[id as usize];
+            crate::cells::map_cell_nodes(
+                kind,
+                layout.cell_nodes(id as usize),
+                &mut chunk.connectivity,
+                local,
             );
+            chunk.types.push(kind);
             chunk.offsets.push(chunk.connectivity.len() as u32);
             let tet_count = cells.tets(id as usize).len();
             chunk
@@ -932,8 +950,10 @@ fn check_field(
     source: &dyn TetSource,
     cell_count: usize,
 ) -> Result<(), ChunkError> {
+    // 节点场只覆盖源节点；多面体中心节点的值在写块前由 `append_apex_values` 补上。
+    let polyhedra = source.cell_layout().map_or(0, CellLayout::polyhedron_count);
     let tuples = match info.association {
-        FieldAssociation::Node => source.node_count(),
+        FieldAssociation::Node => source.node_count() - polyhedra,
         FieldAssociation::Cell => cell_count,
     };
     if field_info(field) != *info || field.values.len() != tuples * usize::from(info.components) {
@@ -943,6 +963,23 @@ fn check_field(
         )));
     }
     Ok(())
+}
+
+/// 节点场补上多面体中心节点的值（所属单元各唯一节点值的平均，与驻留切面一致），
+/// 使块内局部节点都有值。纯四面体或无多面体时不变。
+fn append_apex_values(field: &mut ResultField, cells: &CellMap<'_>, node_count: usize) {
+    let Some(layout) = cells.layout else {
+        return;
+    };
+    if field.association != FieldAssociation::Node || layout.polyhedron_count() == 0 {
+        return;
+    }
+    let components = usize::from(field.components);
+    let apex = crate::field_section::apex_tuples_for(layout, node_count, &field.values, components);
+    field.values.reserve(apex.len() * components);
+    for value in apex {
+        field.values.extend_from_slice(&value[..components]);
+    }
 }
 
 /// 一块一个场的块内值（`boundary == false`，同时返回值区间）或外表面值，返回（原始长度，压缩字节，区间）。

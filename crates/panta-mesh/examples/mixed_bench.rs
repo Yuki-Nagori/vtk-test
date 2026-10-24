@@ -1,8 +1,9 @@
-//! 混合单元体网格基准（task 030 PR 3）：棱柱边界层 + 金字塔/四面体过渡层 + 六面体核心的合成网格，
-//! 测流式写出 v4 混合资产、从资产构建 `.pchunk` v3，以及分块切面、单元场切面、逐类型质量，
-//! 并与逐次扫描资产（无派生分块时的回退路径）对比。
+//! 混合单元体网格基准（task 030 PR 3 / task 031 PR 2）：合成网格流式写出 v5 资产、从资产构建 `.pchunk` v4，
+//! 测分块切面、节点场 / 单元场切面、逐类型质量，并与逐次扫描资产（无派生分块时的回退路径）对比。
 //!
 //! 用法：`cargo run --release -p panta-mesh --example mixed_bench -- [选项]`
+//! - `--mesh mixed|poly`：`mixed`（默认）为棱柱边界层 + 金字塔/四面体过渡层 + 六面体核心；
+//!   `poly` 为细六面体 + 24 面粗多面体的加密界面块（[`SyntheticPolyBlock`]）。
 //! - `--cells N`：目标原始单元数（支持 K/M/B 后缀），默认 2M。
 //! - `--chunk N`：每块原始单元上限，默认 262144。
 //! - `--budget-mib N`：块缓存预算，默认 1024。
@@ -23,11 +24,77 @@ use panta_mesh::chunked::{
 };
 use panta_mesh::{
     CellType, FieldAssociation, FieldComponent, MeshAsset, Progress, ResultField,
-    SyntheticMixedBlock, VolumeAssetChunks,
+    SyntheticMixedBlock, SyntheticPolyBlock, VolumeAssetChunks,
 };
 
-/// 按需生成的合成结果场：节点标量 z 与原始单元标量 cell_id。
-struct SyntheticFields<'a>(&'a SyntheticMixedBlock);
+/// 两种合成网格。
+enum Block {
+    Mixed(SyntheticMixedBlock),
+    Poly(SyntheticPolyBlock),
+}
+
+impl Block {
+    fn counts(&self) -> panta_mesh::VolumeStreamCounts {
+        match self {
+            Self::Mixed(block) => block.counts(),
+            Self::Poly(block) => block.counts(),
+        }
+    }
+    fn type_counts(&self) -> [u64; panta_mesh::CELL_TYPE_COUNT] {
+        match self {
+            Self::Mixed(block) => block.type_counts(),
+            Self::Poly(block) => block.type_counts(),
+        }
+    }
+    fn node(&self, index: usize) -> [f64; 3] {
+        match self {
+            Self::Mixed(block) => block.node(index),
+            Self::Poly(block) => block.node(index),
+        }
+    }
+    fn describe(&self) -> String {
+        match self {
+            Self::Mixed(block) => format!(
+                "合成混合网格 n={} 棱柱层 {}×2 核心层 {}",
+                block.cells_per_axis(),
+                block.prism_layers(),
+                block.core_layers()
+            ),
+            Self::Poly(block) => format!(
+                "合成多面体加密界面网格 n={}（细六面体 + 24 面粗多面体）",
+                block.cells_per_axis()
+            ),
+        }
+    }
+    fn stem(&self) -> &'static str {
+        match self {
+            Self::Mixed(_) => "mixed",
+            Self::Poly(_) => "poly",
+        }
+    }
+}
+
+impl panta_mesh::VolumeSource for Block {
+    fn nodes(&self, range: std::ops::Range<usize>, out: &mut Vec<[f64; 3]>) {
+        out.extend(range.map(|index| self.node(index)));
+    }
+    fn tets(&self, _: std::ops::Range<usize>, _: &mut Vec<panta_mesh::Tetrahedron>) {}
+    fn boundary(&self, range: std::ops::Range<usize>, out: &mut Vec<panta_mesh::SurfaceTriangle>) {
+        match self {
+            Self::Mixed(block) => block.boundary(range, out),
+            Self::Poly(block) => block.boundary(range, out),
+        }
+    }
+    fn cells(&self, range: std::ops::Range<usize>, out: &mut panta_mesh::CellBlock) {
+        match self {
+            Self::Mixed(block) => block.cells(range, out),
+            Self::Poly(block) => block.cells(range, out),
+        }
+    }
+}
+
+/// 按需生成的合成结果场：节点标量 z（只覆盖源节点，多面体中心节点除外）与原始单元标量 cell_id。
+struct SyntheticFields<'a>(&'a Block);
 
 const FIELDS: [(&str, FieldAssociation); 2] = [
     ("z", FieldAssociation::Node),
@@ -49,10 +116,10 @@ impl FieldProvider for SyntheticFields<'_> {
     fn load(&mut self, index: usize) -> Result<ResultField, ChunkError> {
         let (name, association) = FIELDS[index];
         let values = match association {
-            FieldAssociation::Node => (0..self.0.node_count())
+            FieldAssociation::Node => (0..self.0.counts().source_nodes())
                 .map(|i| self.0.node(i)[2])
                 .collect(),
-            FieldAssociation::Cell => (0..self.0.cell_count()).map(|i| i as f64).collect(),
+            FieldAssociation::Cell => (0..self.0.counts().cells).map(|i| i as f64).collect(),
         };
         Ok(ResultField {
             name: name.to_owned(),
@@ -141,6 +208,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut dir = std::env::temp_dir();
     let (mut keep, mut verify) = (false, false);
     let mut reader = ChunkReadMode::Auto;
+    let mut poly = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -149,6 +217,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--budget-mib" => budget_mib = parse_count(&args.next().ok_or("--budget-mib 缺少值")?)?,
             "--dir" => dir = args.next().ok_or("--dir 缺少值")?.into(),
             "--keep" => keep = true,
+            "--mesh" => {
+                poly = match args.next().ok_or("--mesh 缺少值")?.as_str() {
+                    "mixed" => false,
+                    "poly" => true,
+                    other => return Err(format!("未知网格 {other}").into()),
+                }
+            }
             "--verify" => verify = true,
             "--reader" => {
                 reader = match args.next().ok_or("--reader 缺少值")?.as_str() {
@@ -161,21 +236,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             other => return Err(format!("未知参数 {other}").into()),
         }
     }
-    let block = SyntheticMixedBlock::new(cells);
+    let block = if poly {
+        Block::Poly(SyntheticPolyBlock::new(cells))
+    } else {
+        Block::Mixed(SyntheticMixedBlock::new(cells))
+    };
     let counts = block.counts();
     let types = block.type_counts();
     println!(
-        "合成混合网格 n={} 棱柱层 {}×2 核心层 {}：原始单元 {}（四面体 {} / 六面体 {} / 楔形 {} / 金字塔 {}），拆分四面体 {}，节点 {}，边界三角形 {}，块上限 {chunk}，线程 {}",
-        block.cells_per_axis(),
-        block.prism_layers(),
-        block.core_layers(),
+        "{}：原始单元 {}（四面体 {} / 六面体 {} / 楔形 {} / 金字塔 {} / 多面体 {}），拆分四面体 {}，节点 {}（含多面体中心 {}），边界三角形 {}，块上限 {chunk}，线程 {}",
+        block.describe(),
         counts.cells,
         types[0],
         types[1],
         types[2],
         types[3],
+        types[4],
         counts.tets,
         counts.nodes,
+        counts.polyhedra,
         counts.boundary,
         std::thread::available_parallelism().map_or(1, usize::from)
     );
@@ -185,7 +264,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "注：本平台无 /proc/self/io，资产写出 / 构建 / 回退扫描的系统调用计数不可用（显示为 0）"
         );
     }
-    let stem = format!("synthetic-mixed-{}", counts.cells);
+    let stem = format!("synthetic-{}-{}", block.stem(), counts.cells);
     let asset_path = dir.join(format!("{stem}.pmesh"));
     let chunk_path = dir.join(format!("{stem}.pchunk"));
 
@@ -280,15 +359,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("取消")?;
         let field_ms = ms(started);
         let (field_reads, field_mib, field_mapped) = delta();
+        let started = Instant::now();
+        let node_field = volume
+            .fine_section_field(&plane, 0, FieldComponent::Magnitude, &|| false)?
+            .ok_or("取消")?;
+        let node_ms = ms(started);
+        let (node_reads, node_mib, node_mapped) = delta();
         println!(
-            "[{label}] 冷缓存切面 {fine_ms:.1} ms（命中 {hits} 块，{} 三角形，读调用 {reads}，映射访问 {mapped}，读 {read_mib:.1} MiB）；单元场 cell_id {field_ms:.1} ms（读调用 {field_reads}，映射访问 {field_mapped}，读 {field_mib:.1} MiB）",
+            "[{label}] 冷缓存切面 {fine_ms:.1} ms（命中 {hits} 块，{} 三角形，读调用 {reads}，映射访问 {mapped}，读 {read_mib:.1} MiB）；单元场 cell_id {field_ms:.1} ms（读调用 {field_reads}，映射访问 {field_mapped}，读 {field_mib:.1} MiB）；节点场 z {node_ms:.1} ms（读调用 {node_reads}，映射访问 {node_mapped}，读 {node_mib:.1} MiB）",
             section.triangles.len()
         );
         json.push(format!(
-            "\"{label}\":{{\"hits\":{hits},\"triangles\":{},\"fine_ms\":{fine_ms:.1},\"reads\":{reads},\"mapped\":{mapped},\"read_mib\":{read_mib:.1},\"cell_field_ms\":{field_ms:.1},\"cell_field_reads\":{field_reads},\"cell_field_mapped\":{field_mapped}}}",
+            "\"{label}\":{{\"hits\":{hits},\"triangles\":{},\"fine_ms\":{fine_ms:.1},\"reads\":{reads},\"mapped\":{mapped},\"read_mib\":{read_mib:.1},\"cell_field_ms\":{field_ms:.1},\"cell_field_reads\":{field_reads},\"cell_field_mapped\":{field_mapped},\"node_field_ms\":{node_ms:.1},\"node_field_reads\":{node_reads},\"node_field_mapped\":{node_mapped}}}",
             section.triangles.len()
         ));
-        planes.push((label, normal, fraction, plane, section, field));
+        planes.push((label, normal, fraction, plane, section, field, node_field));
     }
     volume.cache().clear();
     reset_peak();
@@ -303,9 +388,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let by_type: Vec<String> = CellType::ALL
         .iter()
         .zip(&quality.by_type)
+        .filter(|(_, q)| q.count > 0)
         .map(|(kind, q)| {
+            // 多面体的主指标是正交质量（与 Fluent 定义一致），其余类型为缩放雅可比。
+            let metric = if *kind == CellType::Polyhedron {
+                "正交质量"
+            } else {
+                "SJ"
+            };
             format!(
-                "{kind:?} {} 个 SJ min {:.3} / mean {:.3} / 劣质 {}",
+                "{kind:?} {} 个 {metric} min {:.3} / mean {:.3} / 劣质 {}",
                 q.count, q.min_scaled_jacobian, q.mean_scaled_jacobian, q.poor_count
             )
         })
@@ -326,7 +418,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let io = proc_io();
     let started = Instant::now();
     let mut asset = VolumeAssetChunks::open(&asset_path)?;
-    let (_, normal, fraction, _, _, _) = &planes[1];
+    let (_, normal, fraction, _, _, _, _) = &planes[1];
     let scan_section =
         panta_mesh::section_plane_streaming(&mut asset, *normal, *fraction, &Progress::new())?
             .ok_or("取消")?;
@@ -362,8 +454,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .by_type
                 .map(|q| (q.count, q.poor_count, q.min_scaled_jacobian.to_bits()))
             && resident.poor_count == quality.poor_count;
+        let node_values = SyntheticFields(&block).load(0)?;
         let field = SyntheticFields(&block).load(1)?;
-        for (_, _, _, plane, section, chunk_field) in &planes {
+        for (_, _, _, plane, section, chunk_field, chunk_node_field) in &planes {
             let sorted = |triangles: &[[[f64; 3]; 3]]| {
                 let mut keys: Vec<[u64; 9]> = triangles
                     .iter()
@@ -394,23 +487,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             a.sort_unstable();
             b.sort_unstable();
             ok &= a == b;
+            let expected_node = panta_mesh::section_surface_field(
+                &mesh,
+                &node_values,
+                FieldComponent::Magnitude,
+                plane.origin,
+                plane.normal,
+                &Progress::new(),
+            )?
+            .ok_or("取消")?;
+            let mut a: Vec<u64> = chunk_node_field
+                .values
+                .iter()
+                .flatten()
+                .map(|v| v.to_bits())
+                .collect();
+            let mut b: Vec<u64> = expected_node
+                .values
+                .iter()
+                .flatten()
+                .map(|v| v.to_bits())
+                .collect();
+            a.sort_unstable();
+            b.sort_unstable();
+            ok &= a == b;
         }
         verified = if ok { "true" } else { "false" };
-        println!("[核对] 分块切面 / 单元场切面 / 逐类型质量与驻留算法一致：{verified}");
+        println!("[核对] 分块切面 / 节点场与单元场切面 / 逐类型质量与驻留算法一致：{verified}");
         if !ok {
             return Err("分块结果与驻留算法不一致".into());
         }
     }
     println!(
-        "JSON {{\"proc_io\":{has_proc_io},\"reader\":\"{}\",\"cells\":{},\"tets\":{},\"nodes\":{},\"types\":[{},{},{},{}],\"asset_mib\":{:.1},\"write_s\":{write_s:.3},\"write_calls\":{},\"write_peak_mib\":{write_peak},\"build_s\":{build_s:.3},\"chunks\":{},\"pchunk_mib\":{:.1},\"build_asset_reads\":{},\"build_asset_read_mib\":{:.1},\"build_write_calls\":{},\"build_peak_mib\":{build_peak},\"open_ms\":{open_ms:.1},\"open_reads\":{open_reads},\"chunk_files\":{chunk_files},{},\"quality_s\":{quality_s:.3},\"quality_reads\":{quality_reads},\"quality_mapped\":{quality_mapped},\"quality_peak_mib\":{quality_peak},\"scan_quality_s\":{scan_quality_s:.3},\"scan_quality_reads\":{},\"scan_section_ms\":{scan_section_ms:.1},\"scan_section_reads\":{},\"verified\":{verified}}}",
+        "JSON {{\"proc_io\":{has_proc_io},\"reader\":\"{}\",\"cells\":{},\"tets\":{},\"nodes\":{},\"mesh\":\"{}\",\"types\":[{},{},{},{},{}],\"asset_mib\":{:.1},\"write_s\":{write_s:.3},\"write_calls\":{},\"write_peak_mib\":{write_peak},\"build_s\":{build_s:.3},\"chunks\":{},\"pchunk_mib\":{:.1},\"build_asset_reads\":{},\"build_asset_read_mib\":{:.1},\"build_write_calls\":{},\"build_peak_mib\":{build_peak},\"open_ms\":{open_ms:.1},\"open_reads\":{open_reads},\"chunk_files\":{chunk_files},{},\"quality_s\":{quality_s:.3},\"quality_reads\":{quality_reads},\"quality_mapped\":{quality_mapped},\"quality_peak_mib\":{quality_peak},\"scan_quality_s\":{scan_quality_s:.3},\"scan_quality_reads\":{},\"scan_section_ms\":{scan_section_ms:.1},\"scan_section_reads\":{},\"verified\":{verified}}}",
         volume.reader_kind(),
         counts.cells,
         counts.tets,
         counts.nodes,
+        block.stem(),
         types[0],
         types[1],
         types[2],
         types[3],
+        types[4],
         mib(asset_bytes),
         write_io.syscw,
         summary.chunk_count,
