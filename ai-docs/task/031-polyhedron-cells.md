@@ -1,7 +1,7 @@
 # 031 — 多面体单元（VTK_POLYHEDRON 42）：面流布局、拆分、资产 v5、`.pchunk` v4、导入导出与质量
 
 - 状态：done
-- 阶段：PR 1 已合并（#41）；PR 2 已合并（#42）；PR 3（VTU / 旧版 VTK 导入导出与收尾文档）为最后一个 PR。GUI / GPU 实机验收待人工
+- 阶段：PR 1 已合并（#41）；PR 2 已合并（#42）；PR 3（VTU / 旧版 VTK 导入导出与收尾文档）已合并（#43）。GUI / GPU 实机验收待人工
 - 依赖：[030](030-mixed-cells.md)
 - 优先级：P1
 - 负责人：Grok Bot
@@ -79,6 +79,7 @@ OpenFOAM 网格本质是基于面的多面体，snappyHexMesh 与 STAR-CCM+ 导�
 | 2026-10-24 | PR 2：CI 与 nightly 40079843174（Windows / macOS，300K 多面体） | 全绿 | 全绿：52 块；Windows pread 打开读调用 3，斜切面读调用 6 / 11.0 MiB / 90 ms，核对 true；squash 合并为 main e33b5eb（提交 754e25b 的 Task 行误写为 `031-polyhedron.md`，已推送不可改，PR 正文说明） |
 | 2026-10-24 | PR 3：`cargo test -p panta-io`（新增 `export::tests::poly_io` 4 项：六面体 + 与其共面的立方体多面体 + 两个共享五边形的五棱柱；旧版 VTK 42 导入含 CELL_DATA / POINT_DATA，体积精确，节点场 27 = 源节点数，节点场切面逐点等于 x、单元场切面在上层棱柱处为原单元值；VTU 导出（`faces` / `faceoffsets`）再导入的节点与 `CellLayout` 不变，流式导出与驻留逐字节一致；手写 VTK 9.4 四数组 VTU 与旧版导入一致；表面导入三种来源均为 46 三角形（共享四边形与五边形抵消）；缺面数组、面流截断、面节点数错、面数不足、节点越界均拒绝）。原“多面体拒绝”测试改为校验与面流语义不符的输入被拒绝 | 全部通过 | 39 passed |
 | 2026-10-24 | PR 3：`cargo format`、`cargo quality`、`cargo test --locked --workspace`（CTest 69/69）、offscreen 启动 8 s | 全部通过 | 通过；启动 exit 124（超时即正常） |
+| 2026-10-24 | PR 3：CI 与 nightly 40080907322（Windows / macOS，17:10–17:15 UTC+8；本行由 032 PR 1 补记） | 全绿 | CI 成功；nightly 全绿：300K 多面体 52 块，斜切面读调用 6 / 11.0 MiB / 42.6–98.1 ms，核对 true；squash 合并为 main 01787c3（2026-10-24 17:16 UTC+8） |
 
 ## 风险与回退
 

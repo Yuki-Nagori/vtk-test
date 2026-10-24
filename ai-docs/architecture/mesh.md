@@ -61,6 +61,12 @@ Netgen API 依据：[v6.2.2604 `nglib.h`](https://github.com/NGSolve/netgen/blob
 - 导入导出（031 PR 3）：旧版 VTK 的多面体 `CELLS` 条目即序列化面流 `[nFaces, n0, ids…]`（VTK 写出端 `GetSerializedCellFaces` 的约定）。VTU 读取两种布局：VTKFile < 2.3 的 `faces`（各多面体面流串接）/ `faceoffsets`（逐单元结束偏移，非多面体 -1），与 VTK 9.4（VTKFile ≥ 2.3）的 `polyhedron_offsets` / `polyhedron_to_faces` / `face_offsets` / `face_connectivity`（偏移省略首个 0）；两者都存在时取 9.4 数组，多面体缺面数组时报错。导入校验面流长度、面数 ≥ 4、每面节点 ≥ 3 与节点范围，闭合 / 定向 / 凸性由 `volume_mesh_from_cells` 校验。表面导入（`.vtu` / `.vtk` 作表面）中多面体的 ≤ 4 节点面与固定类型单元共用同一配对表，更多节点的多边形面另表配对，共享面互相抵消。VTU 导出写 VTKFile 1.0 的 `faces` / `faceoffsets`（ParaView 5.x 与 VTK 9.4+ 均按文件版本读取此布局）；`Points` 只写源节点，多面体 `connectivity` 为单元唯一节点（升序），因此导出 → 再导入得到相同的节点与 `CellLayout`。流式导出另记每个多面体 8 B，并再扫描一遍单元块写 `faces`，与驻留导出逐字节一致。结果场随导入按源节点 / 原单元绑定；VTU 导出不写结果场（与 030 相同）。
 
 
+### OpenFOAM 算例导入（task 032）
+
+- 选择 `*.foam` / `*.openfoam` 占位文件或 `system/controlDict`；快照是算例所需文件的内存包（`PANTA-FOAM-CASE 1`），摘要 / 「源已变化」覆盖全部文件。读取 `constant[/<区域>]/polyMesh` 的 points / faces / owner / neighbour / boundary（ASCII / binary、faceList / faceCompactList、`.gz`），有 `constant/<区域>/polyMesh` 时导入全部区域并忽略默认区域。
+- 单元按面拓扑识别为 tet / pyramid / wedge / hex（VTK 局部顺序），其余为多面体；含共线节点、最小节点扇形退化的面在导入侧改写为显式三角形子面（起点只由面节点号与坐标决定，两侧一致），`panta-mesh` 的拓扑拆分规则不变。
+- 区域 → `TetMesh` region（名称写入 ImportRecord `region_names`）；非空 patch → 边界组（`boundary_group_names`，多区域为 `区域/patch`，未覆盖三角形归 `unassigned`）。最新时间步的 volScalar / volVector internalField → 单元结果场，单位由 `dimensions` 推出；单位按「米」导入。
+
 ## 生成流程
 
 应用服务确认几何有效，冻结输入修订和网格参数，创建后台任务，再由 Netgen 适配器生成输出。完成后转换为 Mesh IR、检查有效性、形成质量摘要，最后一次性提交新的网格资产。

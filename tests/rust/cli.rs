@@ -455,7 +455,7 @@ fn stl_import_rejects_invalid_options_without_changing_the_project()
         .args(["stl", "import"])
         .arg(&project.path)
         .arg(&source)
-        .args(["--units", "meters"])
+        .args(["--units", "feet"])
         .output()?;
     assert_eq!(
         unsupported_units.status.code(),

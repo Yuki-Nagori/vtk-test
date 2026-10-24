@@ -1000,12 +1000,18 @@ void ProjectViewModel::clearRecentProjects() {
 QString ProjectViewModel::classifyDroppedUrl(const QUrl& url) const {
     if (!url.isLocalFile())
         return {};
-    const QString suffix = QFileInfo(url.toLocalFile()).suffix().toLower();
+    const QFileInfo info(url.toLocalFile());
+    const QString suffix = info.suffix().toLower();
     if (suffix == QLatin1String("panta"))
         return QStringLiteral("project");
-    static const QStringList mesh_suffixes = {QStringLiteral("stl"), QStringLiteral("vtu"),
-                                              QStringLiteral("vtp"), QStringLiteral("vtk"),
-                                              QStringLiteral("obj"), QStringLiteral("ply")};
+    // OpenFOAM 算例（task 032）：标记文件 .foam / .openfoam，或 system/controlDict。
+    if (info.fileName() == QLatin1String("controlDict") &&
+        info.dir().dirName() == QLatin1String("system"))
+        return QStringLiteral("mesh");
+    static const QStringList mesh_suffixes = {QStringLiteral("stl"),  QStringLiteral("vtu"),
+                                              QStringLiteral("vtp"),  QStringLiteral("vtk"),
+                                              QStringLiteral("obj"),  QStringLiteral("ply"),
+                                              QStringLiteral("foam"), QStringLiteral("openfoam")};
     return mesh_suffixes.contains(suffix) ? QStringLiteral("mesh") : QString();
 }
 
@@ -1053,7 +1059,8 @@ void ProjectViewModel::applyImports(const rust::Vec<panta::ffi::ProjectImport>& 
         const QString unitLabel = nextUnits == QStringLiteral("millimeters") ? QStringLiteral("mm")
                                   : nextUnits == QStringLiteral("centimeters")
                                       ? QStringLiteral("cm")
-                                      : QStringLiteral("in");
+                                  : nextUnits == QStringLiteral("meters") ? QStringLiteral("m")
+                                                                          : QStringLiteral("in");
         nextDimensions = QString::fromUtf8(panta::ffi::format_project_dimensions(
             imported.size_x, imported.size_y, imported.size_z, unitLabel.toStdString()));
     }

@@ -21,6 +21,9 @@ pub enum ImportFormat {
     VtkLegacy,
     Obj,
     Ply,
+    /// OpenFOAM 算例（task 032）：选中 `.foam` / `.openfoam` 标记文件或 `system/controlDict`，
+    /// 快照为算例文件包（见 `formats::openfoam_bundle`）。
+    OpenFoam,
     Step,
     Iges,
 }
@@ -35,6 +38,7 @@ impl ImportFormat {
             Self::VtkLegacy => "vtk",
             Self::Obj => "obj",
             Self::Ply => "ply",
+            Self::OpenFoam => "openfoam",
             Self::Step => "step",
             Self::Iges => "iges",
         }
@@ -98,6 +102,12 @@ pub struct ImportRecord {
     /// 体网格导入时未保留的来源数组及原因（task 029）；结果场本身在 `.presult` sidecar 中。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skipped_result_fields: Vec<String>,
+    /// 体网格的区域名（按区域下标，task 032；OpenFOAM 多区域）。空表示未命名的单区域。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub region_names: Vec<String>,
+    /// 边界组名（按组下标，task 032；OpenFOAM patch，多区域为 `区域/patch`）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub boundary_group_names: Vec<String>,
 }
 
 /// 生成体网格的工程记录信息；来源 STEP 不复制进工程，只记录名称与摘要。
@@ -180,6 +190,8 @@ pub struct ImportOptions {
 enum LengthUnit {
     Millimeters,
     Centimeters,
+    /// 米（task 032）：OpenFOAM / CGNS 等 CFD 数据通常按 SI 米存储。
+    Meters,
     Inches,
 }
 
@@ -188,6 +200,7 @@ impl LengthUnit {
         match value {
             "millimeters" => Ok(Self::Millimeters),
             "centimeters" => Ok(Self::Centimeters),
+            "meters" => Ok(Self::Meters),
             "inches" => Ok(Self::Inches),
             other => Err(ImportError::UnsupportedUnits(other.to_owned())),
         }
@@ -197,6 +210,7 @@ impl LengthUnit {
         match self {
             Self::Millimeters => 1.0,
             Self::Centimeters => 10.0,
+            Self::Meters => 1000.0,
             Self::Inches => 25.4,
         }
     }
@@ -205,6 +219,7 @@ impl LengthUnit {
         match self {
             Self::Millimeters => "millimeters",
             Self::Centimeters => "centimeters",
+            Self::Meters => "meters",
             Self::Inches => "inches",
         }
     }
@@ -253,6 +268,14 @@ pub fn detect_format(path: &Path) -> Result<ImportFormat, ImportError> {
         .extension()
         .and_then(|value| value.to_str())
         .unwrap_or_default();
+    let is_control_dict = path.file_name().is_some_and(|name| name == "controlDict")
+        && path
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| name == "system");
+    if is_control_dict {
+        return Ok(ImportFormat::OpenFoam);
+    }
     match extension.to_ascii_lowercase().as_str() {
         "stl" => Ok(ImportFormat::Stl),
         "vtu" => Ok(ImportFormat::Vtu),
@@ -260,6 +283,7 @@ pub fn detect_format(path: &Path) -> Result<ImportFormat, ImportError> {
         "vtk" => Ok(ImportFormat::VtkLegacy),
         "obj" => Ok(ImportFormat::Obj),
         "ply" => Ok(ImportFormat::Ply),
+        "foam" | "openfoam" => Ok(ImportFormat::OpenFoam),
         "step" | "stp" => Ok(ImportFormat::Step),
         "iges" | "igs" => Ok(ImportFormat::Iges),
         _ => Err(ImportError::UnsupportedFormat(path.display().to_string())),
@@ -318,6 +342,9 @@ pub fn read_source_with_progress(
     }
     let format = detect_format(path).map_err(CheckedReadError::Failed)?;
     let source_name = source_name(path).map_err(CheckedReadError::Failed)?;
+    if format == ImportFormat::OpenFoam {
+        return read_openfoam_case(path, source_name, &is_cancelled, on_progress);
+    }
     let mut file = match fs::File::open(path) {
         Ok(file) => file,
         Err(error) => return Err(read_error(path, error)),
@@ -338,25 +365,112 @@ pub fn read_source_with_progress(
         &mut bytes,
         usize::try_from(expected).unwrap_or(usize::MAX),
     )?;
+    read_chunks(path, &mut file, &mut bytes, &is_cancelled, &|read| {
+        on_progress((read as f64 / expected.max(1) as f64).min(1.0));
+    })?;
+    Ok(SourceSnapshot {
+        path: path.to_path_buf(),
+        source_name,
+        format,
+        bytes,
+        modified_unix_ms,
+    })
+}
+
+/// 按 4 MiB 块读到 `bytes` 末尾，每块前查询取消、块后上报 `bytes` 当前长度。
+fn read_chunks(
+    path: &Path,
+    file: &mut fs::File,
+    bytes: &mut Vec<u8>,
+    is_cancelled: &dyn Fn() -> bool,
+    on_read: &dyn Fn(usize),
+) -> Result<(), CheckedReadError> {
     let mut chunk = vec![0u8; READ_CHUNK_BYTES];
     loop {
         if is_cancelled() {
             return Err(CheckedReadError::Cancelled(path.display().to_string()));
         }
-        let read = match std::io::Read::read(&mut file, &mut chunk) {
+        let read = match std::io::Read::read(file, &mut chunk) {
             Ok(read) => read,
             Err(error) => return Err(read_error(path, error)),
         };
         if read == 0 {
-            break;
+            return Ok(());
         }
         bytes.extend_from_slice(&chunk[..read]);
-        on_progress((bytes.len() as f64 / expected.max(1) as f64).min(1.0));
+        on_read(bytes.len());
+    }
+}
+
+/// OpenFOAM 算例快照（task 032）：按 [`formats::openfoam_bundle::plan_case`] 选出的文件
+/// 依序打包；修改时间取所含文件的最大值，摘要与源变更检查因此覆盖整个算例。
+fn read_openfoam_case(
+    path: &Path,
+    source_name: String,
+    is_cancelled: &dyn Fn() -> bool,
+    on_progress: &dyn Fn(f64),
+) -> Result<SourceSnapshot, CheckedReadError> {
+    use formats::openfoam_bundle as bundle;
+    let failed = |message: String| {
+        CheckedReadError::Failed(ImportError::Format(formats::FormatError(message)))
+    };
+    let plan = bundle::plan_case(path).map_err(failed)?;
+    let mut sizes = Vec::with_capacity(plan.files.len());
+    let mut modified_unix_ms: Option<u64> = None;
+    for file in &plan.files {
+        let metadata = fs::metadata(&file.path).map_err(|error| read_error(&file.path, error))?;
+        sizes.push(metadata.len());
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|duration| u64::try_from(duration.as_millis()).ok());
+        modified_unix_ms = modified_unix_ms.max(modified);
+    }
+    let total: u64 = sizes.iter().sum();
+    let mut bytes = Vec::new();
+    reserve_source_bytes(
+        path,
+        &mut bytes,
+        usize::try_from(total)
+            .unwrap_or(usize::MAX)
+            .saturating_add(64 * (plan.files.len() + plan.skipped.len() + 1)),
+    )?;
+    bytes.extend_from_slice(bundle::MAGIC);
+    let count = u32::try_from(plan.files.len() + plan.skipped.len())
+        .map_err(|_| failed("too many case files".to_owned()))?;
+    bytes.extend(count.to_le_bytes());
+    let mut done = 0u64;
+    for (file, &size) in plan.files.iter().zip(&sizes) {
+        let mut handle =
+            fs::File::open(&file.path).map_err(|error| read_error(&file.path, error))?;
+        bundle::push_entry_header(&mut bytes, &file.relative, size).map_err(failed)?;
+        let start = bytes.len();
+        read_chunks(
+            &file.path,
+            &mut handle,
+            &mut bytes,
+            is_cancelled,
+            &|length| {
+                let read = (length - start) as u64;
+                on_progress(((done + read) as f64 / total.max(1) as f64).min(1.0));
+            },
+        )?;
+        if (bytes.len() - start) as u64 != size {
+            return Err(CheckedReadError::Failed(ImportError::SourceChanged(
+                file.path.display().to_string(),
+            )));
+        }
+        done += size;
+    }
+    for (relative, class) in &plan.skipped {
+        bundle::push_entry_header(&mut bytes, relative, class.len() as u64).map_err(failed)?;
+        bytes.extend_from_slice(class.as_bytes());
     }
     Ok(SourceSnapshot {
         path: path.to_path_buf(),
         source_name,
-        format,
+        format: ImportFormat::OpenFoam,
         bytes,
         modified_unix_ms,
     })
@@ -407,6 +521,9 @@ pub fn parse_mesh_snapshot_with_progress(
         ImportFormat::VtkLegacy => formats::parse_vtk_legacy(bytes).map_err(ImportError::Format),
         ImportFormat::Obj => formats::parse_obj(bytes).map_err(ImportError::Format),
         ImportFormat::Ply => formats::parse_ply(bytes).map_err(ImportError::Format),
+        ImportFormat::OpenFoam => {
+            formats::parse_openfoam_surface(bytes).map_err(ImportError::Format)
+        }
         ImportFormat::Step | ImportFormat::Iges => Err(ImportError::UnsupportedFormat(
             snapshot.path.display().to_string(),
         )),
@@ -424,6 +541,9 @@ pub fn parse_volume_snapshot(snapshot: &SourceSnapshot) -> Result<formats::RawGr
         ImportFormat::Vtu => formats::parse_vtu_grid(&snapshot.bytes).map_err(ImportError::Format),
         ImportFormat::VtkLegacy => {
             formats::parse_vtk_legacy_grid(&snapshot.bytes).map_err(ImportError::Format)
+        }
+        ImportFormat::OpenFoam => {
+            formats::parse_openfoam_grid(&snapshot.bytes).map_err(ImportError::Format)
         }
         _ => Err(ImportError::UnsupportedFormat(
             snapshot.path.display().to_string(),
@@ -458,7 +578,7 @@ impl PreparedStl {
             record_version: IMPORT_RECORD_VERSION,
             parser_version: STL_IMPORT_PARSER_VERSION,
             id: format!("import-{import_number}"),
-            display_name: default_display_name(&self.source_name, self.format.id()),
+            display_name: self.display_name(),
             source_name: self.source_name.clone(),
             source_path: self.path.to_string_lossy().into_owned(),
             source_digest: Some(source_digest(&self.bytes)),
@@ -473,7 +593,24 @@ impl PreparedStl {
             dimensions: summary.dimensions,
             generation: None,
             skipped_result_fields: Vec::new(),
+            region_names: Vec::new(),
+            boundary_group_names: Vec::new(),
         }
+    }
+
+    /// 默认显示名：OpenFOAM 为算例目录名（标记文件名常与目录同名或为 controlDict）。
+    fn display_name(&self) -> String {
+        if self.format == ImportFormat::OpenFoam
+            && let Some(name) = formats::openfoam_bundle::case_root(&self.path)
+                .and_then(|root| {
+                    root.file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                })
+                .filter(|name| !name.is_empty())
+        {
+            return name;
+        }
+        default_display_name(&self.source_name, self.format.id())
     }
 
     pub fn summary(&self) -> SurfaceSummary {
@@ -1006,6 +1143,49 @@ mod tests {
         assert!(cancelled.to_string().contains("Cancelled"));
         let failed = CheckedReadError::Failed(ImportError::Missing(source.display().to_string()));
         assert!(failed.to_string().contains("Missing"));
+        Ok(())
+    }
+
+    /// OpenFOAM 算例快照覆盖结果场文件（task 032）：预检后改动任一文件，提交报「源已变化」。
+    #[test]
+    fn openfoam_case_change_after_preview_is_detected() -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = Fixture::new()?;
+        let source_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/mesh/openfoam/ascii");
+        let case = fixture.root.join("cavity");
+        for relative in [
+            "ascii.foam",
+            "constant/polyMesh/points",
+            "constant/polyMesh/faces",
+            "constant/polyMesh/owner",
+            "constant/polyMesh/neighbour",
+            "constant/polyMesh/boundary",
+            "0.01/p",
+        ] {
+            let target = case.join(relative);
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(source_root.join(relative), &target)?;
+        }
+        let marker = case.join("ascii.foam");
+        assert_eq!(detect_format(&marker)?, ImportFormat::OpenFoam);
+        let mut session = StlImportSession::default();
+        session.preview(&marker)?;
+        let field = case.join("0.01/p");
+        let mut text = fs::read_to_string(&field)?;
+        text.push_str("\n// edited\n");
+        fs::write(&field, text)?;
+        assert!(matches!(
+            session.prepare(&marker),
+            Err(ImportError::SourceChanged(_))
+        ));
+        session.clear();
+        let prepared = session.prepare(&marker)?;
+        let options = ImportOptions::new("solid-3d", "meters", false)?;
+        let record = prepared.record(1, options);
+        assert_eq!(record.display_name, "cavity");
+        assert_eq!(record.units, "meters");
         Ok(())
     }
 }

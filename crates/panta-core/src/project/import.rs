@@ -235,6 +235,8 @@ fn commit_import(
     let (volume, fields) = match volume_from_prepared(&prepared, options)? {
         Some(imported) => {
             record.skipped_result_fields = imported.skipped_fields;
+            record.region_names = imported.region_names;
+            record.boundary_group_names = imported.boundary_group_names;
             (Some(imported.mesh), imported.fields)
         }
         None => (None, Vec::new()),
@@ -338,13 +340,15 @@ pub(super) fn commit_mesh_record(
     Ok((candidate.clone(), record, mesh, volume))
 }
 
-/// 「实体 3D」类型的 VTU / 旧版 VTK 按线性四面体体网格导入：坐标换算到毫米后构建并校验；
+/// 「实体 3D」类型的 VTU / 旧版 VTK / OpenFOAM（task 032）按线性四面体体网格导入：坐标换算到毫米后构建并校验；
 /// 含其他单元类型时整体拒绝（task 021 保守决策）。其他组合仍按表面导入。
 /// 结果场按来源顺序原样保留：`tet_mesh_from_cells` 不重排节点与单元，下标与网格对齐。
 struct ImportedVolume {
     mesh: panta_mesh::TetMesh,
     fields: Vec<panta_mesh::ResultField>,
     skipped_fields: Vec<String>,
+    region_names: Vec<String>,
+    boundary_group_names: Vec<String>,
 }
 
 fn volume_from_prepared(
@@ -354,7 +358,9 @@ fn volume_from_prepared(
     if !options.is_solid()
         || !matches!(
             prepared.format,
-            panta_io::import::ImportFormat::Vtu | panta_io::import::ImportFormat::VtkLegacy
+            panta_io::import::ImportFormat::Vtu
+                | panta_io::import::ImportFormat::VtkLegacy
+                | panta_io::import::ImportFormat::OpenFoam
         )
     {
         return Ok(None);
@@ -387,6 +393,8 @@ fn volume_from_prepared(
         mesh,
         fields: grid.fields,
         skipped_fields: grid.skipped_fields,
+        region_names: grid.region_names,
+        boundary_group_names: grid.boundary_group_names,
     }))
 }
 

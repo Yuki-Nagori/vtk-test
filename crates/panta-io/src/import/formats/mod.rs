@@ -6,6 +6,7 @@
 
 mod cells;
 mod obj;
+mod openfoam;
 mod ply;
 mod text;
 mod vtk_legacy;
@@ -15,6 +16,8 @@ use panta_mesh::SurfaceMesh;
 use std::fmt::{Display, Formatter};
 
 pub use obj::parse_obj;
+pub use openfoam::bundle as openfoam_bundle;
+pub use openfoam::{parse_openfoam_grid, parse_openfoam_surface};
 pub use ply::parse_ply;
 pub use vtk_legacy::{parse_vtk_legacy, parse_vtk_legacy_grid};
 pub use vtk_xml::{parse_vtp, parse_vtu, parse_vtu_grid};
@@ -35,6 +38,22 @@ pub struct RawGrid {
     pub connectivity: Vec<u32>,
     pub fields: Vec<panta_mesh::ResultField>,
     pub skipped_fields: Vec<String>,
+    /// 每个原始单元的区域下标（空表示单区域）；`region_names` 与之对应（task 032）。
+    pub cell_regions: Vec<u32>,
+    pub region_names: Vec<String>,
+    /// 来源声明的边界面及其分组（OpenFOAM patch）；`None` 时整个外表面为一组。
+    /// [`RawGrid::take_mesh`] 之后 `boundary_group_names` 为实际使用的组名（按组下标）。
+    pub boundary: Option<BoundaryFaces>,
+    pub boundary_group_names: Vec<String>,
+}
+
+/// 来源边界面：扁平节点表 + 结束偏移，每面一个组下标。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BoundaryFaces {
+    pub nodes: Vec<u32>,
+    pub ends: Vec<usize>,
+    pub groups: Vec<u32>,
+    pub names: Vec<String>,
 }
 
 /// VTK voxel 节点 2/3、6/7 与六面体编号互换。
@@ -112,8 +131,7 @@ impl RawGrid {
             points,
             types: kinds,
             connectivity,
-            fields: Vec::new(),
-            skipped_fields: Vec::new(),
+            ..Self::default()
         })
     }
 
@@ -129,12 +147,105 @@ impl RawGrid {
         let connectivity = std::mem::take(&mut self.connectivity);
         let offsets = panta_mesh::cell_offsets(&types, &connectivity)
             .map_err(|cell| panta_mesh::VolumeError(format!("cell {cell} node count mismatch")))?;
-        panta_mesh::volume_mesh_from_cells(
+        let mut mesh = panta_mesh::volume_mesh_from_cells(
             std::mem::take(&mut self.points),
             types,
             offsets,
             connectivity,
-        )
+        )?;
+        self.apply_regions(&mut mesh)?;
+        self.apply_boundary_groups(&mut mesh);
+        Ok(mesh)
+    }
+
+    fn apply_regions(
+        &mut self,
+        mesh: &mut panta_mesh::TetMesh,
+    ) -> Result<(), panta_mesh::VolumeError> {
+        if self.cell_regions.is_empty() {
+            return Ok(());
+        }
+        let count = u32::try_from(self.region_names.len())
+            .map_err(|_| panta_mesh::VolumeError("too many regions".to_owned()))?;
+        if self.cell_regions.len() != mesh.cell_count()
+            || self.cell_regions.iter().any(|&region| region >= count)
+        {
+            return Err(panta_mesh::VolumeError(
+                "cell region table mismatch".to_owned(),
+            ));
+        }
+        for tet in 0..mesh.tets.len() {
+            let cell = mesh.tet_cell(tet);
+            mesh.tets[tet].region = self.cell_regions[cell];
+        }
+        mesh.region_count = count;
+        Ok(())
+    }
+
+    /// 把领域构建得到的外表面三角形映射回来源边界面所在组；未被任何来源面覆盖的三角形
+    /// （来源边界不完整）归入 `unassigned` 组。未被引用的组（如零面 patch）删除并重新编号。
+    fn apply_boundary_groups(&mut self, mesh: &mut panta_mesh::TetMesh) {
+        let Some(boundary) = self.boundary.take() else {
+            return;
+        };
+        let node_count = mesh.nodes.len();
+        let mut starts = vec![0usize; node_count + 1];
+        let face_range = |face: usize| {
+            let start = if face == 0 {
+                0
+            } else {
+                boundary.ends[face - 1]
+            };
+            start..boundary.ends[face]
+        };
+        for face in 0..boundary.ends.len() {
+            for &node in &boundary.nodes[face_range(face)] {
+                if let Some(slot) = starts.get_mut(node as usize + 1) {
+                    *slot += 1;
+                }
+            }
+        }
+        for node in 0..node_count {
+            starts[node + 1] += starts[node];
+        }
+        let mut cursor = starts.clone();
+        let mut incident = vec![0u32; starts[node_count]];
+        for face in 0..boundary.ends.len() {
+            for &node in &boundary.nodes[face_range(face)] {
+                if let Some(slot) = cursor.get_mut(node as usize) {
+                    incident[*slot] = face as u32;
+                    *slot += 1;
+                }
+            }
+        }
+        let unassigned = boundary.names.len() as u32;
+        let mut used = vec![false; boundary.names.len() + 1];
+        for triangle in &mut mesh.boundary {
+            let [a, b, c] = triangle.nodes;
+            let group = incident[starts[a as usize]..starts[a as usize + 1]]
+                .iter()
+                .find(|&&face| {
+                    let nodes = &boundary.nodes[face_range(face as usize)];
+                    nodes.contains(&b) && nodes.contains(&c)
+                })
+                .map_or(unassigned, |&face| boundary.groups[face as usize]);
+            used[group as usize] = true;
+            triangle.group = group;
+        }
+        let mut names = boundary.names;
+        names.push("unassigned".to_owned());
+        let mut remap = vec![0u32; names.len()];
+        self.boundary_group_names.clear();
+        for (group, name) in names.into_iter().enumerate() {
+            if used[group] {
+                remap[group] = self.boundary_group_names.len() as u32;
+                self.boundary_group_names.push(name);
+            }
+        }
+        for triangle in &mut mesh.boundary {
+            triangle.group = remap[triangle.group as usize];
+        }
+        mesh.boundary_group_count = self.boundary_group_names.len() as u32;
     }
 
     /// 收下一个来源数组：首期只接受 1 或 3 分量、个数与节点 / 单元数一致的数组；
