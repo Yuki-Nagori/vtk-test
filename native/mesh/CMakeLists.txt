@@ -8,7 +8,8 @@ panta_require_sdk("netgen" _netgen_staging)
 # libnglib 运行期跨 staging 依赖 OCCT 工具链；Linux 的 DT_RUNPATH 不传递，
 # 这些工具链必须成为可执行文件的直接依赖才能经构建 rpath 解析，因此按
 # 制品 NetgenConfig 的 NETGEN_OCC_LIBRARIES 全集显式列出并链接（与
-# Release sdk-occt-netgen-8.0.1-6.2.2604 核对一致，升级时同步核对）。
+# Release sdk-occt-netgen-8.0.1-6.2.2604 核对一致；2026-10-24 本仓库重产后
+# 复核未变，升级时同步核对）。
 # find_package 的 imported targets 留在调用目录作用域，故 OCCT 需在本
 # 目录再次供给（缓存 marker 命中，不重复下载）。
 panta_require_sdk("occt" _occt_staging)

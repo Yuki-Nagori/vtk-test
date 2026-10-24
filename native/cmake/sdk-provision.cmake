@@ -393,25 +393,31 @@ panta_sdk_declare_version(vtk 9.7.0)
 # v9.7.0 → commit 23f0a095621e91bbdbeace8451e22b950c8e5f46（unmodified）；
 # Release/共享库/C++20/WebGPU hardware-window，不链接 Qt；Dawn 与 VTK 同包，
 # 三平台 REQUIRED_TARGETS 以真实归档内的 imported targets 为准。
+# 2026-10-24 任务 041：生产迁入本仓库，Release 改为 Yuki-Nagori/vtk-test 同名
+# tag；新增 RenderingAnnotation（视口色标 vtkScalarBarActor，任务 038），
+# workflow run 40099745820 三平台生产/自检/打包/发布全绿，下方 SHA 按 sidecar
+# 与 Release API digest 实测回填。macOS 生产 runner 已由 macos-latest 滚动到
+# macos-26-arm64 镜像（部署目标仍为 13.0），ABI 标签随之更新。
 # Linux 注意：ubuntu-24.04 gcc13 生产，有效 glibc 基线高于 Qt 的 RHEL9
 # （≥2.34）；实际下限由 007 运行验证后回写。
 panta_sdk_declare_asset(
   vtk
   macos-arm64
   URL
-  https://github.com/Yuki-Nagori/panta/releases/download/sdk-vtk-9.7.0-webgpu/vtk-9.7.0-macos-arm64.tar.gz
+  https://github.com/Yuki-Nagori/vtk-test/releases/download/sdk-vtk-9.7.0-webgpu/vtk-9.7.0-macos-arm64.tar.gz
   SHA256
-  fd8cbab6bdf5db1d9ae919c73b4fb3c3e7b60d5ed369bfc4b01c6c5b8d03ac6e
+  515c61a363d921e4159ab31c660d15ff36c662945ec794a417984200880cf815
   PACKAGE
   VTK
   REQUIRED_TARGETS
   VTK::RenderingWebGPU
   VTK::RenderingUI
+  VTK::RenderingAnnotation
   dawn::webgpu_dawn
   ABI
-  macos-15-apple-clang-arm64-Release-shared
+  macos-26-apple-clang-arm64-Release-shared
   MODULES
-  RenderingWebGPU/RenderingUI/RenderingCore
+  RenderingWebGPU/RenderingUI/RenderingCore/RenderingAnnotation
   及
   vtkCocoaHardwareWindow（Cocoa）
   LICENSE
@@ -423,19 +429,20 @@ panta_sdk_declare_asset(
   vtk
   linux-x86_64
   URL
-  https://github.com/Yuki-Nagori/panta/releases/download/sdk-vtk-9.7.0-webgpu/vtk-9.7.0-linux-x86_64.tar.gz
+  https://github.com/Yuki-Nagori/vtk-test/releases/download/sdk-vtk-9.7.0-webgpu/vtk-9.7.0-linux-x86_64.tar.gz
   SHA256
-  82b8fa2df5c8e275fa81eab618050584994150adbab8f14c268bb1ce586093d7
+  8fc89f1633b30be69ea218dae8c6eda652112122e14ab497ea2674509107c35c
   PACKAGE
   VTK
   REQUIRED_TARGETS
   VTK::RenderingWebGPU
   VTK::RenderingUI
+  VTK::RenderingAnnotation
   dawn::webgpu_dawn
   ABI
   ubuntu-24.04-gcc13-x86_64-Release-shared
   MODULES
-  RenderingWebGPU/RenderingUI/RenderingCore
+  RenderingWebGPU/RenderingUI/RenderingCore/RenderingAnnotation
   及
   vtkWaylandHardwareWindow（Wayland，VTK_USE_X=OFF）
   LICENSE
@@ -447,19 +454,20 @@ panta_sdk_declare_asset(
   vtk
   windows-x86_64
   URL
-  https://github.com/Yuki-Nagori/panta/releases/download/sdk-vtk-9.7.0-webgpu/vtk-9.7.0-windows-x86_64.tar.gz
+  https://github.com/Yuki-Nagori/vtk-test/releases/download/sdk-vtk-9.7.0-webgpu/vtk-9.7.0-windows-x86_64.tar.gz
   SHA256
-  9015243120fd22d2f1ba509d6213b1d1579b699d7f83b8d3b32cd3586ec72e49
+  5a088f5bed4fc02cf8687991be830c72cbe40da2a52674021f9eedbc27267032
   PACKAGE
   VTK
   REQUIRED_TARGETS
   VTK::RenderingWebGPU
   VTK::RenderingUI
+  VTK::RenderingAnnotation
   dawn::webgpu_dawn
   ABI
   windows-msvc2022-v143-x64-Release-shared-MD
   MODULES
-  RenderingWebGPU/RenderingUI/RenderingCore
+  RenderingWebGPU/RenderingUI/RenderingCore/RenderingAnnotation
   及
   vtkWin32HardwareWindow（Win32）
   LICENSE
@@ -478,21 +486,23 @@ panta_sdk_declare_version(occt 8.0.1)
 # Windows SDK 不再消费（仅 Windows 有归档、跨平台工具链不一致）。源码 tag
 # V8.0.1 → commit b8f597c677811d1f9f4d8a97f5ae2825c0353a42（unmodified）；
 # Release/Shared，Draw/Visualization/DETools 与 USE_FREETYPE/USE_XLIB 关闭
-# （渲染归 VTK）。
+# （渲染归 VTK）。2026-10-24 任务 041：生产迁入本仓库，配置不变，按
+# Yuki-Nagori/vtk-test 同名 tag 重产（workflow run 40099749860 三平台全绿），
+# 下方 SHA 按 sidecar 与 Release API digest 实测回填。
 panta_sdk_declare_asset(
   occt
   macos-arm64
   URL
-  https://github.com/Yuki-Nagori/panta/releases/download/sdk-occt-netgen-8.0.1-6.2.2604/occt-8.0.1-macos-arm64.tar.gz
+  https://github.com/Yuki-Nagori/vtk-test/releases/download/sdk-occt-netgen-8.0.1-6.2.2604/occt-8.0.1-macos-arm64.tar.gz
   SHA256
-  863f6bf5bba3d4cf623f697e429b34a4c9f5a32bba8d310e9dd85c0bffa4b2d7
+  6ee6314b739dbfc4d3aaa4ca3a69f610405f28d388e9862fc6e5320b5c7eee25
   PACKAGE
   OpenCASCADE
   REQUIRED_TARGETS
   TKernel
   TKDESTEP
   ABI
-  macos-15-apple-clang-arm64-Release-shared
+  macos-26-apple-clang-arm64-Release-shared
   MODULES
   ModelingData/ModelingAlgorithms/DataExchange/ApplicationFramework（Draw/Visualization/DETools
   关闭）
@@ -503,9 +513,9 @@ panta_sdk_declare_asset(
   occt
   linux-x86_64
   URL
-  https://github.com/Yuki-Nagori/panta/releases/download/sdk-occt-netgen-8.0.1-6.2.2604/occt-8.0.1-linux-x86_64.tar.gz
+  https://github.com/Yuki-Nagori/vtk-test/releases/download/sdk-occt-netgen-8.0.1-6.2.2604/occt-8.0.1-linux-x86_64.tar.gz
   SHA256
-  a87e1c47a8a1c74beb7c8d1103df3f89c03e2733084e2cac0b101440eeb4d80c
+  2f0077b82fc0e3ccdf85665be9dd0c3fdefc9009eb90ef684db14491d9a5ee92
   PACKAGE
   OpenCASCADE
   REQUIRED_TARGETS
@@ -523,9 +533,9 @@ panta_sdk_declare_asset(
   occt
   windows-x86_64
   URL
-  https://github.com/Yuki-Nagori/panta/releases/download/sdk-occt-netgen-8.0.1-6.2.2604/occt-8.0.1-windows-x86_64.tar.gz
+  https://github.com/Yuki-Nagori/vtk-test/releases/download/sdk-occt-netgen-8.0.1-6.2.2604/occt-8.0.1-windows-x86_64.tar.gz
   SHA256
-  211d950c888c56137f2862573fd1d296fdecf16e3105bdda0a583ee297079513
+  b197cf4e4b66f56d30d16d0abcbe8896773aaffab69ef95cad51ac7b06feab81
   PACKAGE
   OpenCASCADE
   REQUIRED_TARGETS
@@ -551,20 +561,21 @@ panta_sdk_declare_version(netgen 6.2.2604)
 # 首版因此内含 AVX-512，无 AVX-512 消费机加载即 SIGILL）。包配置文件名为
 # NetgenConfig.cmake（大写 N）：find_package 须用 `Netgen`。运行期依赖同
 # 平台 OCCT 资产（消费侧处理加载路径，009/010）。
+# 2026-10-24 任务 041：随 OCCT 在本仓库重产（run 40099749860）。
 panta_sdk_declare_asset(
   netgen
   macos-arm64
   URL
-  https://github.com/Yuki-Nagori/panta/releases/download/sdk-occt-netgen-8.0.1-6.2.2604/netgen-6.2.2604-macos-arm64.tar.gz
+  https://github.com/Yuki-Nagori/vtk-test/releases/download/sdk-occt-netgen-8.0.1-6.2.2604/netgen-6.2.2604-macos-arm64.tar.gz
   SHA256
-  f68ef20b69632f0cf9c32ea4fd922d5279ddf3303e62f3820c0ac62343afcbfe
+  2c8ef67a6101a63f3e24b8cbf6a328433bd66d0fc959337dd1cadedc943c24f7
   PACKAGE
   Netgen
   REQUIRED_TARGETS
   ngcore
   nglib
   ABI
-  macos-15-apple-clang-arm64-Release-shared（链接本
+  macos-26-apple-clang-arm64-Release-shared（链接本
   Release
   的
   occt
@@ -579,9 +590,9 @@ panta_sdk_declare_asset(
   netgen
   linux-x86_64
   URL
-  https://github.com/Yuki-Nagori/panta/releases/download/sdk-occt-netgen-8.0.1-6.2.2604/netgen-6.2.2604-linux-x86_64.tar.gz
+  https://github.com/Yuki-Nagori/vtk-test/releases/download/sdk-occt-netgen-8.0.1-6.2.2604/netgen-6.2.2604-linux-x86_64.tar.gz
   SHA256
-  cdd4f2f27b2eacb09de16a4efeeb2c92647b1b6fb2adfe83d90d6904683496f4
+  20a2f3cd3b6c475d5efdfdaf1539038e9433ca23d565e7e679b59b18da0a36d5
   PACKAGE
   Netgen
   REQUIRED_TARGETS
@@ -603,9 +614,9 @@ panta_sdk_declare_asset(
   netgen
   windows-x86_64
   URL
-  https://github.com/Yuki-Nagori/panta/releases/download/sdk-occt-netgen-8.0.1-6.2.2604/netgen-6.2.2604-windows-x86_64.tar.gz
+  https://github.com/Yuki-Nagori/vtk-test/releases/download/sdk-occt-netgen-8.0.1-6.2.2604/netgen-6.2.2604-windows-x86_64.tar.gz
   SHA256
-  a986842033c69185d0ff651da30fb73b375c6ca2b86e702f3e53ef3d78c0b7de
+  8b2db13e9b122a43086a42a471140c2319a3ae3e92408ea077c8276bb9184183
   PACKAGE
   Netgen
   REQUIRED_TARGETS
@@ -630,29 +641,31 @@ panta_sdk_declare_version(googletest 1.18.0)
 # 2026-10-14 workflow run 38509650651 按 macOS 13.0 目标重产并通过三平台自检、
 # 打包、发布，下方 SHA 按 sidecar 与 Release API digest 实测更新。上游 commit
 # 063de7e9578f82b369302001269680b4b1553359；C++17，Windows /MD；不含 gmock。
+# 2026-10-24 任务 041：在本仓库重产（workflow run 40099754184），URL 改为
+# Yuki-Nagori/vtk-test，SHA 按 sidecar 与 Release API digest 实测回填。
 panta_sdk_declare_asset(
   googletest
   macos-arm64
   URL
-  https://github.com/Yuki-Nagori/panta/releases/download/sdk-googletest-1.18.0/googletest-1.18.0-macos-arm64.tar.gz
+  https://github.com/Yuki-Nagori/vtk-test/releases/download/sdk-googletest-1.18.0/googletest-1.18.0-macos-arm64.tar.gz
   SHA256
-  5c7c6467a1988da5891ff57a864308bbc54f7cc5c593bd3b30b6f6dd43678a18
+  58996fdc1b268dfd186a546a66a7824b0eb34d2914fbbafbf9689197f1823d83
   PACKAGE
   GTest
   REQUIRED_TARGETS
   GTest::gtest
   GTest::gtest_main
   ABI
-  macos-15-apple-clang-arm64-Release-static-cxx17
+  macos-26-apple-clang-arm64-Release-static-cxx17
   LICENSE
   BSD-3-Clause)
 panta_sdk_declare_asset(
   googletest
   linux-x86_64
   URL
-  https://github.com/Yuki-Nagori/panta/releases/download/sdk-googletest-1.18.0/googletest-1.18.0-linux-x86_64.tar.gz
+  https://github.com/Yuki-Nagori/vtk-test/releases/download/sdk-googletest-1.18.0/googletest-1.18.0-linux-x86_64.tar.gz
   SHA256
-  2c3f1941a732475106a3caea607299fe8f8cd7a0481af3f8246d2e6e2794c841
+  7bdf2a49af0cf7ca99bad99c8a42a1a5f5612284da1e8d120dc76b8d39294c56
   PACKAGE
   GTest
   REQUIRED_TARGETS
@@ -666,9 +679,9 @@ panta_sdk_declare_asset(
   googletest
   windows-x86_64
   URL
-  https://github.com/Yuki-Nagori/panta/releases/download/sdk-googletest-1.18.0/googletest-1.18.0-windows-x86_64.tar.gz
+  https://github.com/Yuki-Nagori/vtk-test/releases/download/sdk-googletest-1.18.0/googletest-1.18.0-windows-x86_64.tar.gz
   SHA256
-  0fc2f014e6b2b5c7c84fd5020fb53cac30072717008d238bd06af03cfcd70a33
+  82f38c72edec8737abed9ca5ab29ac9241d45fef9746686554a7119b199727b8
   PACKAGE
   GTest
   REQUIRED_TARGETS

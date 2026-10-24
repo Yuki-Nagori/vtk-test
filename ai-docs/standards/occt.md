@@ -1,6 +1,6 @@
 # OpenCASCADE / OCCT 几何适配
 
-更新日期：2026-10-20。OCCT 8.0.1 制品消费与 STEP 适配已存在；本仓库继续消费原 Panta 已发布的 SDK，当前平台验证单独记录。
+更新日期：2026-10-24。OCCT 8.0.1 制品消费与 STEP 适配已存在；SDK 自任务 041 起由本仓库生产与发布（配置与原 Panta 一致），当前平台验证单独记录。
 
 适用于 `native/geometry/src/occt/`（适配层与 `mesh/src/netgen`、`visualization/src/vtk` 同构）。OCCT 固定 8.0.1（`sdk-provision.cmake` 清单，Release `sdk-occt-netgen-8.0.1-6.2.2604`）；在线文档重定向后的 API 不能直接当成本地已可用 API，以锁定制品头文件为准。
 

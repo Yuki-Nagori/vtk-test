@@ -34,7 +34,7 @@ vtk-test 受信 CI 按[冻结的构建描述](https://github.com/Yuki-Nagori/vtk
 
 本 Release 维持单一标签 `sdk-vtk-9.7.0-webgpu`：`sdk-vtk.yml` 重产时，只有三平台矩阵全部通过后才清空旧资产并全量重传；归档字节随重产变化，消费侧以 `native/cmake/sdk-provision.cmake` 登记的 SHA256 为准，登记更新与集成验证同任务完成。
 
-- 2026-10-24：任务 041 在 vtk-test 首次生产，相对原 Panta 同名 Release 新增 `RenderingAnnotation`。
+- 2026-10-24：任务 041 在 vtk-test 首次生产，相对原 Panta 同名 Release 新增 `RenderingAnnotation`（workflow run 40099745820，三平台生产 / 自检 / 发布全绿）。
 
 ## 许可证
 
