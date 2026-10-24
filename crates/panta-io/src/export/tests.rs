@@ -1,5 +1,5 @@
 use super::*;
-use crate::formats::{parse_obj, parse_ply, parse_vtk_legacy, parse_vtp, parse_vtu};
+use crate::import::formats::{parse_obj, parse_ply, parse_vtk_legacy, parse_vtp, parse_vtu};
 use panta_mesh::Progress;
 
 fn sample() -> SurfaceMesh {
@@ -138,7 +138,7 @@ fn progress_export_completes_and_cancel_leaves_no_target() -> Result<(), Box<dyn
 #[test]
 fn tet_volume_round_trips_through_vtu_and_rejects_other_cells()
 -> Result<(), Box<dyn std::error::Error>> {
-    use crate::formats::{parse_vtk_legacy_grid, parse_vtu_grid};
+    use crate::import::formats::{parse_vtk_legacy_grid, parse_vtu_grid};
     let nodes = vec![
         [0.0, 0.0, 0.0],
         [1.0, 0.0, 0.0],
@@ -193,7 +193,7 @@ mod streamed {
         Base64Probe, ExportError, export_surface_asset_with_progress, export_surface_mesh,
         export_tet_mesh_vtu, export_volume_asset_vtu,
     };
-    use crate::formats::{parse_obj, parse_ply, parse_vtk_legacy, parse_vtp, parse_vtu};
+    use crate::import::formats::{parse_obj, parse_ply, parse_vtk_legacy, parse_vtp, parse_vtu};
     use panta_mesh::{
         MeshAsset, Progress, SurfaceAssetChunks, SyntheticTetBlock, TetMesh, VolumeAssetChunks,
         encode_mesh_asset, write_volume_asset_streaming,
@@ -235,7 +235,8 @@ mod streamed {
         export_surface_asset_with_progress(&mut chunks, &streamed, &Progress::new())?;
         assert_eq!(std::fs::read(&streamed)?, std::fs::read(&resident)?);
 
-        type Parser = fn(&[u8]) -> Result<panta_mesh::SurfaceMesh, crate::formats::FormatError>;
+        type Parser =
+            fn(&[u8]) -> Result<panta_mesh::SurfaceMesh, crate::import::formats::FormatError>;
         let parsers: [(&str, Parser); 5] = [
             ("obj", parse_obj),
             ("ply", parse_ply),

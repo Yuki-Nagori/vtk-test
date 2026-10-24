@@ -60,9 +60,9 @@ Rust 服务和领域操作失败时应通过结构化错误 DTO 返回稳定错�
 
 当前 QML / Bridge 仅围绕创建、打开、保存工程，STL 预检 / 导入与模型资产显示工作。CXX 不再投影材料 / 分析序列目录、方案草稿或配置确认请求；`ProjectViewModel` 不维护这些字段的 Qt 模型、计时器、pending 状态或完成信号。真实工程操作输入仅携带操作 kind、路径和名称。创建、打开和保存使用后台 I/O：begin 表示准入，拥有式请求在后台 wait，服务线程 finish 校验作用域并发布结果；准入不等于保存成功。
 
-网格类型目录和导入默认值仍由 `panta-import` 提供，Qt 缓存实际导入表单需要的 `meshTypes` / `defaultMeshType`。`ImportRecord.mesh_type` 是导入时保存的选择，不证明体网格或其他派生网格已经生成。显示快照只在工程、导入和活动文档改变时读取，不进入逐帧渲染；源码入口为 `crates/panta-import/src/lib.rs` 和 `crates/panta-core/src/project/`。
+网格类型目录和导入默认值仍由 `panta-io` 提供，Qt 缓存实际导入表单需要的 `meshTypes` / `defaultMeshType`。`ImportRecord.mesh_type` 是导入时保存的选择，不证明体网格或其他派生网格已经生成。显示快照只在工程、导入和活动文档改变时读取，不进入逐帧渲染；源码入口为 `crates/panta-io/src/lib.rs` 和 `crates/panta-core/src/project/`。
 
-导入资源提醒由 Rust 定义：`panta-mesh` 按未压缩 Mesh 资产布局估算字节数，`panta-import::StlImportPreview` 返回 `expanded_mesh_bytes` 和 `large_mesh_warning`。GUI 与 CLI 展示同一预览结果，不分别计算面数公式或维护阈值。严格超过 2 GiB 只提醒，不阻止导入；估算不代表进程 RSS、来源文件大小或 GPU 内存。阈值与估算通过工程服务回归验证。
+导入资源提醒由 Rust 定义：`panta-mesh` 按未压缩 Mesh 资产布局估算字节数，`panta-io::StlImportPreview` 返回 `expanded_mesh_bytes` 和 `large_mesh_warning`。GUI 与 CLI 展示同一预览结果，不分别计算面数公式或维护阈值。严格超过 2 GiB 只提醒，不阻止导入；估算不代表进程 RSS、来源文件大小或 GPU 内存。阈值与估算通过工程服务回归验证。
 
 ## 当前 VTK 审计
 
@@ -83,13 +83,13 @@ Rust 服务和领域操作失败时应通过结构化错误 DTO 返回稳定错�
 
 ## STEP / IGES / STL 的导入扩展
 
-Rust 工作区由 `panta-import` 承担统一的**导入服务契约**，不要求三种格式共用一个文本或几何解析器。请求记录格式、来源资产、用户确认的长度单位策略和工程修订；结果包含可提交的资产引用、数据类别、来源与诊断。`panta-import` 负责格式识别、来源快照、预览 / 导入准备和格式诊断；`panta-core` 负责工程修订、失败保留旧资产和持久化。格式解码器由拥有数据模型的领域 crate 持有：STL 解码器在 `panta-mesh`，未来 STEP/IGES 读取通过 `panta-geom` 的后端契约调用 OCCT。按实际消费者添加格式路由，禁止一个 `parse<T>` 之类的空泛框架遮盖三者完全不同的语义。可共享的是来源快照、单位策略、修订与失败保留旧资产的导入事务，不是解析接口；STL 返回 `SurfaceMesh`，STEP 和 IGES 分别返回带格式诊断的 `GeometryAsset`。
+Rust 工作区由 `panta-io` 承担统一的**导入服务契约**，不要求三种格式共用一个文本或几何解析器。请求记录格式、来源资产、用户确认的长度单位策略和工程修订；结果包含可提交的资产引用、数据类别、来源与诊断。`panta-io` 负责格式识别、来源快照、预览 / 导入准备和格式诊断；`panta-core` 负责工程修订、失败保留旧资产和持久化。格式解码器由拥有数据模型的领域 crate 持有：STL 解码器在 `panta-mesh`，未来 STEP/IGES 读取通过 `panta-geom` 的后端契约调用 OCCT。按实际消费者添加格式路由，禁止一个 `parse<T>` 之类的空泛框架遮盖三者完全不同的语义。可共享的是来源快照、单位策略、修订与失败保留旧资产的导入事务，不是解析接口；STL 返回 `SurfaceMesh`，STEP 和 IGES 分别返回带格式诊断的 `GeometryAsset`。
 
 | 输入 | Rust 领域归属 | 实际读取 / 算法 | 输出契约 |
 |---|---|---|---|
-| STL | `panta-import` 分发，`panta-mesh` 持有网格及解码器 | `panta-mesh` 解析 binary / ASCII，得到表面三角网格；不假装 STL 包含 B-rep 拓扑或体网格 | `SurfaceMesh`、原始单位解释、摘要与解析诊断 |
-| STEP | `panta-import` 分发，`panta-geom`（规划）持有几何 | C++ OCCT STEP reader / translator；装配、名称、颜色能力按所选路径明确 | 几何资产身份、单位、拓扑引用及按需显示三角化 |
-| IGES | `panta-import` 分发，`panta-geom`（规划）持有几何 | C++ OCCT IGES reader / translator；实测后再确定修复与实体支持范围 | 与 STEP 同一几何领域契约，但保留格式特有诊断 |
+| STL | `panta-io` 分发，`panta-mesh` 持有网格及解码器 | `panta-mesh` 解析 binary / ASCII，得到表面三角网格；不假装 STL 包含 B-rep 拓扑或体网格 | `SurfaceMesh`、原始单位解释、摘要与解析诊断 |
+| STEP | `panta-io` 分发，`panta-geom`（规划）持有几何 | C++ OCCT STEP reader / translator；装配、名称、颜色能力按所选路径明确 | 几何资产身份、单位、拓扑引用及按需显示三角化 |
+| IGES | `panta-io` 分发，`panta-geom`（规划）持有几何 | C++ OCCT IGES reader / translator；实测后再确定修复与实体支持范围 | 与 STEP 同一几何领域契约，但保留格式特有诊断 |
 
 跨格式共享的是导入编排和工程资产元数据，不是所有文件都先化成同一种 Mesh。STEP/IGES 的 B-rep 由 C++ adapter 的 native shape 所有者管理并释放，Rust 只保存稳定领域 ID 与修订号；跨 FFI 通过 ID 寻址，修订不匹配则拒绝操作。可视化三角化是派生缓存，不能替代几何资产。STL 是表面网格，若未来用于体网格生成，应经明确的转换 / 网格任务，不把它伪装成原生 OCCT shape。
 
@@ -97,7 +97,7 @@ Rust 工作区由 `panta-import` 承担统一的**导入服务契约**，不要�
 
 | 阶段 | Rust 权威 | C++ / 重库适配 | 提交结果 |
 |---|---|---|---|
-| 读取 STL | `panta-import` 编排来源快照，`panta-mesh` 解析并拥有 `SurfaceMesh` | 无格式解析或业务选择 | 原始 source asset 与 Surface Mesh revision 分别标识 |
+| 读取 STL | `panta-io` 编排来源快照，`panta-mesh` 解析并拥有 `SurfaceMesh` | 无格式解析或业务选择 | 原始 source asset 与 Surface Mesh revision 分别标识 |
 | A. 直接显示 | 选择活动 Mesh revision，返回拥有内存的批量快照 | C++ 将三角面转换为 `vtkPolyData`，VTK 管 renderer / WebGPU 生命周期 | 无工程写入，仅显示派生数据 |
 | B. 修复为几何 | 决定是否启动转换任务、领域操作选项和来源 revision；校验并提交新 `GeometryAsset` | C++ adapter 将领域选项映射到 OCCT 参数，重建 faceted B-rep、执行范围明确的 B-rep 修复并返回诊断 | 新几何 ID / revision 与来源 Mesh revision 关联；原 Mesh 保留 |
 | C. 生成体网格 | 选择 `SurfaceMesh` revision、领域网格参数和任务语义；`panta-mesh` 校验 `TetMesh` 并提交 | C++ adapter 调用 Netgen 的 STL 几何入口与适用的表面 / 体网格优化步骤，转换输出 DTO，不持有 Rust 领域规则 | 新 Volume Mesh ID / revision 与来源 Mesh 和参数关联 |
@@ -116,11 +116,11 @@ Rust 工作区由 `panta-import` 承担统一的**导入服务契约**，不要�
 
 ## Rust crate 划分
 
-五个领域名称可以采用，按实际功能逐步建立。`panta-import` 是已落地 STL 消费者的跨格式导入入口，负责来源快照和解析分发，不代替领域数据 crate。`geom` 表示几何领域，`bc` 明确表示 boundary conditions；公共文档和接口注释使用完整含义。
+五个领域名称可以采用，按实际功能逐步建立。`panta-io` 是已落地 STL 消费者的跨格式导入入口，负责来源快照和解析分发，不代替领域数据 crate。`geom` 表示几何领域，`bc` 明确表示 boundary conditions；公共文档和接口注释使用完整含义。
 
 | crate | 拥有的内容 | 领域依赖上限 | 创建触发条件 |
 |---|---|---|---|
-| `panta-import` | 格式识别、来源快照、预览、选项与导入准备 | `panta-mesh`；STEP / IGES 落地后按需依赖 `panta-geom` | STL 工程导入已有实际消费者 |
+| `panta-io` | `import`：格式识别、来源快照、预览、选项与导入准备；`export`：各格式写出 | `panta-mesh`；STEP / IGES 落地后按需依赖 `panta-geom` | STL 工程导入已有实际消费者 |
 | `panta-geom`（规划） | Shape/Face/Edge ID、几何修订、单位、导入请求与摘要、拓扑引用有效性、后端操作契约 | 无 | 实现 STEP 导入到工程资产的完整通路；不存 `TopoDS_Shape` |
 | `panta-mesh` | 表面 / 体 Mesh IR、连接关系、分组、来源几何修订、STL 解码、体网格校验与总体积摘要 | `panta-geom`，仅当实际需要来源几何契约时 | 统一 STL 解析与显示数据通路，并承接 Netgen DTO 校验 |
 | `panta-material`（规划） | 材料定义、属性及单位、来源版本、表格数据和校验 | 无 | 首次材料编辑 / 持久化功能；不实现外部求解器的本构计算 |

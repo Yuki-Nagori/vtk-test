@@ -3,7 +3,7 @@
 [![CI](https://github.com/Yuki-Nagori/vtk-test/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Yuki-Nagori/vtk-test/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-本仓库是最小可视化渲染测试仓库，从 Panta 代码起步，应用与 crate 暂沿用 `panta` 名称。核心是模型导入、几何 / 网格处理与 VTK 渲染；project 用于组织测试模型、资产和场景。
+本仓库是最小可视化渲染测试仓库，从 Panta 代码起步，应用与 crate 沿用 `panta` 名称（维护者已决定不整体改名，见 task 005）。核心是模型导入、几何 / 网格处理与 VTK 渲染；project 用于组织测试模型、资产和场景。
 
 当前保留 Qt Quick / C++ ViewModel 宿主、Rust 工程创建 / 打开 / 保存、STL 导入与旁置网格资产、VTK WebGPU 原生视口，以及 OCCT STEP 和 Netgen 体网格适配与测试。STEP 接入工程、网格生成交互和网格修复仍需后续实现与验证，不把适配冒烟当作完整工作流。后续还需导入已求解数据，将结果场与网格、材料区域和边界标签关联后可视化，见[模型与结果数据设计](ai-docs/architecture/study-and-automation.md)。界面直接使用中文，已收敛为工程工具栏、模型列表与 VTK 视口；分析设置等旧界面已移除，工程中原有设置字段暂保留。未加载模型时视口留白，不创建默认 Welcome 场景。
 

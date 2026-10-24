@@ -1,7 +1,7 @@
 # 多格式导入夹具（任务 010）
 
 全部由 VTK 9.7.1 Python writer 生成，期望三角形数用 `vtkDataSetSurfaceFilter + vtkTriangleFilter`
-交叉得到；断言见 `crates/panta-import/src/formats/mod.rs` 与 `tests/rust/cli.rs`。
+交叉得到；断言见 `crates/panta-io/src/import/formats/mod.rs` 与 `tests/rust/cli.rs`。
 
 | 文件 | 来源数据 | 编码 | 期望三角形 |
 |---|---|---|---|

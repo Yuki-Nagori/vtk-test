@@ -3,7 +3,7 @@
 //! 工程目录由宿主选择，工程模型和清单事务由 Rust 持有。Qt/QML 只通过
 //! CXX adapter 传递 UTF-8 路径、名称和命令，不直接读写清单文件。
 
-use panta_import::StlImportSession;
+use panta_io::import::StlImportSession;
 mod activation_result;
 mod error;
 pub use activation_result::CompletedActivation;
@@ -17,7 +17,7 @@ pub use error::ProjectError;
 use mesh_cache::SurfaceMeshCache;
 pub use model::{ProjectCommand, ProjectSnapshot};
 use model::{ProjectManifest, ProjectState};
-pub use panta_import::{
+pub use panta_io::import::{
     DEFAULT_MESH_TYPE, IMPORT_RECORD_VERSION, ImportRecord, MESH_TYPES, STL_IMPORT_PARSER_VERSION,
     StlImportPreview, VolumeGeneration, default_display_name,
 };
@@ -75,7 +75,7 @@ mod tests {
         temp_directory,
     };
     use crate::activation::{ActivationCoordinator, ActivationRequest, OUTCOME_CAPACITY};
-    use panta_import::ImportRecord;
+    use panta_io::import::ImportRecord;
     use panta_mesh::SurfaceMesh;
     use std::path::PathBuf;
     use std::sync::Arc;

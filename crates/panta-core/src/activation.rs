@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError};
 
-use panta_import::ImportError;
+use panta_io::import::ImportError;
 use panta_mesh::{
     MeshAsset, MeshAssetError, MeshAssetReader, SurfaceMesh, TetMesh, VolumeStreamCounts,
 };

@@ -26,7 +26,7 @@ panta/
 │   ├── panta-ffi/             # CXX DTO/句柄/错误边界与 staticlib
 │   ├── panta-cli/             # 工程创建/检查与 STL 检查/导入 CLI
 │   ├── panta-geom/            # 规划：几何身份、修订与后端契约
-│   ├── panta-import/          # 当前：格式识别、来源快照与 STL 导入准备
+│   ├── panta-io/              # import：格式识别、来源快照与解析；export：各格式写出
 │   ├── panta-mesh/            # 当前：STL 网格数据、Mesh IR 与领域校验
 │   ├── panta-bc/              # 规划：边界条件与目标引用
 │   ├── panta-material/        # 规划：材料数据、单位与版本
@@ -62,7 +62,7 @@ panta/
 
 ## 模块归属
 
-当前 `panta-core` 已包含 project/path/task 与工程存储服务；导入格式入口在 `panta-import`，STL 网格解析与领域校验在 `panta-mesh`。`panta-foundation` 拥有进程设施，`panta-ffi` 负责跨语言契约和服务转发。规划的五个领域 crate 按实际功能建立，其职责、依赖方向和迁移门槛以 [重库适配与 Rust 领域模块](native-domain-boundaries.md) 为准；领域 crate 不反向依赖承载应用服务的 core，避免循环。
+当前 `panta-core` 已包含 project/path/task 与工程存储服务；导入格式入口在 `panta-io`，STL 网格解析与领域校验在 `panta-mesh`。`panta-foundation` 拥有进程设施，`panta-ffi` 负责跨语言契约和服务转发。规划的五个领域 crate 按实际功能建立，其职责、依赖方向和迁移门槛以 [重库适配与 Rust 领域模块](native-domain-boundaries.md) 为准；领域 crate 不反向依赖承载应用服务的 core，避免循环。
 
 `project`、`workflow` 与 `storage` 是后续职责拆分方向，不是已存在的独立 crate。当前不再规划另一份含义重叠的 `crates/core/`；共享基础类型有真实消费者后才确定归属。C++ `include/panta/<module>/` 暴露自有 native 契约，`src/occt`、`src/netgen` 封装重库；`src/vtk` 同时承载显示后端，导航内部归 `navigation/`。业务状态逐步归 Rust；保留本地相机、命中和窗口生命周期。ViewModel 只适配 UI，QML 处理布局、展示与绑定。
 
@@ -76,7 +76,7 @@ panta/
 | 分组 | 当前成员与职责 |
 |---|---|
 | Rust 基础/构建 | `panta-foundation` 进程设施；`panta-build` 工具供给与构建调度 |
-| Rust 领域 | `panta-mesh` 网格 IR；`panta-import` 格式导入编排；`panta-core` 工程与服务。现有依赖是 `core → import/mesh`、`import → mesh` |
+| Rust 领域 | `panta-mesh` 网格 IR；`panta-io` 格式导入编排；`panta-core` 工程与服务。现有依赖是 `core → import/mesh`、`import → mesh` |
 | Rust 工具入口 | `panta-launcher` 组合 Rust 服务与 native 产品；`panta-tests` 承载质量/测试调度 |
 | FFI | `panta-ffi` 通过 CXX 暴露并转发 Rust 服务，不承载领域算法 |
 | Native adapter | `foundation`、`geometry`、`mesh`、`qt-adapter`、`visualization` 按职责封装 OS、OCCT、Netgen、Qt、VTK；当前 `mesh → geometry` 直接链接并通过私有契约借用运行期 shape；其余 adapter 之间没有自有库直接依赖 |

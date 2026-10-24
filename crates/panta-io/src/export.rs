@@ -481,10 +481,8 @@ pub(crate) fn base64(bytes: &[u8]) -> Vec<u8> {
 }
 
 #[cfg(test)]
-#[path = "export_tests.rs"]
 mod tests;
 
-#[path = "export_stream.rs"]
 mod stream;
 #[cfg(test)]
 pub(crate) use stream::Base64Probe;

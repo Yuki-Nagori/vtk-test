@@ -97,7 +97,7 @@ pub fn export_streamed_surface(
     asset: &StreamedAsset,
     target: &Path,
     progress: &Progress,
-) -> Result<panta_import::export::ExportFormat, ProjectError> {
+) -> Result<panta_io::export::ExportFormat, ProjectError> {
     let mut chunks = SurfaceAssetChunks::open(&asset.path).map_err(|error| {
         ProjectError::ExportSourceUnavailable(format!("{}: {error}", asset.path.display()))
     })?;
@@ -107,7 +107,7 @@ pub fn export_streamed_surface(
             asset.path.display()
         )));
     }
-    panta_import::export::export_surface_asset_with_progress(&mut chunks, target, progress)
+    panta_io::export::export_surface_asset_with_progress(&mut chunks, target, progress)
         .map_err(super::service::export_error)
 }
 
@@ -119,7 +119,7 @@ pub fn export_streamed_volume_vtu(
 ) -> Result<(), ProjectError> {
     let mut chunks = open_volume(asset)
         .map_err(|error| ProjectError::ExportSourceUnavailable(error.detail()))?;
-    panta_import::export::export_volume_asset_vtu(&mut chunks, target, progress)
+    panta_io::export::export_volume_asset_vtu(&mut chunks, target, progress)
         .map_err(super::service::export_error)
 }
 
@@ -157,7 +157,7 @@ pub fn export_tet_mesh_vtu(
     path: &Path,
     progress: &Progress,
 ) -> Result<(), ProjectError> {
-    panta_import::export::export_tet_mesh_vtu(volume, path, progress)
+    panta_io::export::export_tet_mesh_vtu(volume, path, progress)
         .map_err(super::service::export_error)
 }
 
@@ -244,7 +244,7 @@ mod tests {
         ));
         assert!(!out.exists());
         export_tet_mesh_vtu(&volume, &out, &progress)?;
-        let written = panta_import::formats::parse_vtu_grid(&std::fs::read(&out)?)?;
+        let written = panta_io::import::formats::parse_vtu_grid(&std::fs::read(&out)?)?;
         assert_eq!(written.tets.len(), volume.tets.len());
         // 厘米换算到毫米：VTK 夹具半径约 0.5，换算后外包尺寸应 > 5 mm。
         let span = written

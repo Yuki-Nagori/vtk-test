@@ -6,7 +6,7 @@ members = [
     "crates/panta-core",
     "crates/panta-foundation",
     "crates/panta-mesh",
-    "crates/panta-import",
+    "crates/panta-io",
     "crates/panta-cli",
     "crates/panta-ffi",
     "tests",
@@ -30,7 +30,7 @@ fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
 panta-build = { path = "crates/panta-build", version = "0.1.0" }
 panta-foundation = { path = "crates/panta-foundation", version = "0.1.0" }
 panta-mesh = { path = "crates/panta-mesh", version = "0.1.0" }
-panta-import = { path = "crates/panta-import", version = "0.1.0" }
+panta-io = { path = "crates/panta-io", version = "0.1.0" }
 serde_json = "1.0"
 cxx = "1.0.202"
 cxx-build = "1.0.202"

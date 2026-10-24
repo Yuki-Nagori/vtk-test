@@ -210,7 +210,7 @@ pub(crate) fn finish_mesh(mesh: SurfaceMesh) -> FormatResult<SurfaceMesh> {
 mod fixture_tests {
     use std::path::PathBuf;
 
-    use crate::{ImportFormat, SourceSnapshot, detect_format, parse_mesh_snapshot};
+    use crate::import::{ImportFormat, SourceSnapshot, detect_format, parse_mesh_snapshot};
 
     /// 期望三角形数由 VTK 9.7 `vtkDataSetSurfaceFilter + vtkTriangleFilter` 交叉得到，
     /// 见 tests/fixtures/mesh/formats/README.md。
@@ -252,7 +252,7 @@ mod fixture_tests {
                 path,
                 modified_unix_ms: None,
             };
-            let result = crate::parse_volume_snapshot(&snapshot);
+            let result = crate::import::parse_volume_snapshot(&snapshot);
             if name.starts_with("voxel") {
                 assert!(result.is_err(), "{name}");
                 continue;
