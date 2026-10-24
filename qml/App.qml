@@ -487,6 +487,8 @@ ApplicationWindow {
                 objectName: "assetList"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+                // 与下方可滚动详情分享高度：至少露出约三行，详情不足一屏时把剩余高度都给列表。
+                Layout.minimumHeight: Math.min(contentHeight, 120)
                 clip: true
                 model: projectModel.importedPartIds
                 delegate: ItemDelegate {
@@ -500,348 +502,395 @@ ApplicationWindow {
                 }
                 ScrollBar.vertical: ScrollBar {}
             }
-            // 活动网格状态：加载中 / 失败时显示稳定诊断码对应的中文摘要与原始详情。
-            Label {
-                objectName: "activeDocumentStatus"
+            // 侧栏详情可滚动：体网格、色标、质量诊断与视图工具全部展开时总高超过 720 / 900 窗口（task 035）。
+            ScrollView {
+                id: sidebarDetailsScroll
+                objectName: "sidebarDetailsScroll"
                 Layout.fillWidth: true
-                visible: shellWindow.meshActive && (shellWindow.activeDocument.message ?? "").length > 0
-                text: shellWindow.activeDocument.message ?? ""
-                color: (shellWindow.activeDocument.diagnostic?.code ?? "").length > 0 ? Theme.colorError : Theme.colorTextMuted
-                wrapMode: Text.Wrap
-            }
-            Label {
-                objectName: "activeDocumentDiagnostic"
-                Layout.fillWidth: true
-                visible: text.length > 0
-                text: {
-                    const diagnostic = shellWindow.activeDocument.diagnostic ?? ({});
-                    const code = diagnostic.code ?? "";
-                    return code.length > 0 ? code + (diagnostic.detail ? "：" + diagnostic.detail : "") : "";
+                Layout.fillHeight: true
+                Layout.preferredHeight: sidebarDetails.implicitHeight
+                Layout.maximumHeight: sidebarDetails.implicitHeight
+                contentWidth: availableWidth
+                rightPadding: sidebarDetailsScrollBar.size < 1 ? sidebarDetailsScrollBar.width : 0
+                ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                ScrollBar.vertical: ScrollBar {
+                    id: sidebarDetailsScrollBar
+                    objectName: "sidebarDetailsScrollBar"
+                    parent: sidebarDetailsScroll
+                    x: sidebarDetailsScroll.width - width
+                    y: sidebarDetailsScroll.topPadding
+                    height: sidebarDetailsScroll.availableHeight
+                    // 内容超出时常显，提示侧栏可滚动（Basic 样式的 AsNeeded 不悬停时透明）。
+                    policy: size < 1 ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
                 }
-                color: Theme.colorTextMuted
-                font.pixelSize: Theme.fontSmall
-                wrapMode: Text.WrapAnywhere
-            }
-            // 时序动画（task 020）：只读序列播放；播放控件在视口下方的统一播放栏（task 033）。
-            RowLayout {
-                Layout.fillWidth: true
-                Label {
-                    Layout.fillWidth: true
-                    text: "时序动画"
-                    font.bold: true
-                }
-                Button {
-                    objectName: "openAnimationButton"
-                    text: projectModel.animationActive ? "关闭序列" : "打开序列…"
-                    onClicked: projectModel.animationActive ? projectModel.closeAnimation() : openAnimationFileDialog.open()
-                    ToolTip.visible: hovered
-                    ToolTip.text: "选择编号序列中的任一帧文件（如 flow_0001.stl），自动发现同前缀的全部帧"
-                }
-            }
-            // 体网格（task 021）：质量统计与单切面显示；切面只替换视口，不写工程。
-            ColumnLayout {
-                objectName: "volumePanel"
-                Layout.fillWidth: true
-                visible: shellWindow.meshActive && projectModel.volumeAvailable
-                Label {
-                    text: "体网格"
-                    font.bold: true
-                }
-                Label {
-                    objectName: "volumeInfo"
-                    Layout.fillWidth: true
-                    text: projectModel.volumeInfo
-                    color: Theme.colorTextMuted
-                    wrapMode: Text.WrapAnywhere
-                }
-                // 任意平面切面（task 024）：X/Y/Z 预设只是把法向设为坐标轴；法向分量可编辑（−1..1，步长 0.05）。
-                RowLayout {
-                    Layout.fillWidth: true
-                    CheckBox {
-                        objectName: "sectionToggle"
-                        text: "切面"
-                        enabled: !projectModel.animationActive
-                        checked: projectModel.sectionActive
-                        onToggled: projectModel.setSection(checked, projectModel.sectionNormalX, projectModel.sectionNormalY, projectModel.sectionNormalZ, sectionSlider.value)
-                    }
-                    Repeater {
-                        model: [
-                            {
-                                "label": "X",
-                                "normal": [1, 0, 0]
-                            },
-                            {
-                                "label": "Y",
-                                "normal": [0, 1, 0]
-                            },
-                            {
-                                "label": "Z",
-                                "normal": [0, 0, 1]
-                            }
-                        ]
-                        delegate: Button {
-                            required property var modelData
-                            objectName: "sectionPreset" + modelData.label
-                            text: modelData.label
-                            flat: true
-                            checkable: false
-                            highlighted: projectModel.sectionNormalX === modelData.normal[0] && projectModel.sectionNormalY === modelData.normal[1] && projectModel.sectionNormalZ === modelData.normal[2]
-                            onClicked: projectModel.setSection(projectModel.sectionActive, modelData.normal[0], modelData.normal[1], modelData.normal[2], sectionSlider.value)
-                        }
-                    }
-                }
-                RowLayout {
-                    Layout.fillWidth: true
-                    Label {
-                        text: "法向"
-                        color: Theme.colorTextMuted
-                    }
-                    Repeater {
-                        model: ["X", "Y", "Z"]
-                        delegate: SpinBox {
-                            id: normalSpin
-                            required property int index
-                            required property string modelData
-                            readonly property real valueScale: 100
-                            readonly property real component: index === 0 ? projectModel.sectionNormalX : index === 1 ? projectModel.sectionNormalY : projectModel.sectionNormalZ
-                            objectName: "sectionNormal" + modelData
-                            Layout.fillWidth: true
-                            editable: true
-                            from: -100
-                            to: 100
-                            stepSize: 5
-                            value: Math.round(component * valueScale)
-                            Accessible.name: "切面法向 " + modelData
-                            textFromValue: (value, locale) => Number(value / valueScale).toLocaleString(locale, "f", 2)
-                            valueFromText: (text, locale) => Math.round(Number.fromLocaleString(locale, text) * valueScale)
-                            validator: DoubleValidator {
-                                bottom: -1
-                                top: 1
-                                decimals: 2
-                            }
-                            onValueModified: {
-                                const normal = [projectModel.sectionNormalX, projectModel.sectionNormalY, projectModel.sectionNormalZ];
-                                normal[index] = value / valueScale;
-                                projectModel.setSection(projectModel.sectionActive, normal[0], normal[1], normal[2], sectionSlider.value);
-                                // 用户编辑会打断绑定；重新绑定到模型值，零法向被拒绝时即回显原有效值。
-                                value = Qt.binding(() => Math.round(normalSpin.component * normalSpin.valueScale));
-                            }
-                        }
-                    }
-                }
-                Slider {
-                    id: sectionSlider
-                    objectName: "sectionSlider"
-                    Layout.fillWidth: true
-                    enabled: projectModel.sectionActive
-                    from: 0
-                    to: 1
-                    value: projectModel.sectionFraction
-                    onMoved: projectModel.setSection(true, projectModel.sectionNormalX, projectModel.sectionNormalY, projectModel.sectionNormalZ, value)
-                }
-                // 结果场上色（task 029）：只列出可切面的 1/3 分量字段；3 分量字段可选模或 X/Y/Z 分量。
-                RowLayout {
-                    id: sectionFieldRow
-                    readonly property var fieldOptions: [
-                        {
-                            "label": "无",
-                            "name": "",
-                            "association": "",
-                            "components": 1
-                        }
-                    ].concat(projectModel.resultFields.filter(field => field.sectionable).map(field => ({
-                                "label": field.name + (field.association === "cell" ? "（单元）" : "（节点）"),
-                                "name": field.name,
-                                "association": field.association,
-                                "components": field.components
-                            })))
-                    readonly property int selectedIndex: fieldOptions.findIndex(option => option.name === projectModel.sectionFieldName && option.association === projectModel.sectionFieldAssociation)
-                    Layout.fillWidth: true
-                    visible: fieldOptions.length > 1
-                    Label {
-                        text: "字段"
-                        color: Theme.colorTextMuted
-                    }
-                    ComboBox {
-                        objectName: "sectionField"
-                        Layout.fillWidth: true
-                        model: sectionFieldRow.fieldOptions
-                        textRole: "label"
-                        currentIndex: Math.max(0, sectionFieldRow.selectedIndex)
-                        Accessible.name: "切面上色字段"
-                        onActivated: index => {
-                            const option = sectionFieldRow.fieldOptions[index];
-                            projectModel.setSectionField(option.name, option.association, -1);
-                        }
-                    }
-                    ComboBox {
-                        objectName: "sectionFieldComponent"
-                        readonly property var option: sectionFieldRow.fieldOptions[Math.max(0, sectionFieldRow.selectedIndex)]
-                        visible: option.components === 3
-                        model: ["模", "X", "Y", "Z"]
-                        currentIndex: projectModel.sectionFieldComponent + 1
-                        Accessible.name: "切面上色分量"
-                        onActivated: index => projectModel.setSectionField(projectModel.sectionFieldName, projectModel.sectionFieldAssociation, index - 1)
-                    }
-                }
-                // 色标：渐变与视口查找表共用同一组 Cool to Warm 控制点；位于视口之外，不遮挡渲染。
+
                 ColumnLayout {
-                    objectName: "fieldLegend"
-                    Layout.fillWidth: true
-                    visible: projectModel.fieldLegendVisible
-                    spacing: 2
+                    id: sidebarDetails
+                    objectName: "sidebarDetails"
+                    width: sidebarDetailsScroll.availableWidth
+                    spacing: Theme.spacingMedium
+
+                    // 活动网格状态：加载中 / 失败时显示稳定诊断码对应的中文摘要与原始详情。
                     Label {
+                        objectName: "activeDocumentStatus"
                         Layout.fillWidth: true
-                        text: projectModel.fieldLegendTitle + (projectModel.fieldLegendUnits.length > 0 ? " (" + projectModel.fieldLegendUnits + ")" : "")
-                        elide: Text.ElideRight
+                        visible: shellWindow.meshActive && (shellWindow.activeDocument.message ?? "").length > 0
+                        text: shellWindow.activeDocument.message ?? ""
+                        color: (shellWindow.activeDocument.diagnostic?.code ?? "").length > 0 ? Theme.colorError : Theme.colorTextMuted
+                        wrapMode: Text.Wrap
                     }
-                    Rectangle {
+                    Label {
+                        objectName: "activeDocumentDiagnostic"
                         Layout.fillWidth: true
-                        implicitHeight: 12
-                        border.color: Theme.colorTextMuted
-                        gradient: Gradient {
-                            orientation: Gradient.Horizontal
-                            GradientStop {
-                                position: projectModel.fieldLegendStops[0].position
-                                color: projectModel.fieldLegendStops[0].color
-                            }
-                            GradientStop {
-                                position: projectModel.fieldLegendStops[1].position
-                                color: projectModel.fieldLegendStops[1].color
-                            }
-                            GradientStop {
-                                position: projectModel.fieldLegendStops[2].position
-                                color: projectModel.fieldLegendStops[2].color
-                            }
+                        visible: text.length > 0
+                        text: {
+                            const diagnostic = shellWindow.activeDocument.diagnostic ?? ({});
+                            const code = diagnostic.code ?? "";
+                            return code.length > 0 ? code + (diagnostic.detail ? "：" + diagnostic.detail : "") : "";
                         }
-                    }
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Label {
-                            text: projectModel.fieldLegendHasRange ? Number(projectModel.fieldLegendMin).toPrecision(4) : "无有限值"
-                            color: Theme.colorTextMuted
-                        }
-                        Item {
-                            Layout.fillWidth: true
-                        }
-                        Label {
-                            visible: projectModel.fieldLegendHasRange
-                            text: Number(projectModel.fieldLegendMax).toPrecision(4)
-                            color: Theme.colorTextMuted
-                        }
-                    }
-                    // 时间步结果（task 033）：默认全部时间步的全局范围，播放时色标不跳变。
-                    RowLayout {
-                        objectName: "fieldRangeModeRow"
-                        visible: projectModel.playbackSource === "timeSteps"
-                        Label {
-                            text: "色标范围"
-                            color: Theme.colorTextMuted
-                        }
-                        ComboBox {
-                            objectName: "fieldRangeModeCombo"
-                            Layout.fillWidth: true
-                            model: ["全部时间步", "当前步"]
-                            currentIndex: projectModel.fieldRangeGlobal ? 0 : 1
-                            Accessible.name: "色标范围"
-                            onActivated: index => projectModel.setFieldRangeGlobal(index === 0)
-                        }
-                    }
-                    RowLayout {
-                        visible: projectModel.fieldMissingVertices > 0
-                        Rectangle {
-                            implicitWidth: 12
-                            implicitHeight: 12
-                            color: projectModel.fieldMissingColor
-                        }
-                        Label {
-                            text: "缺失值顶点 " + projectModel.fieldMissingVertices
-                            color: Theme.colorTextMuted
-                        }
-                    }
-                }
-            }
-            // 大网格 LOD 提示（task 019/025）：显示的是简化网格，拾取为近似值；导出流式读取源资产，表面诊断不可用。
-            Label {
-                objectName: "activeMeshLodStatus"
-                Layout.fillWidth: true
-                visible: shellWindow.meshActive && text.length > 0
-                text: projectModel.activeMeshLodStatus
-                color: Theme.colorTextMuted
-                wrapMode: Text.Wrap
-            }
-            // 网格质量诊断面板：复用 task 006 的表面诊断，后台执行。
-            RowLayout {
-                Layout.fillWidth: true
-                visible: shellWindow.meshActive
-                Label {
-                    Layout.fillWidth: true
-                    text: "网格质量"
-                    font.bold: true
-                }
-                Button {
-                    objectName: "diagnoseMeshButton"
-                    text: projectModel.diagnosticsPending ? "诊断中…" : "诊断"
-                    enabled: shellWindow.canDiagnose
-                    onClicked: projectModel.beginDiagnoseActiveMesh()
-                    ToolTip.visible: hovered
-                    ToolTip.text: "检查重复顶点、退化面、开放边界、非流形边与法向一致性 (Ctrl+D)"
-                }
-            }
-            ColumnLayout {
-                objectName: "meshQualityPanel"
-                Layout.fillWidth: true
-                visible: shellWindow.meshActive && shellWindow.activeQuality.documentId !== undefined
-                spacing: 2
-                Repeater {
-                    model: [["结论", shellWindow.activeQuality.clean ? "无问题" : "存在问题", !shellWindow.activeQuality.clean], ["三角面", shellWindow.activeQuality.triangleCount, false], ["焊接后顶点", shellWindow.activeQuality.weldedVertexCount, false], ["近重复顶点", shellWindow.activeQuality.nearDuplicateVertexCount, shellWindow.activeQuality.nearDuplicateVertexCount > 0], ["退化三角面", shellWindow.activeQuality.degenerateTriangleCount, shellWindow.activeQuality.degenerateTriangleCount > 0], ["开放边界边", shellWindow.activeQuality.boundaryEdgeCount, shellWindow.activeQuality.boundaryEdgeCount > 0], ["孔洞", shellWindow.activeQuality.holeCount, shellWindow.activeQuality.holeCount > 0], ["非流形边", shellWindow.activeQuality.nonManifoldEdgeCount, shellWindow.activeQuality.nonManifoldEdgeCount > 0], ["法向不一致边", shellWindow.activeQuality.inconsistentOrientationEdgeCount, shellWindow.activeQuality.inconsistentOrientationEdgeCount > 0], ["焊接容差", Number(shellWindow.activeQuality.weldTolerance ?? 0).toExponential(2), false]].concat(shellWindow.activeQuality.volumeAvailable ? [["体网格节点", shellWindow.activeQuality.nodeCount, false], ["原生四面体", shellWindow.activeQuality.tetCount, false], ["最小二面角", Number(shellWindow.activeQuality.minDihedralDegrees ?? 0).toFixed(2) + "°", false], ["最大长宽比", Number(shellWindow.activeQuality.maxAspectRatio ?? 0).toFixed(2), false], ["平均长宽比", Number(shellWindow.activeQuality.meanAspectRatio ?? 0).toFixed(2), false], ["原始单元", shellWindow.activeQuality.cellCount ?? 0, false], ["劣质单元", shellWindow.activeQuality.poorTetCount, shellWindow.activeQuality.poorTetCount > 0], ["按类型缩放雅可比", shellWindow.activeQuality.cellQualitySummary ?? "", false]].concat(shellWindow.activeQuality.faceQualitySummary ? [["面邻接质量（checkMesh 口径）", shellWindow.activeQuality.faceQualitySummary, shellWindow.activeQuality.faceQualityWarning === true]] : []) : [])
-                    delegate: Label {
-                        required property var modelData
-                        Layout.fillWidth: true
-                        text: String(modelData[0]) + "：" + String(modelData[1])
-                        color: modelData[2] ? Theme.colorError : Theme.colorTextMuted
+                        color: Theme.colorTextMuted
                         font.pixelSize: Theme.fontSmall
+                        wrapMode: Text.WrapAnywhere
                     }
-                }
-            }
-            // 视图与测量（task 017）：原生视口覆盖 QML，工具放在侧栏而非浮层。
-            Label {
-                visible: shellWindow.meshActive
-                text: "视图与测量"
-                font.bold: true
-            }
-            GridLayout {
-                objectName: "viewPresetGrid"
-                Layout.fillWidth: true
-                visible: shellWindow.meshActive
-                columns: 4
-                columnSpacing: 2
-                rowSpacing: 2
-                Repeater {
-                    model: [["front", "前"], ["back", "后"], ["left", "左"], ["right", "右"], ["top", "顶"], ["bottom", "底"], ["iso", "轴测"]]
-                    delegate: Button {
-                        required property var modelData
-                        objectName: "viewPreset_" + modelData[0]
+                    // 时序动画（task 020）：只读序列播放；播放控件在视口下方的统一播放栏（task 033）。
+                    RowLayout {
                         Layout.fillWidth: true
-                        text: modelData[1]
-                        onClicked: viewportPane.setViewPreset(modelData[0])
+                        Label {
+                            Layout.fillWidth: true
+                            text: "时序动画"
+                            font.bold: true
+                        }
+                        Button {
+                            objectName: "openAnimationButton"
+                            text: projectModel.animationActive ? "关闭序列" : "打开序列…"
+                            onClicked: projectModel.animationActive ? projectModel.closeAnimation() : openAnimationFileDialog.open()
+                            ToolTip.visible: hovered
+                            ToolTip.text: "选择编号序列中的任一帧文件（如 flow_0001.stl），自动发现同前缀的全部帧"
+                        }
+                    }
+                    // 体网格（task 021）：质量统计与单切面显示；切面只替换视口，不写工程。
+                    ColumnLayout {
+                        objectName: "volumePanel"
+                        Layout.fillWidth: true
+                        visible: shellWindow.meshActive && projectModel.volumeAvailable
+                        Label {
+                            text: "体网格"
+                            font.bold: true
+                        }
+                        Label {
+                            objectName: "volumeInfo"
+                            Layout.fillWidth: true
+                            text: projectModel.volumeInfo
+                            color: Theme.colorTextMuted
+                            wrapMode: Text.WrapAnywhere
+                        }
+                        // 任意平面切面（task 024）：X/Y/Z 预设只是把法向设为坐标轴；法向分量可编辑（−1..1，步长 0.05）。
+                        RowLayout {
+                            Layout.fillWidth: true
+                            CheckBox {
+                                objectName: "sectionToggle"
+                                text: "切面"
+                                enabled: !projectModel.animationActive
+                                checked: projectModel.sectionActive
+                                onToggled: projectModel.setSection(checked, projectModel.sectionNormalX, projectModel.sectionNormalY, projectModel.sectionNormalZ, sectionSlider.value)
+                            }
+                            Repeater {
+                                model: [
+                                    {
+                                        "label": "X",
+                                        "normal": [1, 0, 0]
+                                    },
+                                    {
+                                        "label": "Y",
+                                        "normal": [0, 1, 0]
+                                    },
+                                    {
+                                        "label": "Z",
+                                        "normal": [0, 0, 1]
+                                    }
+                                ]
+                                delegate: Button {
+                                    required property var modelData
+                                    objectName: "sectionPreset" + modelData.label
+                                    // Basic 样式背景自带 100px 隐式宽度，会把整列侧栏撑宽；按文字收紧（task 035）。
+                                    implicitWidth: implicitContentWidth + leftPadding + rightPadding
+                                    text: modelData.label
+                                    flat: true
+                                    checkable: false
+                                    highlighted: projectModel.sectionNormalX === modelData.normal[0] && projectModel.sectionNormalY === modelData.normal[1] && projectModel.sectionNormalZ === modelData.normal[2]
+                                    onClicked: projectModel.setSection(projectModel.sectionActive, modelData.normal[0], modelData.normal[1], modelData.normal[2], sectionSlider.value)
+                                }
+                            }
+                        }
+                        // 三个分量纵向排布：240px 侧栏放不下三个并排的 SpinBox（task 035）。
+                        Label {
+                            text: "法向"
+                            color: Theme.colorTextMuted
+                        }
+                        Repeater {
+                            model: ["X", "Y", "Z"]
+                            delegate: RowLayout {
+                                id: normalRow
+                                required property int index
+                                required property string modelData
+                                Layout.fillWidth: true
+                                Label {
+                                    Layout.preferredWidth: Theme.controlHeight
+                                    text: normalRow.modelData
+                                    color: Theme.colorTextMuted
+                                    horizontalAlignment: Text.AlignHCenter
+                                }
+                                SpinBox {
+                                    id: normalSpin
+                                    readonly property int index: normalRow.index
+                                    readonly property string modelData: normalRow.modelData
+                                    readonly property real valueScale: 100
+                                    readonly property real component: index === 0 ? projectModel.sectionNormalX : index === 1 ? projectModel.sectionNormalY : projectModel.sectionNormalZ
+                                    objectName: "sectionNormal" + modelData
+                                    Layout.fillWidth: true
+                                    editable: true
+                                    from: -100
+                                    to: 100
+                                    stepSize: 5
+                                    value: Math.round(component * valueScale)
+                                    Accessible.name: "切面法向 " + modelData
+                                    textFromValue: (value, locale) => Number(value / valueScale).toLocaleString(locale, "f", 2)
+                                    valueFromText: (text, locale) => Math.round(Number.fromLocaleString(locale, text) * valueScale)
+                                    validator: DoubleValidator {
+                                        bottom: -1
+                                        top: 1
+                                        decimals: 2
+                                    }
+                                    onValueModified: {
+                                        const normal = [projectModel.sectionNormalX, projectModel.sectionNormalY, projectModel.sectionNormalZ];
+                                        normal[index] = value / valueScale;
+                                        projectModel.setSection(projectModel.sectionActive, normal[0], normal[1], normal[2], sectionSlider.value);
+                                        // 用户编辑会打断绑定；重新绑定到模型值，零法向被拒绝时即回显原有效值。
+                                        value = Qt.binding(() => Math.round(normalSpin.component * normalSpin.valueScale));
+                                    }
+                                }
+                            }
+                        }
+                        Slider {
+                            id: sectionSlider
+                            objectName: "sectionSlider"
+                            Layout.fillWidth: true
+                            enabled: projectModel.sectionActive
+                            from: 0
+                            to: 1
+                            value: projectModel.sectionFraction
+                            onMoved: projectModel.setSection(true, projectModel.sectionNormalX, projectModel.sectionNormalY, projectModel.sectionNormalZ, value)
+                        }
+                        // 结果场上色（task 029）：只列出可切面的 1/3 分量字段；3 分量字段可选模或 X/Y/Z 分量。
+                        RowLayout {
+                            id: sectionFieldRow
+                            readonly property var fieldOptions: [
+                                {
+                                    "label": "无",
+                                    "name": "",
+                                    "association": "",
+                                    "components": 1
+                                }
+                            ].concat(projectModel.resultFields.filter(field => field.sectionable).map(field => ({
+                                        "label": field.name + (field.association === "cell" ? "（单元）" : "（节点）"),
+                                        "name": field.name,
+                                        "association": field.association,
+                                        "components": field.components
+                                    })))
+                            readonly property int selectedIndex: fieldOptions.findIndex(option => option.name === projectModel.sectionFieldName && option.association === projectModel.sectionFieldAssociation)
+                            Layout.fillWidth: true
+                            visible: fieldOptions.length > 1
+                            Label {
+                                text: "字段"
+                                color: Theme.colorTextMuted
+                            }
+                            ComboBox {
+                                objectName: "sectionField"
+                                Layout.fillWidth: true
+                                model: sectionFieldRow.fieldOptions
+                                textRole: "label"
+                                currentIndex: Math.max(0, sectionFieldRow.selectedIndex)
+                                Accessible.name: "切面上色字段"
+                                onActivated: index => {
+                                    const option = sectionFieldRow.fieldOptions[index];
+                                    projectModel.setSectionField(option.name, option.association, -1);
+                                }
+                            }
+                            ComboBox {
+                                objectName: "sectionFieldComponent"
+                                readonly property var option: sectionFieldRow.fieldOptions[Math.max(0, sectionFieldRow.selectedIndex)]
+                                visible: option.components === 3
+                                model: ["模", "X", "Y", "Z"]
+                                currentIndex: projectModel.sectionFieldComponent + 1
+                                Accessible.name: "切面上色分量"
+                                onActivated: index => projectModel.setSectionField(projectModel.sectionFieldName, projectModel.sectionFieldAssociation, index - 1)
+                            }
+                        }
+                        // 色标：渐变与视口查找表共用同一组 Cool to Warm 控制点；位于视口之外，不遮挡渲染。
+                        ColumnLayout {
+                            objectName: "fieldLegend"
+                            Layout.fillWidth: true
+                            visible: projectModel.fieldLegendVisible
+                            spacing: 2
+                            Label {
+                                Layout.fillWidth: true
+                                text: projectModel.fieldLegendTitle + (projectModel.fieldLegendUnits.length > 0 ? " (" + projectModel.fieldLegendUnits + ")" : "")
+                                elide: Text.ElideRight
+                            }
+                            Rectangle {
+                                Layout.fillWidth: true
+                                implicitHeight: 12
+                                border.color: Theme.colorTextMuted
+                                gradient: Gradient {
+                                    orientation: Gradient.Horizontal
+                                    GradientStop {
+                                        position: projectModel.fieldLegendStops[0].position
+                                        color: projectModel.fieldLegendStops[0].color
+                                    }
+                                    GradientStop {
+                                        position: projectModel.fieldLegendStops[1].position
+                                        color: projectModel.fieldLegendStops[1].color
+                                    }
+                                    GradientStop {
+                                        position: projectModel.fieldLegendStops[2].position
+                                        color: projectModel.fieldLegendStops[2].color
+                                    }
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label {
+                                    text: projectModel.fieldLegendHasRange ? Number(projectModel.fieldLegendMin).toPrecision(4) : "无有限值"
+                                    color: Theme.colorTextMuted
+                                }
+                                Item {
+                                    Layout.fillWidth: true
+                                }
+                                Label {
+                                    visible: projectModel.fieldLegendHasRange
+                                    text: Number(projectModel.fieldLegendMax).toPrecision(4)
+                                    color: Theme.colorTextMuted
+                                }
+                            }
+                            // 时间步结果（task 033）：默认全部时间步的全局范围，播放时色标不跳变。
+                            RowLayout {
+                                objectName: "fieldRangeModeRow"
+                                Layout.fillWidth: true
+                                visible: projectModel.playbackSource === "timeSteps"
+                                Label {
+                                    text: "色标范围"
+                                    color: Theme.colorTextMuted
+                                }
+                                ComboBox {
+                                    objectName: "fieldRangeModeCombo"
+                                    Layout.fillWidth: true
+                                    model: ["全部时间步", "当前步"]
+                                    currentIndex: projectModel.fieldRangeGlobal ? 0 : 1
+                                    Accessible.name: "色标范围"
+                                    onActivated: index => projectModel.setFieldRangeGlobal(index === 0)
+                                }
+                            }
+                            RowLayout {
+                                visible: projectModel.fieldMissingVertices > 0
+                                Rectangle {
+                                    implicitWidth: 12
+                                    implicitHeight: 12
+                                    color: projectModel.fieldMissingColor
+                                }
+                                Label {
+                                    text: "缺失值顶点 " + projectModel.fieldMissingVertices
+                                    color: Theme.colorTextMuted
+                                }
+                            }
+                        }
+                    }
+                    // 大网格 LOD 提示（task 019/025）：显示的是简化网格，拾取为近似值；导出流式读取源资产，表面诊断不可用。
+                    Label {
+                        objectName: "activeMeshLodStatus"
+                        Layout.fillWidth: true
+                        visible: shellWindow.meshActive && text.length > 0
+                        text: projectModel.activeMeshLodStatus
+                        color: Theme.colorTextMuted
+                        wrapMode: Text.Wrap
+                    }
+                    // 网格质量诊断面板：复用 task 006 的表面诊断，后台执行。
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: shellWindow.meshActive
+                        Label {
+                            Layout.fillWidth: true
+                            text: "网格质量"
+                            font.bold: true
+                        }
+                        Button {
+                            objectName: "diagnoseMeshButton"
+                            text: projectModel.diagnosticsPending ? "诊断中…" : "诊断"
+                            enabled: shellWindow.canDiagnose
+                            onClicked: projectModel.beginDiagnoseActiveMesh()
+                            ToolTip.visible: hovered
+                            ToolTip.text: "检查重复顶点、退化面、开放边界、非流形边与法向一致性 (Ctrl+D)"
+                        }
+                    }
+                    ColumnLayout {
+                        objectName: "meshQualityPanel"
+                        Layout.fillWidth: true
+                        visible: shellWindow.meshActive && shellWindow.activeQuality.documentId !== undefined
+                        spacing: 2
+                        Repeater {
+                            model: [["结论", shellWindow.activeQuality.clean ? "无问题" : "存在问题", !shellWindow.activeQuality.clean], ["三角面", shellWindow.activeQuality.triangleCount, false], ["焊接后顶点", shellWindow.activeQuality.weldedVertexCount, false], ["近重复顶点", shellWindow.activeQuality.nearDuplicateVertexCount, shellWindow.activeQuality.nearDuplicateVertexCount > 0], ["退化三角面", shellWindow.activeQuality.degenerateTriangleCount, shellWindow.activeQuality.degenerateTriangleCount > 0], ["开放边界边", shellWindow.activeQuality.boundaryEdgeCount, shellWindow.activeQuality.boundaryEdgeCount > 0], ["孔洞", shellWindow.activeQuality.holeCount, shellWindow.activeQuality.holeCount > 0], ["非流形边", shellWindow.activeQuality.nonManifoldEdgeCount, shellWindow.activeQuality.nonManifoldEdgeCount > 0], ["法向不一致边", shellWindow.activeQuality.inconsistentOrientationEdgeCount, shellWindow.activeQuality.inconsistentOrientationEdgeCount > 0], ["焊接容差", Number(shellWindow.activeQuality.weldTolerance ?? 0).toExponential(2), false]].concat(shellWindow.activeQuality.volumeAvailable ? [["体网格节点", shellWindow.activeQuality.nodeCount, false], ["原生四面体", shellWindow.activeQuality.tetCount, false], ["最小二面角", Number(shellWindow.activeQuality.minDihedralDegrees ?? 0).toFixed(2) + "°", false], ["最大长宽比", Number(shellWindow.activeQuality.maxAspectRatio ?? 0).toFixed(2), false], ["平均长宽比", Number(shellWindow.activeQuality.meanAspectRatio ?? 0).toFixed(2), false], ["原始单元", shellWindow.activeQuality.cellCount ?? 0, false], ["劣质单元", shellWindow.activeQuality.poorTetCount, shellWindow.activeQuality.poorTetCount > 0], ["按类型缩放雅可比", shellWindow.activeQuality.cellQualitySummary ?? "", false]].concat(shellWindow.activeQuality.faceQualitySummary ? [["面邻接质量（checkMesh 口径）", shellWindow.activeQuality.faceQualitySummary, shellWindow.activeQuality.faceQualityWarning === true]] : []) : [])
+                            delegate: Label {
+                                required property var modelData
+                                Layout.fillWidth: true
+                                text: String(modelData[0]) + "：" + String(modelData[1])
+                                color: modelData[2] ? Theme.colorError : Theme.colorTextMuted
+                                font.pixelSize: Theme.fontSmall
+                                wrapMode: Text.Wrap
+                            }
+                        }
+                    }
+                    // 视图与测量（task 017）：原生视口覆盖 QML，工具放在侧栏而非浮层。
+                    Label {
+                        visible: shellWindow.meshActive
+                        text: "视图与测量"
+                        font.bold: true
+                    }
+                    GridLayout {
+                        objectName: "viewPresetGrid"
+                        Layout.fillWidth: true
+                        visible: shellWindow.meshActive
+                        columns: 4
+                        columnSpacing: 2
+                        rowSpacing: 2
+                        Repeater {
+                            model: [["front", "前"], ["back", "后"], ["left", "左"], ["right", "右"], ["top", "顶"], ["bottom", "底"], ["iso", "轴测"]]
+                            delegate: Button {
+                                required property var modelData
+                                objectName: "viewPreset_" + modelData[0]
+                                Layout.fillWidth: true
+                                // 同切面预设：不让 Basic 背景的 100px 隐式宽度撑宽侧栏（task 035）。
+                                implicitWidth: implicitContentWidth + leftPadding + rightPadding
+                                text: modelData[1]
+                                onClicked: viewportPane.setViewPreset(modelData[0])
+                            }
+                        }
+                        Button {
+                            objectName: "resetViewButton"
+                            Layout.fillWidth: true
+                            implicitWidth: implicitContentWidth + leftPadding + rightPadding
+                            text: "复位"
+                            onClicked: viewportPane.resetView()
+                        }
+                    }
+                    Label {
+                        objectName: "pickReadout"
+                        Layout.fillWidth: true
+                        visible: shellWindow.meshActive
+                        text: shellWindow.formatPick()
+                        color: Theme.colorTextMuted
+                        font.pixelSize: Theme.fontSmall
+                        wrapMode: Text.Wrap
                     }
                 }
-                Button {
-                    objectName: "resetViewButton"
-                    Layout.fillWidth: true
-                    text: "复位"
-                    onClicked: viewportPane.resetView()
-                }
-            }
-            Label {
-                objectName: "pickReadout"
-                Layout.fillWidth: true
-                visible: shellWindow.meshActive
-                text: shellWindow.formatPick()
-                color: Theme.colorTextMuted
-                font.pixelSize: Theme.fontSmall
-                wrapMode: Text.Wrap
             }
         }
         Rectangle {
