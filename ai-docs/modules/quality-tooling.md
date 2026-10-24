@@ -25,11 +25,11 @@ LLVM 22.1.7 提供真实构建所需编译器、归档工具和 clang-format；Q
 
 ## CI 与本地验证
 
-PR 与 main push 在 macOS、Linux 和 Windows 执行 `cargo test --locked --workspace`，由 Cargo 与聚合测试完成构建及完整行为回归。单一 Ubuntu quality job 运行格式、Clippy 和 qmllint。当前没有每日诊断、自动打包或 SDK 生产 workflow。
+PR 与 main push 在 macOS、Linux 和 Windows 执行 `cargo test --locked --workspace`，由 Cargo 与聚合测试完成构建及完整行为回归。单一 Ubuntu quality job 运行格式、Clippy 和 qmllint。当前没有每日诊断或自动打包 workflow；SDK 生产 workflow 只能手动触发，见 [Native 依赖供给](native-dependency-supply.md)。
 
 本地按变更选择明确 package 的 Rust 测试；跨语言或共享构建变更使用完整 workspace 聚合。native/QML 测试必须实际构建和执行，空套件、构建失败和测试失败返回非零。新增 target 或模块同步 Cargo/CMake 注册与实际格式输入，确认测试被发现。
 
-真实窗口、DPR、多显示屏、GPU、线程及 ABI 检查单独留证；无头组件测试不能代替真实图形生命周期验证。VTK、OCCT 和 Netgen 继续按 manifest 消费既有 Release，`tools/sdk/releases/` 仅保留来源说明。
+真实窗口、DPR、多显示屏、GPU、线程及 ABI 检查单独留证；无头组件测试不能代替真实图形生命周期验证。VTK、OCCT 和 Netgen 按 manifest 消费本仓库手动生产的 Release，普通 CI 不编译重库。
 
 ## 测试与评审
 

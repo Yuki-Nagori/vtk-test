@@ -9,7 +9,7 @@ VTK 负责渲染；OCCT 与 Netgen 支持 STEP、体网格生成和后续网格�
 ## 制品生命周期
 
 1. [sdk-provision.cmake](../../native/cmake/sdk-provision.cmake) 登记版本、URL、SHA256、triple、ABI、package、targets 和许可证，通过 `panta_require_sdk` 供给并调用 `find_package(... CONFIG)`。
-2. SDK 生产 workflows、构建脚本与 selfcheck 已从本仓库移除，既有 Release 仍是消费来源。`tools/sdk/releases/` 仅保留 VTK、OCCT/Netgen 和 GoogleTest 的来源说明；未来重产必须另行明确维护入口和发布授权。
+2. SDK 生产入口为 `.github/workflows/sdk-vtk.yml`、`sdk-occt-netgen.yml`、`sdk-googletest.yml`（`workflow_dispatch`，`publish=true` 才发布）：矩阵三平台按 `tools/sdk/` superbuild 生产，`tools/sdk/selfcheck` 以真实 configure 校验 package 与 targets，`package.cmake` 打包并生成 `.sha256`，三平台全部成功后由单一 job 清空旧资产并全量重传到单一 tag，说明取自 `tools/sdk/releases/`。只需 `github.token` 的 `contents: write`。重产后按 sidecar 与 Release API digest 回填 manifest（任务 041 自原 Panta 迁入）。
 3. Netgen 的 OCC 路径链接构建时的 OCCT，两者必须按同工具链与 ABI 成对升级。自检需确认头文件、库、package、targets、许可证和元数据完整，再更新消费 manifest。
 4. 供给缓存位于 `target/panta-deps/sdk/<name>/<version>/<triple>/`；下载按哈希验证，临时解包后原子发布，损坏 marker 按缓存重建，缺包和配置歧义立即失败。
 5. 升级后验证三平台构建及实际窗口、STEP、网格冒烟；不能仅凭 package configure 成功宣称运行期可用。

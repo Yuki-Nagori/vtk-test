@@ -24,7 +24,7 @@
 
 Cargo 统一托管：开发者安装 git、rustup 与平台 SDK / 运行库后，`cargo build` 触发的引导按固定清单获取预编译依赖到构建树。不以 Homebrew 等系统包管理器作为项目基线；本机同名包只是个人便利，不构成兼容性证据。git tag 以 commit SHA 校验，预编译包以 SHA256 及平台 / 架构 / ABI 元数据校验。
 
-VTK、OpenCASCADE、Netgen 和 Qt 默认使用匹配的预编译 SDK。本仓库消费原 Panta 已发布的 VTK 和 OCCT/Netgen Release，不保留其 SDK 生产 workflow。缺少匹配包时，先明确制品来源与验证方案；普通 `cargo build` 不隐式编译这些重库。OCCT 与 Netgen 必须成对升级，不能独立替换其中一个二进制。
+VTK、OpenCASCADE、Netgen 和 Qt 默认使用匹配的预编译 SDK。这些 SDK 由本仓库 `sdk-*.yml` workflow 手动生产并发布（任务 041 自原 Panta 迁入）。缺少匹配包时，先明确制品来源与验证方案；普通 `cargo build` 不隐式编译这些重库。OCCT 与 Netgen 必须成对升级，不能独立替换其中一个二进制。
 
 ## 决策记录要求
 

@@ -1,0 +1,179 @@
+# GoogleTest 预编译 SDK 生产管线（原 Panta 任务 070，vtk-test 任务 041 迁入；workflow_dispatch 手动触发）。
+# 固定上游 commit，在三平台分别构建静态库；通过 CONFIG/target、编译、链接
+# 和运行自检后才上传。Release 发布默认关闭，显式启用后由单 job 全量覆盖。
+
+name: SDK artifacts (GoogleTest)
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 发布到 GitHub Release（tag sdk-googletest-1.18.0）
+        type: boolean
+        default: false
+
+concurrency:
+  group: sdk-googletest
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  googletest:
+    name: GoogleTest 1.18.0 (${{ matrix.sdk_triple }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            sdk_triple: macos-arm64
+          - os: ubuntu-latest
+            sdk_triple: linux-x86_64
+          - os: windows-2022
+            sdk_triple: windows-x86_64
+    runs-on: ${{ matrix.os }}
+    env:
+      CMAKE_GENERATOR: Ninja
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set macOS SDK deployment target
+        if: runner.os == 'macOS'
+        run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
+
+      - name: Checkout pinned GoogleTest source
+        uses: actions/checkout@v7
+        with:
+          repository: google/googletest
+          ref: 063de7e9578f82b369302001269680b4b1553359
+          path: sdk-build/googletest
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify source pin
+        shell: bash
+        run: |
+          actual="$(git -C sdk-build/googletest rev-parse HEAD)"
+          test "$actual" = "063de7e9578f82b369302001269680b4b1553359"
+
+      - name: Build and install static SDK
+        shell: bash
+        run: |
+          generator_args=()
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            # 消费端要求 MSVC ABI；Windows 上 Ninja 继承的默认编译器可能是 MinGW。
+            generator_args=(-G "Visual Studio 17 2022" -A x64)
+          elif [[ "$RUNNER_OS" == "macOS" ]]; then
+            generator_args=(-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0)
+          fi
+          cmake "${generator_args[@]}" -S sdk-build/googletest -B sdk-build/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$PWD/sdk-build/install" \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DBUILD_GMOCK=OFF \
+            -DINSTALL_GTEST=ON \
+            -Dgtest_force_shared_crt=ON
+          cmake --build sdk-build/build --config Release --parallel
+          cmake --install sdk-build/build --config Release
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            test -f sdk-build/install/lib/gtest.lib
+            test -f sdk-build/install/lib/gtest_main.lib
+            test ! -e sdk-build/install/lib/libgtest.a
+          fi
+          cmake -E make_directory sdk-build/install/share/licenses/GoogleTest
+          cmake -E copy_if_different sdk-build/googletest/LICENSE \
+            sdk-build/install/share/licenses/GoogleTest/LICENSE
+          cat > sdk-build/install/panta-sdk.json <<'JSON'
+          {
+            "name": "googletest",
+            "version": "1.18.0",
+            "triple": "${{ matrix.sdk_triple }}",
+            "source": {
+              "repository": "https://github.com/google/googletest",
+              "tag": "v1.18.0",
+              "commit": "063de7e9578f82b369302001269680b4b1553359"
+            },
+            "build_type": "Release",
+            "macos_deployment_target": ${{ matrix.sdk_triple == 'macos-arm64' && '"13.0"' || 'null' }},
+            "cxx_standard": 17,
+            "shared": false,
+            "windows_shared_crt": true,
+            "cmake_package": ["lib/cmake/GTest", "GTestConfig.cmake"],
+            "required_targets": ["GTest::gtest", "GTest::gtest_main"],
+            "license": "BSD-3-Clause",
+            "license_file": "share/licenses/GoogleTest/LICENSE"
+          }
+          JSON
+
+      - name: Selfcheck SDK package and static link
+        shell: bash
+        run: |
+          generator_args=()
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            generator_args=(-G "Visual Studio 17 2022" -A x64)
+          fi
+          cmake "${generator_args[@]}" -S tools/sdk/selfcheck/googletest -B sdk-build/selfcheck \
+            -DPSDK_ROOT="$PWD/sdk-build/install"
+          cmake --build sdk-build/selfcheck --config Release --parallel
+          ctest --test-dir sdk-build/selfcheck -C Release --output-on-failure
+
+      - name: Package SDK archive and checksum
+        shell: bash
+        run: |
+          cmake \
+            -DPKG_ROOT="$PWD/sdk-build/install" \
+            -DPKG_NAME=googletest \
+            -DPKG_VERSION=1.18.0 \
+            -DPKG_TRIPLE=${{ matrix.sdk_triple }} \
+            -DPKG_DIST="$PWD/sdk-build/dist" \
+            -P tools/sdk/package.cmake
+
+      - name: Upload SDK artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: googletest-1.18.0-${{ matrix.sdk_triple }}
+          path: sdk-build/dist/*
+          if-no-files-found: error
+
+  publish:
+    name: publish release assets (single tag)
+    if: inputs.publish
+    needs: [googletest]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: googletest-1.18.0-*
+          merge-multiple: true
+          path: sdk-build/dist
+
+      - name: Publish release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view sdk-googletest-1.18.0 --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release edit sdk-googletest-1.18.0 \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "GoogleTest 1.18.0 静态 SDK" \
+              --notes-file tools/sdk/releases/googletest-1.18.0.md
+            gh release view sdk-googletest-1.18.0 --repo "$GITHUB_REPOSITORY" --json assets \
+              --jq '.assets[].name' | while IFS= read -r asset; do
+                gh release delete-asset sdk-googletest-1.18.0 "$asset" \
+                  --repo "$GITHUB_REPOSITORY" --yes
+              done
+          else
+            gh release create sdk-googletest-1.18.0 \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "GoogleTest 1.18.0 静态 SDK" \
+              --notes-file tools/sdk/releases/googletest-1.18.0.md
+          fi
+          gh release upload sdk-googletest-1.18.0 sdk-build/dist/* --clobber \
+            --repo "$GITHUB_REPOSITORY"

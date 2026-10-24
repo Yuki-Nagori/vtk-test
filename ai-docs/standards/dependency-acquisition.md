@@ -1,6 +1,6 @@
 # 依赖获取与主平台环境
 
-更新日期：2026-10-20。Cargo 调度 CMake 并供给锁定工具与预编译 Qt / VTK / OCCT / Netgen SDK。应用消费已经发布的 Release，不在本仓库运行 VTK 或 OCCT/Netgen SDK 生产 workflow。版本与兼容性维护见 [技术基线](baseline.md)，下载 URL、SHA256 与平台映射以 `crates/panta-build`、`native/cmake/qt-provision.cmake` 和 `native/cmake/sdk-provision.cmake` 为准。本文记录获取、重建、升级与回退规则，不继承旧任务的验收状态。
+更新日期：2026-10-20。Cargo 调度 CMake 并供给锁定工具与预编译 Qt / VTK / OCCT / Netgen SDK。应用消费已经发布的 Release；VTK、OCCT/Netgen 与 GoogleTest SDK 由本仓库 `sdk-*.yml` workflow 手动生产发布（任务 041），普通开发与 CI 不编译重库。版本与兼容性维护见 [技术基线](baseline.md)，下载 URL、SHA256 与平台映射以 `crates/panta-build`、`native/cmake/qt-provision.cmake` 和 `native/cmake/sdk-provision.cmake` 为准。本文记录获取、重建、升级与回退规则，不继承旧任务的验收状态。
 
 ## 托管原则（2026-09-16 决策）
 
@@ -53,7 +53,7 @@
 - Qt 6.11.2 Linux 预编译归档面向 RHEL9，Qt 工具（包括 `rcc`、`qtpaths`、`qmlimportscanner`）需要 ICU 73。`native/cmake/qt-provision.cmake` 同步下载并校验 Qt 官方的 ICU 73 预编译归档，解包到 `qt/staging/lib`，让 Ubuntu 使用与 Qt 工具匹配的 ABI；不使用系统 ICU、不伪造 SONAME，也不源码编译 ICU。Linux 仍跳过仅供 IDE 使用的 `.qmlls.build.ini` 和当前 app 的空 import scan，保留 QML typeinfo、cachegen、资源和运行时验证。
 - PR 与 main push 在 Linux、nightly 在 macOS / Windows 安装 rust-toolchain.toml 中的固定 Rust 工具链并执行 `cargo test --locked --workspace`，其中包含 native/QML 构建和完整行为测试；单一 Ubuntu quality job 运行 `cargo format --check`、`cargo lint clippy --check` 和 `cargo lint qmllint --check`。基础检查与验收边界见[质量工具链](../modules/quality-tooling.md)。
 - runner 需要镜像自带的平台编译器与 rustup；平台编译器和标准库属于 Cargo 无法替代的宿主能力，项目依赖仍由 Cargo 驱动的构建引导供给。
-- 边界：CI 覆盖以 workflow 和实际测试清单为准；VTK、OCCT、Netgen 的 SDK 生产在原 Panta Release 来源侧完成，本仓库验证消费、链接与已有测试，真实 GPU 窗口另行验收。
+- 边界：CI 覆盖以 workflow 和实际测试清单为准；VTK、OCCT、Netgen 的 SDK 生产由本仓库手动 `sdk-*.yml` workflow 完成并自检，PR/nightly 验证消费、链接与已有测试，真实 GPU 窗口另行验收。
 
 ## 干净重建步骤
 

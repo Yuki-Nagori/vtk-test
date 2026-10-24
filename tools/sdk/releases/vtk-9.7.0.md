@@ -1,5 +1,5 @@
-以下记录原 Panta 已发布 VTK SDK 的来源与构建参数，原始[构建描述](https://github.com/Yuki-Nagori/panta/blob/main/tools/sdk/vtk.cmake)位于来源仓库。
-本仓库通过 `sdk-provision` 的固定 URL / SHA256 消费制品，普通开发与 CI 不编译 VTK 源码。SDK 提供 `RenderingWebGPU` 与平台原生窗口（Linux Wayland、macOS Cocoa、Windows Win32）。
+vtk-test 受信 CI 按[冻结的构建描述](https://github.com/Yuki-Nagori/vtk-test/blob/main/tools/sdk/vtk.cmake)生产预编译 VTK SDK（生产管线自原 Panta 迁入，任务 041）。
+本仓库通过 `sdk-provision` 的固定 URL / SHA256 消费制品，普通开发与 CI 不编译 VTK 源码。SDK 提供 `RenderingWebGPU`、视口标注模块 `RenderingAnnotation`（`vtkScalarBarActor` 等）与平台原生窗口（Linux Wayland、macOS Cocoa、Windows Win32）。
 
 ## 源码与可复现性
 
@@ -13,10 +13,12 @@
   目标要求提升为 C++20；Dawn 按上游源码标签构建并显式开启
   `DAWN_ENABLE_RTTI=ON`，不在 VTK 侧伪造 RTTI 或 ABI 符号；
   `VTK_GROUP_ENABLE_Rendering/StandAlone/Imaging/Parallel/Views/Web=DONT_WANT`，
-  只直接启用 `RenderingUI` 与 `RenderingWebGPU` 及其传递依赖；
+  只直接启用 `RenderingUI`、`RenderingWebGPU` 与 `RenderingAnnotation` 及其传递依赖
+  （`RenderingAnnotation` 相对上一版仅新增 `ImagingColor`）；
   `VTK_ENABLE_WRAPPING=OFF`，不打包 Python/Java 等包装层；
   `VTK_ENABLE_WEBGPU=ON`、`VTK_MODULE_ENABLE_VTK_RenderingUI=YES`、
   `VTK_MODULE_ENABLE_VTK_RenderingWebGPU=YES`、
+  `VTK_MODULE_ENABLE_VTK_RenderingAnnotation=YES`、
   `VTK_RELOCATABLE_INSTALL=ON`；Linux 选择原生 Wayland（`VTK_USE_X=OFF`、
   `VTK_USE_Wayland=ON`），macOS 使用 `vtkCocoaHardwareWindow` 的 Metal
   layer/view，Windows 使用 `vtkWin32HardwareWindow`；Dawn source tag 为
@@ -30,7 +32,9 @@
 
 ## 覆盖重产记录
 
-本仓库消费原 Panta 仓库已经发布的 SDK，不运行生产或覆盖重传 workflow。归档身份以 `native/cmake/sdk-provision.cmake` 锁定的 URL 和 SHA256 为准；升级制品时同步消费清单与集成验证记录。
+本 Release 维持单一标签 `sdk-vtk-9.7.0-webgpu`：`sdk-vtk.yml` 重产时，只有三平台矩阵全部通过后才清空旧资产并全量重传；归档字节随重产变化，消费侧以 `native/cmake/sdk-provision.cmake` 登记的 SHA256 为准，登记更新与集成验证同任务完成。
+
+- 2026-10-24：任务 041 在 vtk-test 首次生产，相对原 Panta 同名 Release 新增 `RenderingAnnotation`。
 
 ## 许可证
 
@@ -44,5 +48,5 @@
 ## 校验
 
 每个平台资产附带同名 `.sha256`（SHA256）。使用与供给规则见
-[依赖获取规范](https://github.com/Yuki-Nagori/panta/blob/main/ai-docs/standards/dependency-acquisition.md) 与
-[native 依赖供给模块](https://github.com/Yuki-Nagori/panta/blob/main/ai-docs/modules/native-dependency-supply.md)。
+[依赖获取规范](https://github.com/Yuki-Nagori/vtk-test/blob/main/ai-docs/standards/dependency-acquisition.md) 与
+[native 依赖供给模块](https://github.com/Yuki-Nagori/vtk-test/blob/main/ai-docs/modules/native-dependency-supply.md)。
