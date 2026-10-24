@@ -49,7 +49,10 @@
 | `view-reset.svg` | Lucide 1.61.0 / `rotate-ccw` | ISC | 无几何修改 | `WorkbenchToolBar` 复位视图 |
 | `section.svg` | Lucide 1.61.0 / `scissors` | ISC | 无几何修改 | `WorkbenchToolBar` 切面开关（临时，039 统一图标时复核；开：描边 + 强调色） |
 | `screenshot.svg` | Lucide 1.61.0 / `camera` | ISC | 无几何修改 | `WorkbenchToolBar` 视口截图 |
-| `panel-bottom.svg` | Lucide 1.61.0 / `panel-bottom` | ISC | 无几何修改 | `BottomPanel` 折叠 / 展开 |参考截图不证明第三方品牌、专有字形或图标包可复用，来源不明的素材需先核验。
+| `panel-bottom.svg` | Lucide 1.61.0 / `panel-bottom` | ISC | 无几何修改 | `BottomPanel` 折叠 / 展开 |
+| `panel-left.svg` | Lucide 1.61.0 / `panel-left` | ISC | 无几何修改 | `WorkbenchSidebar` 折叠、左栏窄轨展开 |
+
+参考截图不证明第三方品牌、专有字形或图标包可复用，来源不明的素材需先核验。
 
 生成式服务输出的权利归属不能证明独创性或没有第三方权利冲突。涉及生成资产时记录服务、输入来源与修改情况；商业发布前按实际素材核对条款与权利。[OpenAI Terms of Use](https://openai.com/policies/row-terms-of-use/)
 

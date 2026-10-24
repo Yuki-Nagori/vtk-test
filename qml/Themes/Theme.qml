@@ -57,6 +57,7 @@ QtObject {
     // 工作台布局（task 036）：底部面板标题行与状态栏同高；视口列保底高度。
     readonly property int panelHeaderHeight: 30
     readonly property int viewportMinimumHeight: 240
+    readonly property int viewportMinimumWidth: 320
     readonly property int statusFieldMaximumWidth: 360
     readonly property int statusProgressWidth: 120
     readonly property int qualityCellWidth: 240

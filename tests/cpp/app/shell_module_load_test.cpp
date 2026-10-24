@@ -77,10 +77,16 @@ class ShellModuleLoadTest final : public QObject {
         QVERIFY(bar);
         QVERIFY(bar->property("documents").toList().isEmpty());
         QVERIFY(bar->property("activeDocumentId").toString().isEmpty());
-        // task 033：统一播放栏随 Shell 加载；无播放来源时隐藏。
+        // task 036（034 Q6）：无播放来源时播放栏显示为禁用细条，不再整栏隐藏。
         auto* playback = root->findChild<QObject*>(QStringLiteral("playbackBar"));
-        QVERIFY(playback);
-        QVERIFY(!playback->property("visible").toBool());
+        auto* controls = root->findChild<QObject*>(QStringLiteral("playbackControls"));
+        QVERIFY(playback && controls);
+        QVERIFY(playback->property("visible").toBool());
+        QVERIFY(!controls->property("enabled").toBool());
+        QVERIFY(!root->findChild<QObject*>(QStringLiteral("playbackStatus"))
+                     ->property("text")
+                     .toString()
+                     .isEmpty());
         QVERIFY(!root->findChild<QObject*>(QStringLiteral("saveProjectButton"))
                      ->property("enabled")
                      .toBool());
@@ -104,15 +110,18 @@ class ShellModuleLoadTest final : public QObject {
         QVERIFY(sidebar && pane && viewport && tabs);
         for (const QSize size : {QSize(1280, 800), QSize(1600, 1000)}) {
             window->resize(size);
-            QTRY_COMPARE(sidebar->width(), 240.0);
+            QTRY_COMPARE(sidebar->width(), 300.0);
             QTRY_VERIFY(pane->width() > window->width() * 0.7);
-            QTRY_VERIFY(pane->height() > window->height() * 0.8);
+            QTRY_VERIFY(pane->height() > window->height() * 0.7);
             QTRY_COMPARE(viewport->width(), pane->width());
             QTRY_VERIFY(viewport->height() > pane->height() - 50.0);
             QTRY_COMPARE(tabs->width(), pane->width());
             QVERIFY(tabs->height() > 0.0);
             QVERIFY(viewport->isVisible());
             QVERIFY(tabs->isVisible());
+            // task 036：页签在视口上方，两者纵向不重叠。
+            QVERIFY(tabs->mapToScene(QPointF(0, tabs->height())).y() <=
+                    viewport->mapToScene(QPointF()).y() + 0.5);
             const auto sidebarRight = sidebar->mapToScene(QPointF(sidebar->width(), 0)).x();
             QVERIFY(pane->mapToScene(QPointF()).x() >= sidebarRight);
             QVERIFY(pane->mapToScene(QPointF(pane->width(), 0)).x() <= window->width());
@@ -262,6 +271,70 @@ class ShellModuleLoadTest final : public QObject {
         QVERIFY(bottom);
         QVERIFY(!bottom->property("collapsed").toBool());
         QTRY_COMPARE(bottom->height(), 200.0);
+    }
+    // task 036（034 Q4）：左栏宽度夹在 260–480 px，可折叠为窄轨；状态写入用户设置并跨引擎恢复。
+    void sidebar_width_and_collapse_follow_layout_settings() {
+        {
+            QQmlApplicationEngine engine;
+            panta::install_icon_provider(engine);
+            engine.loadFromModule(QStringLiteral("Panta.Shell"), QStringLiteral("App"));
+            QVERIFY(!engine.rootObjects().isEmpty());
+            auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().constFirst());
+            auto* settings = engine.singletonInstance<panta::bridge::Settings*>(
+                QStringLiteral("Panta.Bridge"), QStringLiteral("Settings"));
+            QVERIFY(window && settings);
+            auto* sidebar = window->findChild<QQuickItem*>(QStringLiteral("assetSidebar"));
+            auto* rail = window->findChild<QQuickItem*>(QStringLiteral("sidebarRail"));
+            auto* collapse = window->findChild<QObject*>(QStringLiteral("sidebarCollapseButton"));
+            auto* expand = window->findChild<QObject*>(QStringLiteral("sidebarExpandButton"));
+            auto* menuItem = window->findChild<QObject*>(QStringLiteral("sidebarMenuItem"));
+            auto* assets = window->findChild<QQuickItem*>(QStringLiteral("assetListPane"));
+            auto* properties = window->findChild<QQuickItem*>(QStringLiteral("propertiesPanel"));
+            auto* pane = window->findChild<QQuickItem*>(QStringLiteral("viewportPane"));
+            QVERIFY(sidebar && rail && collapse && expand && menuItem && assets && properties &&
+                    pane);
+            for (const auto* icon : {collapse, expand}) {
+                QCOMPARE(icon->property("iconName").toString(), QStringLiteral("panel-left"));
+                QVERIFY(panta::monochrome_icon_names().contains(QStringLiteral("panel-left")));
+            }
+            QVERIFY(sidebar->isAncestorOf(assets) && sidebar->isAncestorOf(properties));
+            QTRY_COMPARE(sidebar->width(), 300.0);
+            QVERIFY(!rail->isVisible());
+            QVERIFY(menuItem->property("checked").toBool());
+            // 越界写入被夹到允许范围。
+            settings->setSidebarWidth(1000);
+            QTRY_COMPARE(sidebar->width(), 480.0);
+            settings->setSidebarWidth(100);
+            QTRY_COMPARE(sidebar->width(), 260.0);
+            settings->setSidebarWidth(360);
+            QTRY_COMPARE(sidebar->width(), 360.0);
+            const auto expandedPaneWidth = pane->width();
+            QVERIFY(QMetaObject::invokeMethod(collapse, "clicked"));
+            QVERIFY(settings->sidebarCollapsed());
+            QTRY_VERIFY(!sidebar->isVisible());
+            QTRY_VERIFY(rail->isVisible());
+            QVERIFY(!menuItem->property("checked").toBool());
+            QTRY_VERIFY(pane->width() > expandedPaneWidth + 300.0);
+            if (const auto dir = qEnvironmentVariable("PANTA_SHELL_SCREENSHOT_DIR");
+                !dir.isEmpty()) {
+                QTest::qWait(50);
+                QVERIFY(window->grabWindow().save(
+                    QDir(dir).filePath(QStringLiteral("sidebar-collapsed.png"))));
+            }
+        }
+        // 新引擎读回折叠状态与宽度；展开后恢复 360 px。
+        QQmlApplicationEngine engine;
+        panta::install_icon_provider(engine);
+        engine.loadFromModule(QStringLiteral("Panta.Shell"), QStringLiteral("App"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto* window = engine.rootObjects().constFirst();
+        auto* sidebar = window->findChild<QQuickItem*>(QStringLiteral("assetSidebar"));
+        auto* expand = window->findChild<QObject*>(QStringLiteral("sidebarExpandButton"));
+        QVERIFY(sidebar && expand);
+        QVERIFY(!sidebar->isVisible());
+        QVERIFY(QMetaObject::invokeMethod(expand, "clicked"));
+        QTRY_VERIFY(sidebar->isVisible());
+        QTRY_COMPARE(sidebar->width(), 360.0);
     }
     void assets_and_document_tabs_follow_saved_project() {
         QTemporaryDir fixture;
@@ -534,7 +607,7 @@ class ShellModuleLoadTest final : public QObject {
         for (const QSize size : {QSize(1280, 720), QSize(1600, 900)}) {
             window->resize(size);
             QTRY_COMPARE(window->width(), size.width());
-            QTRY_COMPARE(sidebar->width(), 240.0);
+            QTRY_COMPARE(sidebar->width(), 300.0);
             // 等布局稳定后再遍历，避免读到 polish 之前的旧几何。
             QTest::qWait(50);
             const auto right = sidebar->mapToScene(QPointF(sidebar->width(), 0)).x() + 0.5;
