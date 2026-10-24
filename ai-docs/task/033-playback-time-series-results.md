@@ -1,7 +1,7 @@
 # 033 — 播放控制与时序结果场
 
-- 状态：in-progress
-- 阶段：PR 1（任务文档 + 时间步存储 + OpenFOAM / CGNS 多时间步导入）已合并（#47）；PR 2（VTU `.pvd` 时间集合）进行中；PR 3（统一播放工具栏 + 切面随时间更新）待做
+- 状态：done
+- 阶段：PR 1（任务文档 + 时间步存储 + OpenFOAM / CGNS 多时间步导入）已合并（#47）；PR 2（VTU `.pvd` 时间集合）已合并（#48）；PR 3（统一播放工具栏 + 切面随时间更新）见本文完成摘要
 - 依赖：[020](020-time-series-animation.md)、[029](029-result-fields.md)、[032](032-openfoam-cgns-import.md)
 - 优先级：P1
 - 负责人：Grok Bot
@@ -50,7 +50,7 @@
    - VTU `.pvd`（PR 2）：读集合中各 `DataSet`（`part` 只接受单一值），最新一步给出网格，其余各步解析后必须与之等价（点坐标按位、连接、类型），否则整体拒绝；
    - 内存预算：除最新步外的场值总量超过 `MAX_TIME_STEP_VALUES`（2^28 个 f64 = 2 GiB）时只导入最新步，并在 `skipped_result_fields` 记一条说明（保守，避免导入时爆内存）。
 3. **服务 API**：`result_time_steps(import_id)`（time / label / 每步字段摘要）与按步的 `result_field_source_at(import_id, step)`；单字段缓存键已含结果摘要，跨步天然区分。
-4. **播放（PR 3）**：VM 把 020 的 `animation*` 属性替换为统一的 `playback*`（来源：`sequence` 或 `timeSteps`），新增首帧 / 末帧 / 循环开关；QML 新建 `PlaybackBar` 放在视口底部，替换侧栏的 020 动画控件；结果场时间步播放时切面按当前步读取字段重算，目标帧未就绪时保持上一帧（与 020 一致，不阻塞 GUI）；播放期间 export / diagnose 禁用规则沿用 020；时间步播放允许切面（这是目的）。
+4. **播放（PR 3）**：VM 把 020 的 `animation*` 属性替换为统一的 `playback*`（来源：`sequence` 或 `timeSteps`），新增首帧 / 末帧 / 循环开关；QML 新建 `PlaybackBar`（`qml/Panels/PlaybackBar.qml`）放在视口下方，替换侧栏的 020 动画控件；结果场时间步播放时切面按当前步读取字段重算，目标帧未就绪时保持上一帧（与 020 一致，不阻塞 GUI）；播放期间 export / diagnose 禁用规则沿用 020；时间步播放允许切面（这是目的）。
 5. **out-of-core / 流式体网格**：分块派生缓存只嵌入最新步，时间轴禁用并提示「分块体网格仅显示最新时间步」（保守）。
 
 非目标（不实施，记为候选）：网格随时间变化、物理时间实时播放模式、关键帧动画轨道、动画导出视频 / 图片序列、时间插值（相邻步之间线性插值）、表面着色（029 只给切面上色，表面场着色另立 task）、OpenFOAM 分区算例时间步、CGNS 网格运动（`RigidGridMotion` / `ArbitraryGridMotion`）。
@@ -74,7 +74,7 @@ panta-io（格式解析）、panta-core（工程模型 / 导入 / 结果服务�
 
 - `crates/panta-io/src/import/formats/{mod.rs,openfoam/*,cgns/*,vtu*}`、`crates/panta-io/src/import.rs`
 - `crates/panta-core/src/project/{model.rs,import.rs,results.rs,service.rs}`、清单校验
-- `crates/panta-ffi/src/{lib.rs,display.rs}`、`native/bridge/src/project_view_model.{hpp,cpp}`、`qml/App.qml`、`qml/Components/PlaybackBar.qml`（待创建）
+- `crates/panta-ffi/src/{lib.rs,display.rs}`、`native/bridge/src/project_view_model.{hpp,cpp}`、`qml/App.qml`、`qml/Panels/PlaybackBar.qml`
 - 文档：`ai-docs/architecture/mesh.md` 结果场一节、020 / 029 文档交叉引用
 - 持久化：清单新增可选字段；旧工程可读、新工程被旧版本读取时忽略未知字段只看 `results`（最新步）。
 
@@ -88,8 +88,8 @@ PR 3 删除 VM 的 `animation*` 属性与 invokable、侧栏 020 动画控件，
 - [x] CGNS 带 BaseIterativeData 的文件按步导入，字段名不带解名前缀；无 BaseIterativeData 的多解文件行为与 032 相同。
 - [x] 任一步 sidecar 摘要不符时读取该步被拒，其余步与网格不受影响；导入中途失败不残留新 sidecar。
 - [x] `.pvd` 集合导入；拓扑不一致整体拒绝并给出明确错误。
-- [ ] 播放工具栏：首 / 上 / 播放 / 暂停 / 下 / 末 / 循环 / 帧率 / 滑块在两种来源下都可用；循环关闭时播放到末帧自动暂停；切面 + 字段时颜色与色标随步更新；分块体网格时间轴禁用并提示。
-- [ ] `cargo format` / `cargo quality` / `cargo test --locked --workspace` / CTest / offscreen 启动通过；PR 3 nightly 绿。
+- [x] 播放工具栏：首 / 上 / 播放 / 暂停 / 下 / 末 / 循环 / 帧率 / 滑块在两种来源下都可用；循环关闭时播放到末帧自动暂停；切面 + 字段时颜色与色标随步更新；分块体网格时间轴禁用并提示。
+- [x] `cargo format` / `cargo quality` / `cargo test --locked --workspace` / CTest / offscreen 启动通过；PR 3 nightly 绿。
 
 ## 验证计划与结果
 
@@ -99,6 +99,11 @@ PR 3 删除 VM 的 `animation*` 属性与 invokable、侧栏 020 动画控件，
 | 2026-10-24 | PR 1：panta-core `results::tests`（多步 sidecar 路径、重开、篡改单步、清单 4 种非法改写被拒、单步不写 `result_steps`、CGNS NaN）+ `time_series_sanitizing_*` | 通过 | 通过 |
 | 2026-10-24 | PR 1 合并（#47，CI 与 nightly 绿） | — | 合并于 18:37（UTC+8） |
 | 2026-10-24 | PR 2：`cargo test -p panta-io pvd`（乱序 timestep 排序、逐步字段集合、拓扑变化拒绝、集合文件 8 种非法情形、单步 / 超预算 / 条目不符、缺失 VTU）+ core `pvd_collection_imports_time_steps_and_rejects_moving_meshes` | 通过 | 通过 |
+
+| 2026-10-24 | PR 3：panta-ffi `time_step_sections_read_the_requested_step`（`.pvd` 3 步：标签、逐步切面值落在该步范围、步越界 / 缺字段拒绝、全局范围 T [0,108]、分量包络 p [-2,2]、非法关联拒绝） | 通过 | 通过 |
+| 2026-10-24 | PR 3：C++ `PlaysResultTimeStepsAndUpdatesFieldSections`（来源 `timeSteps`、默认末步、无切面时只移时间轴、循环开 / 关回绕与夹紧、切面 T 随步重算且全局色标 0..108 不变、切到「当前步」后色标收窄、60 fps 循环关闭播到末帧自动暂停）；Shell 加载测试含 `playbackBar` 且无来源时隐藏 | 通过 | 通过（CTest 70/70） |
+| 2026-10-24 | PR 3：`cargo format` / `cargo quality` / `cargo test --locked --workspace` / `QT_QPA_PLATFORM=offscreen timeout 8 target/native/debug/app/panta` | 通过 / 退出码 124 | 通过 / 124 |
+| 待实机 | GPU 桌面：PlaybackBar 布局、逐帧切面刷新流畅度、百万单元算例每步切面延迟 | — | 未验证（box 无 GPU） |
 
 ## 风险与回退
 
@@ -112,6 +117,10 @@ PR 3 删除 VM 的 `animation*` 属性与 invokable、侧栏 020 动画控件，
 - 2026-10-24（PR 1）：OpenFOAM 只把含体场文件的时间目录算作步（`0.02/uniform` 之类不算）；更早步字段文件预算 2 GiB、场值预算 2^28 个 f64，超出只留最新步并记录。解压失败从整体失败改为单字段跳过（同一步其他字段照常）。CGNS 迭代声明不完整（缺 TimeValues / 指针长度不符）时回退 032 的前缀多解行为；未被指针引用的解跳过并记录；Null 指针填 NaN（与 032 跨 Zone 缺失规则一致）。导入层再清洗：无场的更早步省略，标签空 / 过长 / 重复改为 `#N`，时间非有限或倒序回退最新步。清单不升版本，最后一步与 `results` 共用引用。
 - 2026-10-24（PR 2）：`.pvd` 拓扑一致性按解析后的值比较（坐标按位、单元表逐项），而不是原始字节——同一网格可能以不同编码 / 压缩写出，按值比较更宽松但仍严格排除网格变化。多 part（多块）集合、非 VTU 数据集、重复 timestep 均整体拒绝；任一步 VTU 损坏整体拒绝（不做部分时间序列）。对话框对 `.pvd` 默认实体 3D（表面导入无时间步），不推断单位。
 
+- 2026-10-24（PR 3）：统一状态机 `playback*` 替换 020 的 `animation*`（`animationActive` / `openAnimationUrl` / `closeAnimation` 保留为「打开 / 关闭表面序列」入口）。来源优先级：打开序列时为 `sequence`，否则当前文档有 ≥ 2 个时间步时为 `timeSteps`。时间步默认停在最新一步（与入库的 `results` 一致）。时间步播放「显示完成再前进」：只有上一步切面已显示才推进目标步，不取消在途工作；未开切面或未选字段时逐帧只移动时间轴并提示。色标默认「全部时间步」：由各步 sidecar 头部摘要并集得出（分量取 ±最大模长包络，保守但不额外读场），可切为「当前步」（该步切面实际范围）。字段列表取最新一步；某步缺该字段或读取失败时保持上一帧、在播放状态行提示，不弹全局错误。流式（分块）体网格且有多步时禁用时间轴并提示仅显示最新步。循环默认开（保留 020 行为），关闭时播到末帧自动暂停，再按播放从首帧开始。播放栏放在视口下方而非叠加在视口上（QML 无法覆盖原生视口表面）。
+
 ## 完成摘要
 
-未完成。
+- 三个 PR：#47（时间步存储 + OpenFOAM / CGNS 多步）、#48（`.pvd`）、PR 3（统一播放栏 + 切面随时间步更新 + 全局 / 当前步色标）。
+- 限制：网格不随时间变化；无跨步预取与时间插值；无物理时间实时模式、关键帧轨道与视频导出；表面不着色（沿用 029）；分块体网格只显示最新步；未在 GPU 实机验证播放流畅度。
+- 候选后续 task（未实施）：跨步预取 / 后台缓存、动画导出（视频 / 图片序列）、表面场着色、分块体网格多时间步、网格运动。

@@ -25,6 +25,7 @@ set(PANTA_SHELL_QML_FILES
     Dialogs/ImportDialog.qml
     Dialogs/LargeMeshSettingsDialog.qml
     Dialogs/NewProjectDialog.qml
+    Panels/PlaybackBar.qml
     Panels/ViewportPane.qml
     Themes/Theme.qml)
 set(PANTA_SHELL_QML_DEPENDENCIES)
@@ -34,7 +35,7 @@ endif()
 if(NOT PANTA_ENABLE_BRIDGE_MODULE)
   # 提供无 Bridge 的最小 Shell，避免关闭可选模块后残留 Panta.Bridge import；
   # ViewportPane 依赖 Panta.Visualization（CaeViewport），一并剔除。
-  list(REMOVE_ITEM PANTA_SHELL_QML_FILES App.qml Panels/ViewportPane.qml
+  list(REMOVE_ITEM PANTA_SHELL_QML_FILES App.qml Panels/ViewportPane.qml Panels/PlaybackBar.qml
        Dialogs/NewProjectDialog.qml Dialogs/ImportDialog.qml
        Dialogs/GenerateVolumeDialog.qml Dialogs/LargeMeshSettingsDialog.qml)
   list(APPEND PANTA_SHELL_QML_FILES AppNoBridge.qml)

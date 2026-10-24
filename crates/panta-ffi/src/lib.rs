@@ -40,7 +40,8 @@ mod display;
 pub use display::MeshDisplayInput;
 use display::{
     diagnose_mesh_display, export_mesh_display, prepare_mesh_display,
-    project_service_mesh_display_input, section_field_mesh_display, section_mesh_display,
+    project_service_mesh_display_input, project_service_mesh_display_input_at,
+    section_field_mesh_display, section_mesh_display,
 };
 mod progress;
 pub use progress::TaskProgress;
@@ -50,7 +51,10 @@ use progress::{
     task_progress_set_fraction, task_progress_share,
 };
 mod volume;
-use volume::{project_service_result_fields, project_service_volume_summary};
+use volume::{
+    project_service_result_field_range, project_service_result_fields,
+    project_service_result_time_steps, project_service_volume_summary,
+};
 mod limits;
 use limits::{
     default_large_mesh_limits, project_service_large_mesh_limits,
@@ -343,6 +347,29 @@ pub mod bridge {
         pub error: ProjectDiagnostic,
     }
 
+    /// 结果场时间步（task 033）：`time` 为求解时间，`label` 为来源标签（时间目录名等）。
+    #[derive(Default, Debug, Clone)]
+    pub struct ResultTimeStepInfo {
+        pub time: f64,
+        pub label: String,
+        pub field_count: u64,
+    }
+
+    #[derive(Default)]
+    pub struct ResultTimeStepListResult {
+        pub steps: Vec<ResultTimeStepInfo>,
+        pub error: ProjectDiagnostic,
+    }
+
+    /// 字段在全部时间步上的显示范围（task 033）；`has_range` 为假表示没有有限值。
+    #[derive(Default)]
+    pub struct FieldRangeResult {
+        pub has_range: bool,
+        pub min: f64,
+        pub max: f64,
+        pub error: ProjectDiagnostic,
+    }
+
     /// 场剖面请求（task 029）：`association` 为 "node" / "cell"，`component` 为 -1 取模、
     /// 0..=2 取分量；平面参数与 `section_mesh_display` 相同。
     #[derive(Default, Debug, Clone)]
@@ -396,6 +423,19 @@ pub mod bridge {
             service: &ProjectService,
             import_id: &str,
         ) -> ResultFieldListResult;
+        /// 结果场时间步（task 033），时间不减；单步或无结果场时为空表。
+        fn project_service_result_time_steps(
+            service: &ProjectService,
+            import_id: &str,
+        ) -> ResultTimeStepListResult;
+        /// 字段在全部时间步上的显示范围（只读各步 sidecar 头部）；`component` 同场剖面请求。
+        fn project_service_result_field_range(
+            service: &ProjectService,
+            import_id: &str,
+            name: &str,
+            association: &str,
+            component: i32,
+        ) -> FieldRangeResult;
     }
 
     extern "Rust" {
@@ -431,6 +471,12 @@ pub mod bridge {
         fn project_service_mesh_display_input(
             service: &ProjectService,
             import_id: &str,
+        ) -> Box<MeshDisplayInput>;
+        /// 同上，但结果场取第 `step` 个时间步（task 033）；步不存在时场剖面报 CommandInvalid。
+        fn project_service_mesh_display_input_at(
+            service: &ProjectService,
+            import_id: &str,
+            step: u64,
         ) -> Box<MeshDisplayInput>;
         fn prepare_mesh_display(input: Box<MeshDisplayInput>) -> SurfaceMeshSnapshotResult;
         fn diagnose_mesh_display(
