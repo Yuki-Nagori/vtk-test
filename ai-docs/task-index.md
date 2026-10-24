@@ -37,6 +37,7 @@
 | 031 | [多面体单元（VTK_POLYHEDRON 42）：面流布局、拆分、资产 v5、`.pchunk` v4、导入导出与质量](task/031-polyhedron-cells.md) | done |
 | 032 | [OpenFOAM / CGNS 导入与基于面邻接的非正交性 / 偏斜度](task/032-openfoam-cgns-import.md) | done |
 | 033 | [播放控制与时序结果场](task/033-playback-time-series-results.md) | done |
+| 034 | [UI 重制：现状评估与设计方案](task/034-ui-redesign.md) | planned |
 
 任务先登记范围与验收，实际验证后同步状态。历史编号不再代表本仓库的待办或已交付能力。
 
