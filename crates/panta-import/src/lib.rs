@@ -92,6 +92,22 @@ pub struct ImportRecord {
     pub show_import_log: bool,
     pub triangle_count: u64,
     pub dimensions: [f64; 3],
+    /// 来源种类“生成”（task 023）：记录生成器、参数和来源 STEP；文件导入为 `None`。
+    /// 可选字段向后兼容，记录版本不变。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<VolumeGeneration>,
+}
+
+/// 生成体网格的工程记录信息；来源 STEP 不复制进工程，只记录名称与摘要。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VolumeGeneration {
+    /// 生成器稳定 ID，当前只有 `netgen`。
+    pub generator: String,
+    pub source_step_name: String,
+    /// `sha256:<hex>`，与导入来源摘要同格式。
+    pub source_step_digest: String,
+    /// 全局最大单元尺寸（毫米）；0 表示生成器默认尺寸。
+    pub max_length_mm: f64,
 }
 
 /// 返回与来源名称分离的默认资产名；只移除该记录所声明格式的扩展名。
@@ -453,6 +469,7 @@ impl PreparedStl {
             show_import_log: options.show_import_log,
             triangle_count: summary.triangle_count,
             dimensions: summary.dimensions,
+            generation: None,
         }
     }
 

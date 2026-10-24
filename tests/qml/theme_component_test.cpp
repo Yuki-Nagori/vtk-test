@@ -187,6 +187,40 @@ class ThemeComponentTest final : public QObject {
 #endif
     }
 
+    void generate_volume_dialog_rejects_missing_step_and_stays_open() {
+#if !defined(PANTA_TEST_WITH_BRIDGE)
+        QSKIP("Volume generation requires the enabled Bridge module");
+#else
+        QTemporaryDir fixture;
+        QVERIFY(fixture.isValid());
+        panta::bridge::ProjectViewModel model;
+        QQmlEngine engine;
+        panta::install_icon_provider(engine);
+        QQmlComponent component(
+            &engine,
+            QUrl(QStringLiteral("qrc:/qt/qml/Panta/Shell/Dialogs/GenerateVolumeDialog.qml")));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QObject owner;
+        auto* dialog = component.createWithInitialProperties(
+            {{QStringLiteral("projectModel"), QVariant::fromValue(&model)}});
+        QVERIFY2(dialog != nullptr, qPrintable(component.errorString()));
+        dialog->setParent(&owner);
+        auto* window = qobject_cast<QQuickWindow*>(dialog);
+        QVERIFY(window != nullptr);
+        QVERIFY(QMetaObject::invokeMethod(dialog, "open"));
+        QVERIFY(window->isVisible());
+        auto* step = visual_item(window->contentItem(), QStringLiteral("generateStepField"));
+        QVERIFY(step != nullptr);
+        QVERIFY(step->setProperty("text",
+                                  QDir(fixture.path()).filePath(QStringLiteral("missing.step"))));
+        // 无工程或文件缺失时提交被拒绝，对话框保持打开并显示错误。
+        QVERIFY(QMetaObject::invokeMethod(dialog, "submit"));
+        QVERIFY(window->isVisible());
+        QVERIFY(!model.generationPending());
+        QVERIFY(!model.errorCode().isEmpty());
+#endif
+    }
+
     void button_font_size_reaches_its_label() {
         QQmlEngine engine;
         panta::install_icon_provider(engine);

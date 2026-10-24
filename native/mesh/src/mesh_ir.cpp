@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <limits>
 #include <panta/mesh/mesh_ir.hpp>
+#include <panta/mesh/rust_dto.hpp>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -18,7 +19,9 @@ std::size_t checked_size(std::size_t count, std::size_t width) {
     return count * width;
 }
 
-panta::ffi::TetMeshData to_rust_dto(const NativeTetMeshDto& mesh) {
+} // namespace
+
+panta::ffi::TetMeshData to_rust_tet_mesh_data(const NativeTetMeshDto& mesh) {
     panta::ffi::TetMeshData data;
     data.nodes.reserve(checked_size(mesh.nodes.size(), 3));
     for (const auto& node : mesh.nodes) {
@@ -47,10 +50,8 @@ panta::ffi::TetMeshData to_rust_dto(const NativeTetMeshDto& mesh) {
     return data;
 }
 
-} // namespace
-
 RustVolumeQuality volume_quality_with_rust(const NativeTetMeshDto& mesh) {
-    const auto info = panta::ffi::mesh_tet_quality(to_rust_dto(mesh));
+    const auto info = panta::ffi::mesh_tet_quality(to_rust_tet_mesh_data(mesh));
     RustVolumeQuality quality;
     quality.error_code = std::string(info.error.code);
     quality.tet_count = info.tet_count;
@@ -63,12 +64,12 @@ RustVolumeQuality volume_quality_with_rust(const NativeTetMeshDto& mesh) {
 
 std::string export_native_mesh_vtu_with_rust(const NativeTetMeshDto& mesh,
                                              const std::string& path) {
-    return std::string(panta::ffi::mesh_tet_export_vtu(to_rust_dto(mesh), path).code);
+    return std::string(panta::ffi::mesh_tet_export_vtu(to_rust_tet_mesh_data(mesh), path).code);
 }
 
 RustMeshValidationResult validate_native_mesh_with_rust(const NativeTetMeshDto& mesh) {
     const panta::ffi::TetMeshValidation native_report =
-        panta::ffi::mesh_validate_tet(to_rust_dto(mesh));
+        panta::ffi::mesh_validate_tet(to_rust_tet_mesh_data(mesh));
     RustMeshValidationResult report;
     report.issues.reserve(native_report.issues.size());
     for (const auto& issue : native_report.issues) {

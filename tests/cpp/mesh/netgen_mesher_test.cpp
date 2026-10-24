@@ -1,9 +1,11 @@
 /// 任务 010 的 Netgen 生成冒烟：简单闭合实体（复用 009 的 box_mm.step，
 /// 10×20×30 mm）→ 体网格 → 自有 IR 的转换与失败边界。
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <filesystem>
 #include <gtest/gtest.h>
+#include <mutex>
 #include <panta/geometry/step_import.hpp>
 #include <panta/mesh/mesh_ir.hpp>
 #include <panta/mesh/netgen_mesher.hpp>
@@ -179,6 +181,55 @@ TEST(NetgenMesher, RepeatedGenerationsReleaseNativeMeshes) {
         ASSERT_EQ(result.status, TetMeshGenerationStatus::kNone) << result.detail;
         EXPECT_FALSE(result.mesh.tets.empty());
     }
+}
+
+TEST(NetgenMesher, ReportsMonotonicProgressAndHonoursCancellation) {
+    // 任务 023：进度单调递增并以 1.0 结束；取消返回 kCancelled 且无输出，
+    // 之后同一 shape 的生成不受 terminate 标志残留影响。
+    const auto imported = import_step(fixture_dir() / "box_mm.step");
+    ShapeGuard guard{imported.shape};
+    ASSERT_EQ(imported.status, StepImportStatus::kNone) << imported.detail;
+
+    std::mutex mutex;
+    std::vector<double> reported;
+    TetMeshGenerationParameters parameters;
+    parameters.max_length_mm = 3.0;
+    parameters.on_progress = [&](double value) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        reported.push_back(value);
+    };
+    const auto result = generate_tet_mesh(imported.shape, parameters);
+    ASSERT_EQ(result.status, TetMeshGenerationStatus::kNone) << result.detail;
+    ASSERT_FALSE(reported.empty());
+    EXPECT_TRUE(std::is_sorted(reported.begin(), reported.end()));
+    EXPECT_DOUBLE_EQ(reported.back(), 1.0);
+
+    TetMeshGenerationParameters cancelled;
+    cancelled.max_length_mm = 3.0;
+    cancelled.is_cancelled = [] { return true; };
+    const auto aborted = generate_tet_mesh(imported.shape, cancelled);
+    EXPECT_EQ(aborted.status, TetMeshGenerationStatus::kCancelled);
+    EXPECT_TRUE(aborted.mesh.tets.empty());
+    EXPECT_NEAR(aborted.volume_mm3, 0.0, 1e-12);
+
+    // 体阶段中途取消：进度越过面阶段后置位，Netgen 在检查点返回。
+    std::atomic<bool> stop{false};
+    TetMeshGenerationParameters midway;
+    midway.max_length_mm = 1.0;
+    midway.on_progress = [&](double value) {
+        if (value >= 0.5)
+            stop.store(true);
+    };
+    midway.is_cancelled = [&] { return stop.load(); };
+    const auto interrupted = generate_tet_mesh(imported.shape, midway);
+    EXPECT_EQ(interrupted.status, TetMeshGenerationStatus::kCancelled) << interrupted.detail;
+    EXPECT_TRUE(interrupted.mesh.tets.empty());
+
+    TetMeshGenerationParameters again;
+    again.max_length_mm = 5.0;
+    const auto recovered = generate_tet_mesh(imported.shape, again);
+    ASSERT_EQ(recovered.status, TetMeshGenerationStatus::kNone) << recovered.detail;
+    EXPECT_NEAR(recovered.volume_mm3, 6000.0, 60.0);
 }
 
 } // namespace

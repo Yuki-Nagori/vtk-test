@@ -69,6 +69,8 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     Q_PROPERTY(double importPreviewProgress READ importPreviewProgress NOTIFY taskProgressChanged)
     Q_PROPERTY(double exportProgress READ exportProgress NOTIFY taskProgressChanged)
     Q_PROPERTY(double diagnosticsProgress READ diagnosticsProgress NOTIFY taskProgressChanged)
+    Q_PROPERTY(bool generationPending READ generationPending NOTIFY generationPendingChanged)
+    Q_PROPERTY(double generationProgress READ generationProgress NOTIFY taskProgressChanged)
     /// 最近打开/创建的工程路径（新到旧，最多 10 个，已不存在的文件在读取时剔除；task 018）。
     Q_PROPERTY(QStringList recentProjects READ recentProjects NOTIFY recentProjectsChanged)
     /// 时序动画（task 020）：只读序列播放，不入工程；活动时视口显示序列帧。
@@ -210,6 +212,16 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     /// 完成信号仍会到达，结果为 project.export_cancelled / project.diagnostics_cancelled。
     Q_INVOKABLE bool cancelExport();
     Q_INVOKABLE bool cancelDiagnostics();
+
+    /// STEP → Netgen 四面体体网格（task 023）。STEP 读取与 Netgen 生成在后台线程，
+    /// 成功后经 Rust 写入工程（复用导入提交与发布）；maxLengthMm <= 0 用 Netgen 默认。
+    /// 返回准入结果，完成后发出 generationFinished。
+    Q_INVOKABLE bool beginGenerateVolumeFromStep(const QString& path, double maxLengthMm);
+    /// 协作式取消；生成阶段经 Netgen terminate 在检查点返回，提交阶段同 cancelImport。
+    Q_INVOKABLE bool cancelGeneration();
+    [[nodiscard]] bool generationPending() const { return m_generationPending; }
+    /// 0..1；生成占 0–0.9，工程提交占 0.9–1；无任务时为 -1。
+    [[nodiscard]] double generationProgress() const;
     /// 清空最近工程列表。
     Q_INVOKABLE void clearRecentProjects();
     /// 拖放分类：返回 "project"（.panta）、"mesh"（可导入网格扩展名）或空串（不支持）。
@@ -264,6 +276,8 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     void diagnosticsFinished(bool succeeded);
     /// 任一后台任务进行中时约每 100ms 触发一次。
     void taskProgressChanged();
+    void generationPendingChanged();
+    void generationFinished(bool succeeded);
 
   protected:
     /// 启动只等待独占 Rust 请求的线程；启动失败抛 system_error，调用方尚未准入领域任务。
@@ -290,6 +304,7 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     void sync_activation_poll();
     void finish_import_preview();
     void finish_stl_import();
+    void finish_generation(bool succeeded);
 
     QString m_defaultLocation;
     const QVariantList m_meshTypes;
@@ -356,6 +371,9 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     QString m_animationFrameError;
     std::optional<rust::Box<panta::ffi::TaskProgress>> m_exportProgress;
     std::optional<rust::Box<panta::ffi::TaskProgress>> m_diagnosticsProgress;
+    /// 生成阶段的进度/取消句柄；进入工程提交阶段后清空，进度改读导入请求。
+    std::optional<rust::Box<panta::ffi::TaskProgress>> m_generationProgress;
+    bool m_generationPending = false;
     quint64 m_previewRequest = 0;
     bool m_importPreviewPending = false;
     QTimer m_activationPoll;

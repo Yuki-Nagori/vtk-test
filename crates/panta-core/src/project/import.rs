@@ -9,17 +9,17 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::{fs, path::Path};
 
-const IMPORT_RUNNING: u8 = 0;
+pub(super) const IMPORT_RUNNING: u8 = 0;
 const IMPORT_COMMITTING: u8 = 1;
 const IMPORT_CANCELLED: u8 = 2;
 const IMPORT_COMMITTED: u8 = 3;
 
 #[derive(Debug)]
 pub(super) struct PendingImport {
-    request: u64,
-    phase: Arc<AtomicU8>,
-    progress: Arc<Progress>,
-    receiver: Receiver<Result<ImportCommit, ProjectError>>,
+    pub(super) request: u64,
+    pub(super) phase: Arc<AtomicU8>,
+    pub(super) progress: Arc<Progress>,
+    pub(super) receiver: Receiver<Result<ImportCommit, ProjectError>>,
 }
 
 impl PendingImport {
@@ -198,7 +198,7 @@ impl ProjectService {
 }
 
 /// 提交结果：候选状态、导入记录、显示网格，以及体网格导入时的四面体数据（task 021）。
-type ImportCommit = (
+pub(super) type ImportCommit = (
     super::ProjectState,
     ImportRecord,
     panta_mesh::SurfaceMesh,
@@ -229,7 +229,7 @@ fn commit_import(
         })?;
     ensure_import_running(phase)?;
     progress.set_fraction(0.5);
-    let mut record = prepared.record(import_number, options);
+    let record = prepared.record(import_number, options);
     let volume = volume_from_prepared(&prepared, options)?;
     drop(std::mem::take(&mut prepared.bytes));
     match &volume {
@@ -237,6 +237,28 @@ fn commit_import(
         None => prepared.scale_mesh_mm(options).map_err(map_import_error)?,
     }
     progress.set_fraction(0.6);
+    commit_mesh_record(
+        candidate,
+        record,
+        prepared.mesh,
+        volume,
+        phase,
+        progress,
+        0.6,
+    )
+}
+
+/// 写出 Mesh 资产并原子提交清单；导入与生成体网格（task 023）共用同一提交闸门。
+/// 资产写出进度映射到 `asset_start..0.9`，清单提交后为 1.0。
+pub(super) fn commit_mesh_record(
+    candidate: &mut super::ProjectState,
+    mut record: ImportRecord,
+    mesh: panta_mesh::SurfaceMesh,
+    volume: Option<panta_mesh::TetMesh>,
+    phase: &AtomicU8,
+    progress: &Progress,
+    asset_start: f64,
+) -> Result<ImportCommit, ProjectError> {
     let lease = super::repository::WriteLease::acquire(candidate)?;
     let project_root = candidate
         .path
@@ -247,10 +269,10 @@ fn commit_import(
         &mut record,
         match &volume {
             Some(volume) => panta_mesh::MeshAssetRef::Volume(volume),
-            None => panta_mesh::MeshAssetRef::Surface(&prepared.mesh),
+            None => panta_mesh::MeshAssetRef::Surface(&mesh),
         },
         Some(phase),
-        &|value| progress.set_fraction(0.6 + value * 0.3),
+        &|value| progress.set_fraction(asset_start + value * (0.9 - asset_start)),
     )?;
     progress.set_fraction(0.9);
     candidate
@@ -277,7 +299,7 @@ fn commit_import(
     asset.committed = true;
     phase.store(IMPORT_COMMITTED, Ordering::Release);
     progress.set_fraction(1.0);
-    Ok((candidate.clone(), record, prepared.mesh, volume))
+    Ok((candidate.clone(), record, mesh, volume))
 }
 
 /// 「实体 3D」类型的 VTU / 旧版 VTK 按线性四面体体网格导入：坐标换算到毫米后构建并校验；
@@ -391,7 +413,7 @@ fn ensure_import_running(phase: &AtomicU8) -> Result<(), ProjectError> {
     }
 }
 
-fn import_cancelled() -> ProjectError {
+pub(super) fn import_cancelled() -> ProjectError {
     ProjectError::CommandInvalid("STL import cancelled".to_owned())
 }
 

@@ -13,6 +13,9 @@
 #include <TopoDS_Shape.hxx>
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <exception>
 #include <memory>
@@ -27,6 +30,7 @@
 #include <panta/mesh/netgen_mesher.hpp>
 #include <shape_repository_internal.hpp>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -247,6 +251,100 @@ void delete_occ_geometry(netgen::OCCGeometry* geometry) {
         nglib::Ng_OCC_DeleteGeometry(reinterpret_cast<nglib::Ng_OCC_Geometry*>(geometry));
 }
 
+/// 生成阶段在整体进度中的区间：边 0–0.2，面 0.2–0.5，体 0.5–0.85，
+/// 转换与校验 0.85–1。Netgen 的 multithread.percent 只描述当前阶段。
+struct StageWindow {
+    double start;
+    double end;
+};
+constexpr StageWindow kEdgeStage{0.0, 0.2};
+constexpr StageWindow kSurfaceStage{0.2, 0.5};
+constexpr StageWindow kVolumeStage{0.5, 0.85};
+constexpr StageWindow kConvertStage{0.85, 0.95};
+
+/// 监视线程：轮询调用方取消并转发 Netgen 阶段进度（任务 023）。
+/// 仅在持有 netgen_mutex 时存在，因此对 ngcore::multithread 的写入不与
+/// 其他生成竞争；析构时复位 terminate，避免影响后续生成。
+class GenerationMonitor {
+  public:
+    explicit GenerationMonitor(const TetMeshGenerationParameters& parameters)
+        : parameters_(parameters) {
+        ngcore::multithread.terminate = 0;
+        ngcore::multithread.percent = 0.0;
+        if (parameters_.on_progress || parameters_.is_cancelled)
+            thread_ = std::thread([this] { run(); });
+    }
+    GenerationMonitor(const GenerationMonitor&) = delete;
+    GenerationMonitor& operator=(const GenerationMonitor&) = delete;
+    GenerationMonitor(GenerationMonitor&&) = delete;
+    GenerationMonitor& operator=(GenerationMonitor&&) = delete;
+    ~GenerationMonitor() {
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
+        }
+        wake_.notify_all();
+        if (thread_.joinable())
+            thread_.join();
+        ngcore::multithread.terminate = 0;
+    }
+
+    void enter(StageWindow stage) {
+        ngcore::multithread.percent = 0.0;
+        stage_start_.store(stage.start);
+        stage_end_.store(stage.end);
+        report(stage.start);
+    }
+
+    /// 阶段边界的同步检查；监视线程之外再查一次，保证短阶段也能及时响应。
+    bool cancelled() {
+        if (!cancelled_.load() && parameters_.is_cancelled && parameters_.is_cancelled()) {
+            cancelled_.store(true);
+            ngcore::multithread.terminate = 1;
+        }
+        return cancelled_.load();
+    }
+
+    void report(double fraction) {
+        if (!parameters_.on_progress)
+            return;
+        double previous = reported_.load();
+        // 只单调上报：阶段内 percent 可能回退（Netgen 多轮优化）。
+        while (fraction > previous && !reported_.compare_exchange_weak(previous, fraction)) {
+        }
+        if (fraction > previous)
+            parameters_.on_progress(std::clamp(fraction, 0.0, 1.0));
+    }
+
+  private:
+    void run() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        while (!wake_.wait_for(lock, std::chrono::milliseconds(20), [this] { return stopping_; })) {
+            lock.unlock();
+            cancelled();
+            const double percent = std::clamp(ngcore::multithread.percent / 100.0, 0.0, 1.0);
+            const double start = stage_start_.load();
+            report(start + (stage_end_.load() - start) * percent);
+            lock.lock();
+        }
+    }
+
+    const TetMeshGenerationParameters& parameters_;
+    std::mutex mutex_;
+    std::condition_variable wake_;
+    bool stopping_ = false;
+    std::atomic<bool> cancelled_{false};
+    std::atomic<double> stage_start_{0.0};
+    std::atomic<double> stage_end_{0.0};
+    std::atomic<double> reported_{-1.0};
+    std::thread thread_;
+};
+
+void mark_cancelled(TetMeshGenerationResult& result) {
+    result.status = TetMeshGenerationStatus::kCancelled;
+    result.detail = "generation cancelled by caller";
+}
+
 TetMeshGenerationResult
 generate_for_shape(const TopoDS_Shape& shape,
                    const panta::geometry::detail::ShapeFaceMap& source_faces,
@@ -257,6 +355,8 @@ generate_for_shape(const TopoDS_Shape& shape,
     auto* const geometry = reinterpret_cast<nglib::Ng_OCC_Geometry*>(occ_geometry.get());
     using NativeMeshOwner = std::unique_ptr<nglib::Ng_Mesh, decltype(&delete_native_mesh)>;
     NativeMeshOwner native_mesh(nullptr, delete_native_mesh);
+    // 监视器最后声明、最先析构：先停监视线程，再释放 Netgen 对象。
+    GenerationMonitor monitor(parameters);
 
     try {
         std::vector<panta::geometry::FaceId> face_ids_by_netgen_index;
@@ -273,30 +373,49 @@ generate_for_shape(const TopoDS_Shape& shape,
             if (parameters.max_length_mm > 0.0)
                 native_parameters.maxh = parameters.max_length_mm;
             // Netgen OCC 的四面体方向按 Mesh IR 契约在转换时归一化。
-            const nglib::Ng_Result set_size =
-                nglib::Ng_OCC_SetLocalMeshSize(geometry, native_mesh.get(), &native_parameters);
-            if (set_size != nglib::NG_OK) {
-                result.status = TetMeshGenerationStatus::kMeshingFailed;
-                result.detail = meshing_failure_detail("Ng_OCC_SetLocalMeshSize", set_size);
-            } else if (const nglib::Ng_Result edges = nglib::Ng_OCC_GenerateEdgeMesh(
-                           geometry, native_mesh.get(), &native_parameters);
-                       edges != nglib::NG_OK) {
-                result.status = TetMeshGenerationStatus::kMeshingFailed;
-                result.detail = meshing_failure_detail("Ng_OCC_GenerateEdgeMesh", edges);
-            } else if (const nglib::Ng_Result surfaces = nglib::Ng_OCC_GenerateSurfaceMesh(
-                           geometry, native_mesh.get(), &native_parameters);
-                       surfaces != nglib::NG_OK) {
-                result.status = TetMeshGenerationStatus::kMeshingFailed;
-                result.detail = meshing_failure_detail("Ng_OCC_GenerateSurfaceMesh", surfaces);
-            } else if (const nglib::Ng_Result volume =
-                           nglib::Ng_GenerateVolumeMesh(native_mesh.get(), &native_parameters);
-                       volume != nglib::NG_OK) {
-                result.status = TetMeshGenerationStatus::kMeshingFailed;
-                result.detail = meshing_failure_detail("Ng_GenerateVolumeMesh", volume);
-            }
+            // 阶段前后都判取消：terminate 生效时 Netgen 可能返回 NG_OK 但网格
+            // 不完整，取消优先于阶段返回码。
+            const auto run_stage = [&](StageWindow stage, const char* name,
+                                       const auto& call) -> bool {
+                monitor.enter(stage);
+                if (monitor.cancelled()) {
+                    mark_cancelled(result);
+                    return false;
+                }
+                const nglib::Ng_Result code = call();
+                if (monitor.cancelled()) {
+                    mark_cancelled(result);
+                    return false;
+                }
+                if (code != nglib::NG_OK) {
+                    result.status = TetMeshGenerationStatus::kMeshingFailed;
+                    result.detail = meshing_failure_detail(name, code);
+                    return false;
+                }
+                return true;
+            };
+            run_stage(kEdgeStage, "Ng_OCC_SetLocalMeshSize",
+                      [&] {
+                          return nglib::Ng_OCC_SetLocalMeshSize(geometry, native_mesh.get(),
+                                                                &native_parameters);
+                      }) &&
+                run_stage(kEdgeStage, "Ng_OCC_GenerateEdgeMesh",
+                          [&] {
+                              return nglib::Ng_OCC_GenerateEdgeMesh(geometry, native_mesh.get(),
+                                                                    &native_parameters);
+                          }) &&
+                run_stage(kSurfaceStage, "Ng_OCC_GenerateSurfaceMesh",
+                          [&] {
+                              return nglib::Ng_OCC_GenerateSurfaceMesh(geometry, native_mesh.get(),
+                                                                       &native_parameters);
+                          }) &&
+                run_stage(kVolumeStage, "Ng_GenerateVolumeMesh", [&] {
+                    return nglib::Ng_GenerateVolumeMesh(native_mesh.get(), &native_parameters);
+                });
         }
 
         if (result.status == TetMeshGenerationStatus::kNone) {
+            monitor.enter(kConvertStage);
             const auto* mesh = reinterpret_cast<const netgen::Mesh*>(native_mesh.get());
             if (mesh->GetNP() == 0 || mesh->GetNE() == 0) {
                 result.status = TetMeshGenerationStatus::kEmptyMesh;
@@ -316,6 +435,10 @@ generate_for_shape(const TopoDS_Shape& shape,
                 result.volume_mm3 = report.volume_mm3;
             }
         }
+        if (result.status == TetMeshGenerationStatus::kNone && monitor.cancelled())
+            mark_cancelled(result);
+        if (result.status == TetMeshGenerationStatus::kNone)
+            monitor.report(1.0);
     } catch (const Standard_Failure& error) {
         result.status = TetMeshGenerationStatus::kInternalFailure;
         result.detail = error.what();

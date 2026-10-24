@@ -30,7 +30,7 @@ enum CommandOutput {
         panta_core::project::StlImportPreview,
         panta_core::project::SurfaceDiagnostics,
     ),
-    StlImport(panta_core::project::ImportRecord),
+    StlImport(Box<panta_core::project::ImportRecord>),
     MeshExport {
         format: &'static str,
         target: PathBuf,
@@ -166,7 +166,7 @@ fn run(arguments: &[OsString]) -> Result<CommandOutput, String> {
                 resolve_project_path(PathBuf::from(project_path), &current_directory);
             let source_path = resolve_project_path(PathBuf::from(source_path), &current_directory);
             stl::import(&mut service, project_path, source_path, options)
-                .map(CommandOutput::StlImport)
+                .map(|record| CommandOutput::StlImport(Box::new(record)))
         }
         [command, operation, project_path, import_id, target]
             if is_mesh_command(command) && operation == "export" =>

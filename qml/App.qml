@@ -53,9 +53,9 @@ ApplicationWindow {
     color: Theme.colorPanel
 
     readonly property bool projectOpen: projectModel.currentPath.length > 0
-    readonly property real taskProgress: projectModel.importPending ? projectModel.importProgress : projectModel.exportPending ? projectModel.exportProgress : projectModel.diagnosticsPending ? projectModel.diagnosticsProgress : -1
-    readonly property string taskName: projectModel.importPending ? "导入" : projectModel.exportPending ? "导出" : "诊断"
-    readonly property bool busy: projectModel.projectOperationPending || projectModel.importPending || projectModel.exportPending || projectModel.diagnosticsPending
+    readonly property real taskProgress: projectModel.generationPending ? projectModel.generationProgress : projectModel.importPending ? projectModel.importProgress : projectModel.exportPending ? projectModel.exportProgress : projectModel.diagnosticsPending ? projectModel.diagnosticsProgress : -1
+    readonly property string taskName: projectModel.generationPending ? "生成体网格" : projectModel.importPending ? "导入" : projectModel.exportPending ? "导出" : "诊断"
+    readonly property bool busy: projectModel.projectOperationPending || projectModel.generationPending || projectModel.importPending || projectModel.exportPending || projectModel.diagnosticsPending
     readonly property bool meshActive: projectModel.activeDocumentId.length > 0
     // 导出 / 截图的一次性结果提示；新的错误或操作会覆盖它。
     property string notice: ""
@@ -89,6 +89,7 @@ ApplicationWindow {
         closeConfirmDialog.open();
     }
     function confirmClose() {
+        projectModel.cancelGeneration();
         projectModel.cancelImport();
         projectModel.cancelExport();
         projectModel.cancelDiagnostics();
@@ -136,6 +137,12 @@ ApplicationWindow {
 
     ImportDialog {
         id: importDialog
+        ownerWindow: shellWindow
+        projectModel: projectModel
+    }
+
+    GenerateVolumeDialog {
+        id: generateVolumeDialog
         ownerWindow: shellWindow
         projectModel: projectModel
     }
@@ -306,6 +313,11 @@ ApplicationWindow {
                 text: "导入网格…"
                 enabled: shellWindow.canImport
                 onTriggered: importDialog.open()
+            }
+            Action {
+                text: "从 STEP 生成体网格…"
+                enabled: shellWindow.canImport
+                onTriggered: generateVolumeDialog.open()
             }
             Action {
                 text: "导出网格…"
@@ -745,7 +757,9 @@ ApplicationWindow {
             visible: shellWindow.taskProgress >= 0
             text: "取消"
             onClicked: {
-                if (projectModel.importPending)
+                if (projectModel.generationPending)
+                    projectModel.cancelGeneration();
+                else if (projectModel.importPending)
                     projectModel.cancelImport();
                 else if (projectModel.exportPending)
                     projectModel.cancelExport();
