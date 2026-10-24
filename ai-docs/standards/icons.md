@@ -51,6 +51,9 @@
 | `screenshot.svg` | Lucide 1.61.0 / `camera` | ISC | 无几何修改 | `WorkbenchToolBar` 视口截图 |
 | `panel-bottom.svg` | Lucide 1.61.0 / `panel-bottom` | ISC | 无几何修改 | `BottomPanel` 折叠 / 展开 |
 | `panel-left.svg` | Lucide 1.61.0 / `panel-left` | ISC | 无几何修改 | `WorkbenchSidebar` 折叠、左栏窄轨展开 |
+| `visibility-on.svg` | Lucide 1.61.0 / `eye` | ISC | 无几何修改 | `WorkbenchSidebar` 对象树可见性（显示中） |
+| `visibility-off.svg` | Lucide 1.61.0 / `eye-off` | ISC | 无几何修改 | `WorkbenchSidebar` 对象树可见性（已隐藏） |
+| `tree-expand.svg` | Lucide 1.61.0 / `chevron-right` | ISC | 无几何修改 | `WorkbenchSidebar` 对象树展开指示（展开时旋转 90°） |
 
 参考截图不证明第三方品牌、专有字形或图标包可复用，来源不明的素材需先核验。
 

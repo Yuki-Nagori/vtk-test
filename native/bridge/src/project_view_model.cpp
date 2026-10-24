@@ -88,6 +88,87 @@ ProjectViewModel::ProjectViewModel(QObject* parent)
     configureDerivedChunkCache();
     refreshAvailableMemory();
     reset_documents();
+    m_objectTree = new ObjectTreeModel(this);
+    // 对象树只是投影：任何影响节点结构或标签的状态变化都重算（纯函数，节点数很少）。
+    for (const auto signal :
+         {&ProjectViewModel::projectChanged, &ProjectViewModel::importsChanged,
+          &ProjectViewModel::activeDocumentChanged, &ProjectViewModel::volumeChanged,
+          &ProjectViewModel::fieldLegendChanged, &ProjectViewModel::animationChanged,
+          &ProjectViewModel::meshQualityChanged, &ProjectViewModel::assetVisibilityChanged}) {
+        connect(this, signal, this, &ProjectViewModel::refresh_object_tree);
+    }
+    connect(this, &MeshSource::meshChanged, this, &ProjectViewModel::refresh_object_tree);
+    // activeMeshVisible 取决于活动文档；切换页签时同样通知视口。
+    connect(this, &ProjectViewModel::activeDocumentChanged, this,
+            &ProjectViewModel::assetVisibilityChanged);
+    refresh_object_tree();
+}
+
+void ProjectViewModel::setAssetVisible(const QString& assetId, bool visible) {
+    if (!m_importedPartIds.contains(assetId) || m_hiddenAssetIds.contains(assetId) == !visible)
+        return;
+    if (visible)
+        m_hiddenAssetIds.removeAll(assetId);
+    else
+        m_hiddenAssetIds.append(assetId);
+    emit assetVisibilityChanged();
+}
+
+void ProjectViewModel::refresh_object_tree() {
+    if (m_objectTree == nullptr)
+        return;
+    panta::ffi::ObjectTreeInput input;
+    input.project_open = !m_currentPath.isEmpty();
+    input.project_name = m_currentName.toStdString();
+    input.project_path = m_currentPath.toStdString();
+    for (const auto& imported : m_imports)
+        input.assets.push_back(imported);
+    input.active_asset_id = m_activeDocumentId.toStdString();
+    for (const auto& id : m_hiddenAssetIds)
+        input.hidden_asset_ids.push_back(id.toStdString());
+    input.lod_status = activeMeshLodStatus().toStdString();
+    input.volume_available = m_volumeAvailable;
+    input.volume_info = m_volumeInfo.toStdString();
+    input.section_active = m_sectionActive;
+    for (const auto& item : m_resultFields) {
+        const auto field = item.toMap();
+        if (!field.value(QStringLiteral("sectionable")).toBool())
+            continue;
+        ++input.field_count;
+        if (field.value(QStringLiteral("name")).toString() == m_sectionFieldName &&
+            field.value(QStringLiteral("association")).toString() == m_sectionFieldAssociation &&
+            !m_sectionFieldName.isEmpty()) {
+            const bool vector = field.value(QStringLiteral("components")).toInt() == 3;
+            const QString component =
+                !vector ? QString{}
+                : m_sectionFieldComponent < 0
+                    ? QStringLiteral(" 模")
+                    : QStringLiteral(" %1").arg(QChar(u'X' + m_sectionFieldComponent));
+            input.field_label = (m_sectionFieldName + component).toStdString();
+        }
+    }
+    input.time_step_count =
+        time_steps_active() ? static_cast<std::uint32_t>(m_timeSteps.size()) : 0;
+    input.quality_asset_id =
+        m_meshQuality.value(QStringLiteral("documentId")).toString().toStdString();
+    if (m_animation) {
+        input.animation_name = std::string(panta::ffi::animation_frame_name(**m_animation, 0));
+        input.animation_frame_count = static_cast<std::uint32_t>(m_animationFrameCount);
+    }
+    const auto nodes = panta::ffi::object_tree_nodes(input);
+    std::vector<ObjectTreeModel::Node> next;
+    next.reserve(nodes.size());
+    for (const auto& node : nodes) {
+        QVariantList info;
+        for (const auto& row : node.info) {
+            info.append(QVariantMap{{QStringLiteral("label"), QString::fromUtf8(row.label)},
+                                    {QStringLiteral("value"), QString::fromUtf8(row.value)}});
+        }
+        next.push_back({QString::fromUtf8(node.id), QString::fromUtf8(node.kind),
+                        QString::fromUtf8(node.label), QString::fromUtf8(node.asset_id),
+                        node.parent, node.visible, node.can_toggle_visibility, std::move(info)});
+    }
+    m_objectTree->setNodes(std::move(next));
 }
 
 std::shared_ptr<const panta::visualization::SurfaceMeshSnapshot>
@@ -1046,11 +1127,21 @@ void ProjectViewModel::applyImports(const rust::Vec<panta::ffi::ProjectImport>& 
     QStringList nextImportedPartNames;
     QStringList nextPartIds;
     const QDir projectDirectory(QFileInfo(m_currentPath).absolutePath());
+    std::vector<panta::ffi::ProjectImport> nextImports;
+    nextImports.reserve(imports.size());
     for (std::size_t index = 0; index < imports.size(); ++index) {
         const auto& imported = imports[index];
         nextImportedPartNames.append(QString::fromUtf8(imported.display_name));
         nextPartIds.append(QString::fromUtf8(imported.id));
+        nextImports.push_back(imported);
     }
+    const bool recordsChanged = nextImports != m_imports;
+    m_imports = std::move(nextImports);
+    // 隐藏状态只对仍存在的资产有效；换工程时资产 ID 全部失效，随之清空。
+    const auto hiddenBefore = m_hiddenAssetIds.size();
+    m_hiddenAssetIds.removeIf([&](const QString& id) { return !nextPartIds.contains(id); });
+    if (m_hiddenAssetIds.size() != hiddenBefore)
+        emit assetVisibilityChanged();
 
     QString nextPartName;
     QString nextAssetPath;
@@ -1088,7 +1179,7 @@ void ProjectViewModel::applyImports(const rust::Vec<panta::ffi::ProjectImport>& 
     m_importedUnits = nextUnits;
     m_importedDimensions = nextDimensions;
     m_importedTriangleCount = nextTriangleCount;
-    if (changed) {
+    if (changed || recordsChanged) {
         emit importsChanged();
     }
 }

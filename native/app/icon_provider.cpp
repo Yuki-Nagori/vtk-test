@@ -75,7 +75,9 @@ const QSet<QString>& monochrome_icon_names() {
         QStringLiteral("mesh-import"),    QStringLiteral("mesh-export"),
         QStringLiteral("screenshot"),     QStringLiteral("view-preset"),
         QStringLiteral("view-reset"),     QStringLiteral("section"),
-        QStringLiteral("panel-bottom"),   QStringLiteral("panel-left")};
+        QStringLiteral("panel-bottom"),   QStringLiteral("panel-left"),
+        QStringLiteral("visibility-on"),  QStringLiteral("visibility-off"),
+        QStringLiteral("tree-expand")};
     return names;
 }
 

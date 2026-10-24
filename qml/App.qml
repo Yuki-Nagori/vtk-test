@@ -383,6 +383,10 @@ ApplicationWindow {
                 onTriggered: generateVolumeDialog.open()
             }
             Action {
+                text: projectModel.animationActive ? "关闭表面序列" : "打开表面序列…"
+                onTriggered: projectModel.animationActive ? projectModel.closeAnimation() : openAnimationFileDialog.open()
+            }
+            Action {
                 text: "导出网格…"
                 enabled: shellWindow.canExport
                 onTriggered: exportMeshFileDialog.open()
@@ -512,6 +516,7 @@ ApplicationWindow {
             activeDocument: shellWindow.activeDocument
             onOpenAnimationRequested: openAnimationFileDialog.open()
             onCollapseRequested: Settings.sidebarCollapsed = true
+            onQualityRevealRequested: bottomPanel.reveal(0)
         }
         // 左栏折叠后只留一条窄轨，放展开按钮；宽度固定，不可拖动。
         PanelSurface {

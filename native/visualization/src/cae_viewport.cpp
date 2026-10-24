@@ -24,6 +24,8 @@ struct CaeViewport::Impl {
     QMetaObject::Connection mesh_connection;
     QMetaObject::Connection mesh_destroyed_connection;
     std::unique_ptr<ViewportBackend> backend;
+    /// 可见性眼睛关闭时保留网格快照，只隐藏 actor。
+    bool mesh_visible = true;
 };
 
 CaeViewport::CaeViewport(QQuickItem* parent) : QQuickItem(parent), impl_(std::make_unique<Impl>()) {
@@ -87,9 +89,19 @@ bool CaeViewport::setViewPreset(const QString& name) {
 
 void CaeViewport::resetView() { impl_->backend->reset_view(); }
 
+bool CaeViewport::meshVisible() const { return impl_->mesh_visible; }
+
+void CaeViewport::setMeshVisible(bool visible) {
+    if (impl_->mesh_visible == visible)
+        return;
+    impl_->mesh_visible = visible;
+    refresh_mesh();
+    emit meshVisibleChanged();
+}
+
 void CaeViewport::refresh_mesh() {
     impl_->scene.mesh = impl_->mesh_source ? impl_->mesh_source->mesh_snapshot() : nullptr;
-    impl_->scene.primitive_visible = impl_->scene.mesh != nullptr;
+    impl_->scene.primitive_visible = impl_->scene.mesh != nullptr && impl_->mesh_visible;
     ++impl_->scene.revision;
     impl_->backend->apply_state(impl_->scene);
 }

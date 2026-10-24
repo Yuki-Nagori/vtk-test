@@ -63,6 +63,11 @@ QtObject {
     readonly property int qualityCellWidth: 240
     readonly property int taskNameWidth: 96
     readonly property real disabledOpacity: 0.4
+    // 对象树与属性面板（task 037）：行高、每级缩进、属性标签列宽、选中行底色。
+    readonly property int treeRowHeight: 24
+    readonly property int treeIndent: 16
+    readonly property int propertyLabelWidth: 96
+    readonly property color colorSelection: "#cfe3f7"
     readonly property int windowMinimumWidth: 1280
     readonly property int windowMinimumHeight: 720
     readonly property int newProjectDialogWidth: 620

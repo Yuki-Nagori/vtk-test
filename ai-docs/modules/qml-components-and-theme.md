@@ -4,7 +4,7 @@
 
 ## 当前工作台
 
-`qml/App.qml` 组装工作台：顶部 `WorkbenchToolBar`（图标 + tooltip 分组：工程 | 导入 / 导出 | 视图预设 复位 | 切面 | 截图）、左侧 `WorkbenchSidebar`（标题行 + 纵向 `SplitView`：上为模型资产列表，下为属性面板容器；可拖动宽度 260–480 px，可折叠为只含展开按钮的窄轨）、中央视口列（视口上方页签、视口、视口下方播放栏；无播放源时播放栏为禁用细条）与其下可折叠的 `BottomPanel`（诊断 / 消息 / 任务），底部 `WorkbenchStatusBar` 单行显示消息、拾取读数、单位、LOD / 流式状态、时间步与后台任务进度。左栏宽度 / 折叠与底部面板高度 / 折叠由 Bridge `Settings` 写入用户设置，不进工程（task 036）。`ProjectViewModel` 是工程快照和异步结果的 Qt 投影；QML 不维护第二份已提交工程状态。当前布局与启用条件以源码和真实窗口验收为准。
+`qml/App.qml` 组装工作台：顶部 `WorkbenchToolBar`（图标 + tooltip 分组：工程 | 导入 / 导出 | 视图预设 复位 | 切面 | 截图）、左侧 `WorkbenchSidebar`（标题行 + 纵向 `SplitView`：上为对象树「工程 → 资产 → 切面 / 着色 / 时间序列 / 质量诊断」与表面序列节点，下为按节点类型切换的「属性 / 显示 / 信息」属性面板；单击只选中，双击 / Enter 激活所属资产页签，眼睛只切换会话内显示（task 037）；可拖动宽度 260–480 px，可折叠为只含展开按钮的窄轨）、中央视口列（视口上方页签、视口、视口下方播放栏；无播放源时播放栏为禁用细条）与其下可折叠的 `BottomPanel`（诊断 / 消息 / 任务），底部 `WorkbenchStatusBar` 单行显示消息、拾取读数、单位、LOD / 流式状态、时间步与后台任务进度。左栏宽度 / 折叠与底部面板高度 / 折叠由 Bridge `Settings` 写入用户设置，不进工程（task 036）。`ProjectViewModel` 是工程快照和异步结果的 Qt 投影；QML 不维护第二份已提交工程状态。当前布局与启用条件以源码和真实窗口验收为准。
 
 `NewProjectDialog` 管理工程名称与目录候选，`ImportDialog` 管理文件、单位和网格类型候选及预检。确认操作经 ViewModel 进入 Rust；准入、完成和失败分别展示，失败保留已提交资产。`ViewportPane` 自上而下组合 `DocumentTabBar` 与 `CaeViewport`；原生视口压在 Qt Quick 之上，视口矩形内不叠放 QML 控件，菜单使用 `Popup.Window`，页签和活动资产由 Rust 文档工作区提供，VTK 管理原生显示。初始、创建及重开工程均不创建默认文档；关闭最后一个资产页签后恢复空视口。
 
