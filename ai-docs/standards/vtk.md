@@ -1,13 +1,13 @@
 # VTK WebGPU 硬件窗口与渲染数据
 
-更新日期：2026-10-20。仓库消费原 Panta 已发布的 VTK 9.7.0 WebGPU 硬件窗口 SDK；native 工程使用原生 surface/view/layer 桥接，真实窗口验收按本仓库实际平台和场景记录。
+更新日期：2026-10-24。仓库消费本仓库自产的 VTK 9.7.0 WebGPU 硬件窗口 SDK（任务 041 迁入生产管线）；native 工程使用原生 surface/view/layer 桥接，真实窗口验收按本仓库实际平台和场景记录。
 
 适用于 VTK adapter 和 `CaeViewport`；VTK 不是公共数据模型。QML 不直接操作
 VTK 对象，原生视口负责 VTK WebGPU 生命周期、平台 surface 与 Qt Quick 的叠加。
 
 ## 消费约定
 
-- 消费统一走 `panta_require_sdk("vtk")`：manifest 固定 Release `sdk-vtk-9.7.0-webgpu`（C++20、`VTK_ENABLE_WEBGPU=ON`、Dawn 同包，required targets 为 `VTK::RenderingWebGPU`/`VTK::RenderingUI`/`dawn::webgpu_dawn`；Linux 制品 Wayland-only，`VTK_USE_X=OFF`，纯 X11 需另行生产变体）。
+- 消费统一走 `panta_require_sdk("vtk")`：manifest 固定 Release `sdk-vtk-9.7.0-webgpu`（C++20、`VTK_ENABLE_WEBGPU=ON`、Dawn 同包，required targets 为 `VTK::RenderingWebGPU`/`VTK::RenderingUI`/`VTK::RenderingAnnotation`/`dawn::webgpu_dawn`；RenderingAnnotation 供视口色标 `vtkScalarBarActor`；Linux 制品 Wayland-only，`VTK_USE_X=OFF`，纯 X11 需另行生产变体）。
 - 链接边界：VTK/Dawn 全部 PRIVATE（公共头只有 Qt 类型，`Qt6::Quick` 因公共头基类保持 PUBLIC），静态库符号经 LINK_ONLY 传播给最终链接者；消费 `VTK::RenderingWebGPU` 的 target 必须调用 `vtk_module_autoinit`（缺省时 render window 可创建、帧可提交，但 renderer/mapper 工厂未注册，场景空白）。
 - 运行库形态：Windows 制品为 DLL（`vtk*-9.7.dll`，Dawn 静态编入 VTK DLL），测试进程 PATH 须含 SDK bin 目录（`native_test_env` 注入）；macOS/Linux dylib/so 为 `@rpath` 安装名，构建 rpath 自动解析。
 - 适配层结构：公共契约在 `include/panta/visualization/`，第三方头收敛在 `src/vtk/`（与 `geometry/src/occt`、`mesh/src/netgen` 同构）。

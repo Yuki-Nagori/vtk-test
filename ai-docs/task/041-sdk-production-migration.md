@@ -1,6 +1,6 @@
 # 041 — 预编译 SDK 生产迁入 vtk-test 并开启 RenderingAnnotation
 
-- 状态：in-progress
+- 状态：done
 - 阶段：构建与依赖供给（[038](038-ui-stage3-viewport-legend.md) 的前置）
 - 依赖：无（只读参考 `Yuki-Nagori/panta` 的 `tools/sdk/` 与 `sdk-*.yml`）
 - 优先级：P0
@@ -82,3 +82,17 @@
 
 | 日期 | 项 | 结果 |
 |---|---|---|
+| 2026-10-24 | GoogleTest 发布 [run 40099754184](https://github.com/Yuki-Nagori/vtk-test/actions/runs/40099754184) | 通过：三平台各约 0.5–1 分钟，21:50（UTC+8）发布 `sdk-googletest-1.18.0` |
+| 2026-10-24 | OCCT+Netgen 发布 [run 40099749860](https://github.com/Yuki-Nagori/vtk-test/actions/runs/40099749860) | 通过：Linux 21.9 / macOS 32.4 / Windows 38.8 分钟，22:28（UTC+8）发布 `sdk-occt-netgen-8.0.1-6.2.2604`（6 个归档 + sidecar） |
+| 2026-10-24 | VTK 发布 [run 40099745820](https://github.com/Yuki-Nagori/vtk-test/actions/runs/40099745820) | 通过：macOS 22.5 / Linux 38.4 / Windows 54.7 分钟（Windows 比 panta 记录的约 43 分钟长，仍远低于默认 360 分钟作业上限），22:44（UTC+8）发布 `sdk-vtk-9.7.0-webgpu` |
+| 2026-10-24 | 12 个归档 SHA256 | sidecar 与 Release API `digest` 逐一一致；Linux VTK 归档本地 `sha256sum` 复算一致 |
+| 2026-10-24 | VTK 归档内容（Linux） | 含 `include/vtk-9.7/vtkScalarBarActor.h`、`libvtkRenderingAnnotation-9.7.so`，`VTK-targets.cmake` 定义 `VTK::RenderingAnnotation`；manifest 三平台 REQUIRED_TARGETS 已补该 target |
+| 2026-10-24 | Netgen `NETGEN_OCC_LIBRARIES`（Linux） | 与 `native/mesh/CMakeLists.txt` 的 27 个 OCCT 工具链一致 |
+| 2026-10-24 | runner 镜像 | Linux ubuntu-24.04、Windows windows-2022 不变；macOS `macos-latest` 已滚动到 macos-26-arm64（部署目标仍 13.0），manifest ABI 标签由 `macos-15-…` 改为 `macos-26-…` |
+| 2026-10-24 | 本地 Linux `cargo format / lint / quality / test --locked --workspace`（新 SDK 重新下载解包） | 通过；ctest 73/73，`Build.SdkProvision` 通过 |
+| 2026-10-24 | PR #60 CI [run 40105560453](https://github.com/Yuki-Nagori/vtk-test/actions/runs/40105560453) 与分支 nightly [run 40105567820](https://github.com/Yuki-Nagori/vtk-test/actions/runs/40105567820) | 均通过 |
+
+## 工作日志
+
+- 2026-10-24：PR #59（PR A，生产管线迁入）合并为 3826dab；随后在 main 上 dispatch 三条 SDK workflow 发布。
+- 2026-10-24：PR #60（PR B，清单切换）CI 与分支 nightly 通过，合并后 041 完成；038 起消费本仓库产物。
