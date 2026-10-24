@@ -1,7 +1,8 @@
 //! 体网格驻留数据与只读命令：切面显示、质量统计、VTU 导出（task 021）。
+//! 命令作用于共享 `Arc<TetMesh>` 快照，可在宿主后台线程执行（task 022）。
 
 use super::{ProjectError, ProjectService};
-use panta_mesh::{SurfaceMesh, TetMesh, TetQuality};
+use panta_mesh::{Progress, SurfaceMesh, TetMesh, TetQuality};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -23,47 +24,31 @@ impl ProjectService {
         self.mesh_cache.get(import_id)?;
         self.volume_meshes.get(import_id).cloned()
     }
-
-    fn require_volume(&self, import_id: &str) -> Result<Arc<TetMesh>, ProjectError> {
-        self.volume_for_import(import_id)
-            .ok_or_else(|| ProjectError::VolumeUnavailable(import_id.to_owned()))
-    }
-
-    /// 单平面切面显示网格；`axis` 为 0/1/2，`fraction` 为沿轴包围盒的 0..=1 位置。
-    /// 只用于显示，不生成新的网格资产。
-    pub fn volume_section(
-        &self,
-        import_id: &str,
-        axis: usize,
-        fraction: f64,
-    ) -> Result<SurfaceMesh, ProjectError> {
-        let volume = self.require_volume(import_id)?;
-        section_along_axis(&volume, axis, fraction)
-    }
-
-    pub fn volume_quality(&self, import_id: &str) -> Result<TetQuality, ProjectError> {
-        let volume = self.require_volume(import_id)?;
-        Ok(panta_mesh::tet_quality(&volume, &|_| {}))
-    }
-
-    /// 体网格导出 VTU（原始节点与四面体单元）；表面格式仍走现有导出（外表面）。
-    pub fn export_volume_vtu(&self, import_id: &str, path: &Path) -> Result<(), ProjectError> {
-        let volume = self.require_volume(import_id)?;
-        export_tet_mesh_vtu(&volume, path)
-    }
 }
 
-/// 与工程无关的体网格 VTU 导出（Netgen 生成结果复用同一写出路径）。
-pub fn export_tet_mesh_vtu(volume: &TetMesh, path: &Path) -> Result<(), ProjectError> {
-    panta_import::export::export_tet_mesh_vtu(volume, path)
-        .map_err(|error| ProjectError::ExportWriteFailed(error.to_string()))
+/// 与工程无关的体网格 VTU 导出（Netgen 生成结果复用同一写出路径），带进度与取消。
+pub fn export_tet_mesh_vtu(
+    volume: &TetMesh,
+    path: &Path,
+    progress: &Progress,
+) -> Result<(), ProjectError> {
+    panta_import::export::export_tet_mesh_vtu(volume, path, progress)
+        .map_err(super::service::export_error)
 }
 
+/// 体网格质量统计；取消返回 `None`。
+pub fn volume_quality(volume: &TetMesh, progress: &Progress) -> Option<TetQuality> {
+    panta_mesh::tet_quality(volume, progress)
+}
+
+/// 轴向单平面切面显示网格；`axis` 为 0/1/2，`fraction` 为沿轴包围盒的 0..=1 位置。
+/// 只用于显示，不生成新的网格资产；取消返回 `Ok(None)`。
 pub fn section_along_axis(
     volume: &TetMesh,
     axis: usize,
     fraction: f64,
-) -> Result<SurfaceMesh, ProjectError> {
+    progress: &Progress,
+) -> Result<Option<SurfaceMesh>, ProjectError> {
     if axis > 2 || !fraction.is_finite() {
         return Err(ProjectError::CommandInvalid(
             "section axis or position is invalid".to_owned(),
@@ -79,13 +64,15 @@ pub fn section_along_axis(
     origin[axis] = low + (high - low) * fraction.clamp(0.0, 1.0);
     let mut normal = [0.0; 3];
     normal[axis] = 1.0;
-    panta_mesh::section_surface(volume, origin, normal)
+    panta_mesh::section_surface(volume, origin, normal, progress)
         .map_err(|error| ProjectError::CommandInvalid(error.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
+    use super::{export_tet_mesh_vtu, section_along_axis, volume_quality};
     use crate::project::{ProjectError, ProjectService, temp_directory};
+    use panta_mesh::Progress;
     use std::path::PathBuf;
     use std::time::Duration;
 
@@ -110,13 +97,27 @@ mod tests {
             .volume_for_import(&record.id)
             .ok_or("volume missing")?;
         assert_eq!(volume.boundary.len(), 64);
-        let quality = service.volume_quality(&record.id)?;
+        let progress = Progress::new();
+        let quality = volume_quality(&volume, &progress).ok_or("quality cancelled")?;
         assert_eq!(quality.tet_count, volume.tets.len());
         assert!(quality.min_dihedral_degrees > 0.0);
-        let section = service.volume_section(&record.id, 2, 0.5)?;
+        let section = section_along_axis(&volume, 2, 0.5, &progress)?.ok_or("section cancelled")?;
         assert!(!section.triangles.is_empty());
+        assert!(matches!(
+            section_along_axis(&volume, 3, 0.5, &progress),
+            Err(ProjectError::CommandInvalid(_))
+        ));
+        let cancelled = Progress::new();
+        cancelled.cancel();
+        assert!(volume_quality(&volume, &cancelled).is_none());
+        assert!(section_along_axis(&volume, 0, 0.5, &cancelled)?.is_none());
         let out = fixture_dir.root.join("out.vtu");
-        service.export_volume_vtu(&record.id, &out)?;
+        assert!(matches!(
+            export_tet_mesh_vtu(&volume, &out, &cancelled),
+            Err(ProjectError::ExportCancelled)
+        ));
+        assert!(!out.exists());
+        export_tet_mesh_vtu(&volume, &out, &progress)?;
         let written = panta_import::formats::parse_vtu_grid(&std::fs::read(&out)?)?;
         assert_eq!(written.tets.len(), volume.tets.len());
         // 厘米换算到毫米：VTK 夹具半径约 0.5，换算后外包尺寸应 > 5 mm。
@@ -140,10 +141,6 @@ mod tests {
             false,
         )?;
         assert!(service.volume_for_import(&surface.id).is_none());
-        assert!(matches!(
-            service.volume_quality(&surface.id),
-            Err(ProjectError::VolumeUnavailable(_))
-        ));
         // 体素块含非四面体单元，实体 3D 整体拒绝。
         assert!(matches!(
             service.import_stl(
