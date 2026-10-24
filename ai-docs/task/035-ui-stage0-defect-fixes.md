@@ -63,6 +63,7 @@
 | 日期 | 环境 / 命令或场景 | 预期 | 实际结果 / 证据 |
 |---|---|---|---|
 | 2026-10-24 | PR a：本机 `cargo test --locked --workspace`（含 `Qml.ShellModuleLoads` 新用例 `playback_bar_uses_svg_icons_and_shape_coded_loop_state`、`theme_component_test` 白名单图标逐尺寸检查）、`cargo quality`、`cargo lint` | 播放栏 6 个按钮均为白名单 SVG、无文字字形；循环开关有描边 + 无障碍名称 | 通过（70/70） |
+| 2026-10-24 | PR b：offscreen 用例 `sidebar_controls_stay_within_sidebar_bounds`（导入 `tests/fixtures/mesh/pvd/flow.pvd`、开切面 + 字段 T + 质量诊断，1280×720 / 1600×900），CTest 另以 `QT_SCALE_FACTOR=1.25 / 1.5 / 2` 重跑（`Qml.ShellSidebarBounds.Dpr*`）；`PANTA_SHELL_SCREENSHOT_DIR` 保存离屏截图 | 侧栏全部可见控件右缘 ≤ 侧栏右缘；侧栏直接子项在窗口内，详情区可滚到最后一项 | 修复前侧栏内部被撑到 385px（右缘 393 > 248.5）；修复后 4 个 DPR 全部通过。截图：`/workspace/shots/035b/sidebar-{1280x720,1600x900}-dpr{1,1.25,1.5,2}.png`（盒子本地，视口在 offscreen 下为空白） |
 
 ## 风险与回退
 
@@ -72,6 +73,7 @@
 
 - 2026-10-24：按 034 用户决定登记任务。
 - 2026-10-24：PR a 采用 Lucide 1.61.0 的 skip-back / step-back / play / pause / step-forward / skip-forward / repeat，几何未修改，按用途重命名为 `playback-*`；许可全文放 `qml/icons/LICENSE-lucide.txt`，每个 SVG 带来源注释。循环开启时按钮描边与图标改为 `colorFocus`，并通过 `checked` 和无障碍名称（「循环播放：开 / 关」）表达状态，不只靠颜色。objectName 不变。
+- 2026-10-24：PR b 定位侧栏裁切根因：Basic 样式 Button 背景自带 100px 隐式宽度，切面行「切面 + X/Y/Z」三个按钮的最小宽度把整列 `ColumnLayout` 撑到 385px，所有 `fillWidth` 子项随之越界。修复：切面预设与视图预设按钮按文字计算隐式宽度；法向三个 SpinBox 改为每分量一行；质量面板标签换行；色标范围行填满宽度。另发现内容全部展开时总高约 1250px，超出 720 / 900 窗口、视图预设无法触达，因此把资产列表以下的详情放进可滚动区（滚动条在内容超出时常显）。这属于验收标准「没有任何控件被裁切」的直接修复，不改布局骨架（036 会重排）。
 
 ## 完成摘要
 

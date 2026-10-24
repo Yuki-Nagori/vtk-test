@@ -149,9 +149,28 @@ if(BUILD_TESTING)
     target_link_libraries(
       panta_qml_shell_module_test PRIVATE panta::bridge panta::visualization panta_bridgeplugin
                                           panta_visualizationplugin)
-    target_compile_definitions(panta_qml_shell_module_test PRIVATE PANTA_ENABLE_BRIDGE_MODULE=1)
+    # task 035：侧栏边界用例导入 tests/fixtures/mesh/pvd/flow.pvd（裸路径宏同 bridge 测试）。
+    get_filename_component(_panta_shell_mesh_fixture_dir
+                           "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/fixtures/mesh" ABSOLUTE)
+    target_compile_definitions(
+      panta_qml_shell_module_test PRIVATE PANTA_ENABLE_BRIDGE_MODULE=1
+                                          PANTA_SHELL_MESH_FIXTURE_DIR=${_panta_shell_mesh_fixture_dir})
   endif()
   panta_add_qml_test(Qml.ShellModuleLoads panta_qml_shell_module_test app)
+  if(PANTA_ENABLE_BRIDGE_MODULE)
+    # DPR 1.25 / 1.5 / 2.0：只重跑侧栏边界用例，环境在默认 QML 测试环境上追加缩放因子。
+    get_test_property(Qml.ShellModuleLoads ENVIRONMENT _panta_shell_test_environment)
+    foreach(_panta_scale 1.25 1.5 2)
+      string(REPLACE "." "_" _panta_scale_name "${_panta_scale}")
+      set(_panta_scale_test Qml.ShellSidebarBounds.Dpr${_panta_scale_name})
+      add_test(NAME ${_panta_scale_test} COMMAND panta_qml_shell_module_test
+                                                 sidebar_controls_stay_within_sidebar_bounds)
+      set_tests_properties(
+        ${_panta_scale_test}
+        PROPERTIES TIMEOUT 30 LABELS "qml;app" ENVIRONMENT
+                   "${_panta_shell_test_environment};QT_SCALE_FACTOR=${_panta_scale}")
+    endforeach()
+  endif()
 
   if(PANTA_ENABLE_BRIDGE_MODULE)
     # 默认验证模块加载与条目析构；真实 GPU 生命周期用例需显式启用，

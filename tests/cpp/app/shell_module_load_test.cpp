@@ -1,8 +1,10 @@
 // 最小工作台的工程、导入、资产列表与文档接线回归。
 #include "../../support/qml/quick_item_helpers.hpp"
 #include <QColor>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QImage>
 #include <QMetaEnum>
 #include <QMetaProperty>
 #include <QPointF>
@@ -11,12 +13,14 @@
 #include <QQuickWindow>
 #include <QSignalSpy>
 #include <QSize>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <QUrl>
 #include <QVariantMap>
 #include <QtQml/qqmlextensionplugin.h>
 #include <QtQuickControls2/qquickstyle.h>
 #include <QtTest/qtest.h>
+#include <functional>
 #include <icon_provider.hpp>
 #include <qcontainerfwd.h>
 #include <qevent.h>
@@ -32,6 +36,9 @@ Q_IMPORT_QML_PLUGIN(Panta_BridgePlugin)
 Q_IMPORT_QML_PLUGIN(Panta_VisualizationPlugin)
 #endif
 Q_IMPORT_QML_PLUGIN(Panta_ShellPlugin)
+
+#define PANTA_STRINGIFY_IMPL(value) #value
+#define PANTA_STRINGIFY(value) PANTA_STRINGIFY_IMPL(value)
 
 class ShellModuleLoadTest final : public QObject {
     Q_OBJECT
@@ -409,6 +416,97 @@ class ShellModuleLoadTest final : public QObject {
         QTRY_VERIFY(!model->importPending());
         QVERIFY(dialog->property("visible").toBool());
         QVERIFY(dialog->property("pendingImportRequestId").toULongLong() == 0);
+    }
+
+    // task 035：体网格 + 切面上色 + 质量诊断全部展开时，侧栏内可见控件不越过侧栏右边界。
+    // DPR 1.25 / 1.5 / 2.0 由 CTest 以 QT_SCALE_FACTOR 重跑本用例（见 native/app/CMakeLists.txt）。
+    void sidebar_controls_stay_within_sidebar_bounds() {
+        QTemporaryDir fixture;
+        QVERIFY(fixture.isValid());
+        const QString pvdPath =
+            QDir::cleanPath(QDir(QString::fromUtf8(PANTA_STRINGIFY(PANTA_SHELL_MESH_FIXTURE_DIR)))
+                                .filePath(QStringLiteral("pvd/flow.pvd")));
+        QVERIFY(QFileInfo::exists(pvdPath));
+        QQmlApplicationEngine engine;
+        panta::install_icon_provider(engine);
+        engine.loadFromModule(QStringLiteral("Panta.Shell"), QStringLiteral("App"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().constFirst());
+        QVERIFY(window);
+        auto* model =
+            window->findChild<panta::bridge::ProjectViewModel*>(QStringLiteral("projectModel"));
+        auto* sidebar = window->findChild<QQuickItem*>(QStringLiteral("assetSidebar"));
+        QVERIFY(model && sidebar);
+        QVERIFY(model->createProject(QStringLiteral("Bounds"), fixture.path()));
+        QTRY_VERIFY(!model->projectOperationPending());
+        QVERIFY(
+            model->importStl(pvdPath, QStringLiteral("solid-3d"), QStringLiteral("meters"), false));
+        QTRY_VERIFY_WITH_TIMEOUT(model->volumeAvailable(), 15000);
+        QVERIFY(model->setSectionField(QStringLiteral("T"), QStringLiteral("node"), -1));
+        QVERIFY(model->setSection(true, 0.0, 0.0, 1.0, 0.25));
+        QTRY_VERIFY_WITH_TIMEOUT(model->fieldLegendVisible(), 15000);
+        model->beginDiagnoseActiveMesh();
+        auto* quality = window->findChild<QQuickItem*>(QStringLiteral("meshQualityPanel"));
+        QVERIFY(quality);
+        QTRY_VERIFY_WITH_TIMEOUT(quality->isVisible(), 15000);
+        for (const char* name : {"volumePanel", "fieldLegend", "fieldRangeModeRow",
+                                 "viewPresetGrid", "sectionNormalZ", "openAnimationButton"}) {
+            auto* item = visual_item(sidebar, QString::fromLatin1(name));
+            QVERIFY2(item && item->isVisible(), name);
+        }
+        for (const QSize size : {QSize(1280, 720), QSize(1600, 900)}) {
+            window->resize(size);
+            QTRY_COMPARE(window->width(), size.width());
+            QTRY_COMPARE(sidebar->width(), 240.0);
+            // 等布局稳定后再遍历，避免读到 polish 之前的旧几何。
+            QTest::qWait(50);
+            const auto right = sidebar->mapToScene(QPointF(sidebar->width(), 0)).x() + 0.5;
+            QStringList overflow;
+            const std::function<void(QQuickItem*)> visit = [&](QQuickItem* item) {
+                for (auto* child : item->childItems()) {
+                    if (!child->isVisible() || child->width() <= 0.0)
+                        continue;
+                    const auto edge = child->mapToScene(QPointF(child->width(), 0)).x();
+                    if (edge > right)
+                        overflow.append(
+                            QStringLiteral("%1(%2) 右缘 %3 > %4")
+                                .arg(child->objectName(),
+                                     QString::fromLatin1(child->metaObject()->className()))
+                                .arg(edge)
+                                .arg(right));
+                    visit(child);
+                }
+            };
+            visit(sidebar);
+            QVERIFY2(overflow.isEmpty(), qPrintable(overflow.join(QStringLiteral("\n"))));
+            // 纵向：侧栏直接子项都在窗口内，超出部分只能在详情滚动区内，滚到底能看到最后一项。
+            for (auto* child : sidebar->childItems()) {
+                if (child->isVisible())
+                    QVERIFY(child->mapToScene(QPointF(0, child->height())).y() <=
+                            window->height() + 0.5);
+            }
+            auto* scroll = visual_item(sidebar, QStringLiteral("sidebarDetailsScroll"));
+            auto* details = visual_item(sidebar, QStringLiteral("sidebarDetails"));
+            auto* scrollBar = visual_item(sidebar, QStringLiteral("sidebarDetailsScrollBar"));
+            auto* pick = visual_item(sidebar, QStringLiteral("pickReadout"));
+            QVERIFY(scroll && details && scrollBar && pick);
+            QVERIFY(details->height() > scroll->height());
+            QVERIFY(scrollBar->isVisible());
+            scrollBar->setProperty("position", 1.0 - scrollBar->property("size").toReal());
+            QTRY_VERIFY(pick->mapToScene(QPointF(0, pick->height())).y() <=
+                        scroll->mapToScene(QPointF(0, scroll->height())).y() + 0.5);
+            scrollBar->setProperty("position", 0.0);
+            // 设置 PANTA_SHELL_SCREENSHOT_DIR 时保存离屏截图，供任务验收记录（不进 CI 断言）。
+            if (const auto dir = qEnvironmentVariable("PANTA_SHELL_SCREENSHOT_DIR");
+                !dir.isEmpty()) {
+                QTest::qWait(50);
+                const auto image = window->grabWindow();
+                QVERIFY(image.save(QDir(dir).filePath(QStringLiteral("sidebar-%1x%2-dpr%3.png")
+                                                          .arg(size.width())
+                                                          .arg(size.height())
+                                                          .arg(window->devicePixelRatio()))));
+            }
+        }
     }
 
 #endif
