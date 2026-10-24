@@ -1,18 +1,22 @@
-//! out-of-core 分块体网格原型基准（task 027）。
+//! out-of-core 分块体网格原型基准（task 027；task 028 增加映射读取对比）。
 //!
 //! 用法：`cargo run --release -p panta-mesh --example ooc_bench -- [选项]`
 //! - `--cells N`：合成四面体单元数（支持 K/M/B 后缀），默认 100M。
 //! - `--chunk N`：每块单元上限，默认 262144。
 //! - `--budget-mib N`：块缓存预算，默认 1024。
 //! - `--dir PATH`：资产目录，默认系统临时目录；`--reuse` 复用已有文件；`--keep` 保留文件。
+//! - `--reader auto|mmap|pread`：块读取实现（task 028），默认 auto（映射，失败回退定位读）。
 //!
-//! 只测几何计算延迟与 IO（读调用次数、读取字节数、打开文件数），不含渲染；无 GPU 时帧率不测。
+//! 只测几何计算延迟与 IO（读调用次数、读取字节数、打开文件数；映射实现另计映射访问次数，
+//! 缺页由 OS 处理不计为读调用），不含渲染；无 GPU 时帧率不测。
 //! 峰值内存取 Linux `/proc/self/status` 的 VmHWM，阶段间经 `/proc/self/clear_refs` 重置；
-//! 其他平台输出 N/A。
+//! 映射页计入 RSS（文件页，可回收），因此另报当前 RssAnon / RssFile 拆分。其他平台输出 N/A。
 
 use std::time::Instant;
 
-use panta_mesh::chunked::{ChunkBuildOptions, ChunkedVolume, Prefetcher, build_chunked_volume};
+use panta_mesh::chunked::{
+    ChunkBuildOptions, ChunkReadMode, ChunkedVolume, IoCounts, Prefetcher, build_chunked_volume,
+};
 use panta_mesh::{Progress, SyntheticTetBlock};
 
 fn parse_count(text: &str) -> Result<usize, String> {
@@ -50,6 +54,18 @@ fn rss_mib() -> String {
     )
 }
 
+/// 当前匿名 / 文件页 RSS（MiB）。
+fn rss_split() -> String {
+    match (status_kib("RssAnon:"), status_kib("RssFile:")) {
+        (Some(anon), Some(file)) => format!(
+            "匿名 {:.1} / 文件页 {:.1} MiB",
+            anon as f64 / 1024.0,
+            file as f64 / 1024.0
+        ),
+        _ => "N/A".to_owned(),
+    }
+}
+
 fn ms(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1000.0
 }
@@ -65,16 +81,17 @@ fn percentile(values: &[f64], fraction: f64) -> f64 {
 
 struct Io<'a> {
     volume: &'a ChunkedVolume,
-    last: (u64, u64, u64),
+    last: IoCounts,
 }
 
 impl Io<'_> {
-    /// 自上次调用以来的（读调用次数，读取 MiB）。
-    fn delta(&mut self) -> (u64, f64) {
+    /// 自上次调用以来的（读调用次数，读取 / 访问 MiB，映射访问次数）。
+    fn delta(&mut self) -> (u64, f64, u64) {
         let now = self.volume.io_counts();
         let delta = (
-            now.0 - self.last.0,
-            (now.1 - self.last.1) as f64 / 1048576.0,
+            now.reads - self.last.reads,
+            (now.bytes - self.last.bytes) as f64 / 1048576.0,
+            now.mapped - self.last.mapped,
         );
         self.last = now;
         delta
@@ -87,6 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut budget_mib = 1024usize;
     let mut dir = std::env::temp_dir();
     let (mut reuse, mut keep) = (false, false);
+    let mut reader = ChunkReadMode::Auto;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -96,6 +114,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--dir" => dir = args.next().ok_or("--dir 缺少值")?.into(),
             "--reuse" => reuse = true,
             "--keep" => keep = true,
+            "--reader" => {
+                reader = match args.next().ok_or("--reader 缺少值")?.as_str() {
+                    "auto" => ChunkReadMode::Auto,
+                    "mmap" => ChunkReadMode::Mmap,
+                    "pread" => ChunkReadMode::Read,
+                    other => return Err(format!("未知读取实现 {other}").into()),
+                }
+            }
             other => return Err(format!("未知参数 {other}").into()),
         }
     }
@@ -142,15 +168,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     reset_peak();
     let started = Instant::now();
-    let volume = ChunkedVolume::open_file(&path, budget_mib << 20)?;
+    let volume = ChunkedVolume::open_file_with(&path, budget_mib << 20, reader)?;
     let open_ms = ms(started);
+    let kind = volume.reader_kind();
     let mut io = Io {
         volume: &volume,
-        last: (0, 0, 0),
+        last: IoCounts::default(),
     };
-    let (open_reads, open_mib) = io.delta();
+    let (open_reads, open_mib, open_mapped) = io.delta();
     println!(
-        "[打开] {open_ms:.1} ms，{} 块，常驻索引+表面约 {:.1} MiB，读调用 {open_reads}，读 {open_mib:.1} MiB，RSS {} MiB",
+        "[打开] 读取实现 {kind}，{open_ms:.1} ms，{} 块，常驻索引+表面约 {:.1} MiB，读调用 {open_reads}，映射访问 {open_mapped}，读 {open_mib:.1} MiB，RSS {} MiB",
         volume.headers().len(),
         volume.resident_index_bytes() as f64 / 1048576.0,
         rss_mib()
@@ -166,9 +193,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let started = Instant::now();
         let fine = volume.fine_section(&plane, &|| false)?.ok_or("取消")?;
         let cold_ms = ms(started);
-        let (cold_reads, cold_mib) = io.delta();
+        let (cold_reads, cold_mib, cold_mapped) = io.delta();
         println!(
-            "[{label}] 冷缓存精细：{cold_ms:.1} ms，命中 {hits} 块，{} 三角形，读调用 {cold_reads}，读 {cold_mib:.1} MiB",
+            "[{label}] 冷缓存精细：{cold_ms:.1} ms，命中 {hits} 块，{} 三角形，读调用 {cold_reads}，映射访问 {cold_mapped}，读 {cold_mib:.1} MiB",
             fine.triangles.len()
         );
         let started = Instant::now();
@@ -197,7 +224,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let started = Instant::now();
         volume.fine_section(&release, &|| false)?.ok_or("取消")?;
         let release_ms = ms(started);
-        let (drag_reads, drag_mib) = io.delta();
+        let (drag_reads, drag_mib, drag_mapped) = io.delta();
 
         // 逐步停顿：每个位置都算精细（有预取），统计精细延迟分布。
         let mut fine_steps = Vec::new();
@@ -211,7 +238,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         drop(prefetcher);
-        let (step_reads, step_mib) = io.delta();
+        let (step_reads, step_mib, step_mapped) = io.delta();
         let (cache_bytes, cache_chunks, hits_count, misses) = volume.cache().stats();
         let peak = peak_mib();
         println!(
@@ -221,14 +248,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             percentile(&coarse, 1.0)
         );
         println!(
-            "[{label}] 逐步精细 p50 {:.1} / p95 {:.1} / max {:.1} ms；拖动读调用 {drag_reads}（{drag_mib:.1} MiB），逐步读调用 {step_reads}（{step_mib:.1} MiB）；缓存 {cache_chunks} 块 {:.1} MiB，命中 {hits_count} / 未命中 {misses}；峰值 RSS {peak} MiB",
+            "[{label}] 逐步精细 p50 {:.1} / p95 {:.1} / max {:.1} ms；拖动读调用 {drag_reads} / 映射访问 {drag_mapped}（{drag_mib:.1} MiB），逐步读调用 {step_reads} / 映射访问 {step_mapped}（{step_mib:.1} MiB）；缓存 {cache_chunks} 块 {:.1} MiB，命中 {hits_count} / 未命中 {misses}；峰值 RSS {peak} MiB（当前 {}）",
             percentile(&fine_steps, 0.5),
             percentile(&fine_steps, 0.95),
             percentile(&fine_steps, 1.0),
-            cache_bytes as f64 / 1048576.0
+            cache_bytes as f64 / 1048576.0,
+            rss_split()
         );
         json.push(format!(
-            "\"{label}\":{{\"hits\":{hits},\"cold_fine_ms\":{cold_ms:.1},\"cold_reads\":{cold_reads},\"cold_read_mib\":{cold_mib:.1},\"repeat_ms\":{repeat_ms:.1},\"coarse_p50_ms\":{:.1},\"coarse_max_ms\":{:.1},\"release_fine_ms\":{release_ms:.1},\"drag_reads\":{drag_reads},\"step_fine_p50_ms\":{:.1},\"step_fine_max_ms\":{:.1},\"step_reads\":{step_reads},\"peak_mib\":{peak}}}",
+            "\"{label}\":{{\"hits\":{hits},\"cold_fine_ms\":{cold_ms:.1},\"cold_reads\":{cold_reads},\"cold_mapped\":{cold_mapped},\"cold_read_mib\":{cold_mib:.1},\"repeat_ms\":{repeat_ms:.1},\"coarse_p50_ms\":{:.1},\"coarse_max_ms\":{:.1},\"release_fine_ms\":{release_ms:.1},\"drag_reads\":{drag_reads},\"step_fine_p50_ms\":{:.1},\"step_fine_max_ms\":{:.1},\"step_reads\":{step_reads},\"peak_mib\":{peak}}}",
             percentile(&coarse, 0.5),
             percentile(&coarse, 1.0),
             percentile(&fine_steps, 0.5),
@@ -241,19 +269,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let started = Instant::now();
     let quality = volume.quality(&|| false)?.ok_or("取消")?;
     let quality_s = started.elapsed().as_secs_f64();
-    let (quality_reads, quality_mib) = io.delta();
+    let (quality_reads, quality_mib, quality_mapped) = io.delta();
     let started = Instant::now();
     volume.quality(&|| false)?.ok_or("取消")?;
     let quality_cached_ms = ms(started);
     println!(
-        "[质量] 首次 {quality_s:.2}s（读调用 {quality_reads}，{quality_mib:.1} MiB），缓存后 {quality_cached_ms:.2} ms，最小二面角 {:.2}°，峰值 RSS {} MiB",
+        "[质量] 首次 {quality_s:.2}s（读调用 {quality_reads}，映射访问 {quality_mapped}，{quality_mib:.1} MiB），缓存后 {quality_cached_ms:.2} ms，最小二面角 {:.2}°，峰值 RSS {} MiB（当前 {}）",
         quality.min_dihedral_degrees,
-        peak_mib()
+        peak_mib(),
+        rss_split()
     );
     println!(
-        "JSON {{\"tets\":{},\"build\":{build_json},\"open_ms\":{open_ms:.1},\"open_reads\":{open_reads},\"open_files\":{},{},\"quality_s\":{quality_s:.3},\"quality_reads\":{quality_reads}}}",
+        "JSON {{\"reader\":\"{kind}\",\"tets\":{},\"build\":{build_json},\"open_ms\":{open_ms:.1},\"open_reads\":{open_reads},\"open_files\":{},{},\"quality_s\":{quality_s:.3},\"quality_reads\":{quality_reads}}}",
         block.tet_count(),
-        volume.io_counts().2,
+        volume.io_counts().files,
         json.join(",")
     );
     drop(volume);

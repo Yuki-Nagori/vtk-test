@@ -7,7 +7,8 @@ use std::sync::{Arc, Mutex};
 use super::ChunkError;
 use super::cache::{ChunkCache, parallel_map};
 use super::format::{
-    ChunkHeader, ChunkSource, ChunkSurface, FileChunkSource, VOXELS_PER_AXIS, read_index,
+    ChunkHeader, ChunkReadMode, ChunkSource, ChunkSurface, IoCounts, VOXELS_PER_AXIS,
+    open_chunk_source, read_index,
 };
 use crate::volume::{clip_triangle, dot, fan, order_around, section_polygon, single_quality, sub};
 use crate::{POOR_ASPECT_RATIO, POOR_MIN_DIHEDRAL_DEGREES, SurfaceMesh, TetQuality};
@@ -93,8 +94,17 @@ pub struct ChunkedVolume {
 }
 
 impl ChunkedVolume {
+    /// 按默认实现打开：优先只读映射，映射不可用时回退合并定位读。
     pub fn open_file(path: &Path, cache_budget: usize) -> Result<Self, ChunkError> {
-        Self::open(Arc::new(FileChunkSource::open(path)?), cache_budget)
+        Self::open_file_with(path, cache_budget, ChunkReadMode::Auto)
+    }
+
+    pub fn open_file_with(
+        path: &Path,
+        cache_budget: usize,
+        mode: ChunkReadMode,
+    ) -> Result<Self, ChunkError> {
+        Self::open(open_chunk_source(path, mode)?, cache_budget)
     }
 
     pub fn open(source: Arc<dyn ChunkSource>, cache_budget: usize) -> Result<Self, ChunkError> {
@@ -134,9 +144,13 @@ impl ChunkedVolume {
         &self.cache
     }
 
-    /// （读调用次数，读取字节数，打开文件数）。
-    pub fn io_counts(&self) -> (u64, u64, u64) {
+    pub fn io_counts(&self) -> IoCounts {
         self.source.io_counts()
+    }
+
+    /// 实际使用的块读取实现（`mmap` / `pread`）。
+    pub fn reader_kind(&self) -> &'static str {
+        self.source.kind()
     }
 
     /// 常驻层（块表 + 表面）字节数估算。

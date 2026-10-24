@@ -10,6 +10,9 @@ mod asset;
 pub mod chunked;
 mod diagnostics;
 mod lod;
+// 唯一的 unsafe 例外：只读文件映射（task 028，见 standards/rust.md）。
+#[allow(unsafe_code)]
+pub mod mapped;
 mod progress;
 mod synthetic;
 mod volume;

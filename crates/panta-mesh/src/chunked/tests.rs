@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::sync::Arc;
 
-use super::format::{ChunkSource, TAIL_LEN};
+use super::format::{ChunkBytes, ChunkSource, IoCounts, TAIL_LEN};
 use super::{
     ChunkBuildOptions, ChunkError, ChunkedVolume, SectionPlane, TetSource, build_chunked_volume,
 };
@@ -17,16 +17,22 @@ impl ChunkSource for MemorySource {
     fn len(&self) -> u64 {
         self.data.len() as u64
     }
-    fn read_at(&self, offset: u64, len: usize) -> Result<Vec<u8>, ChunkError> {
+    fn read_at(&self, offset: u64, len: usize) -> Result<ChunkBytes, ChunkError> {
         self.reads
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.data
             .get(offset as usize..offset as usize + len)
-            .map(<[u8]>::to_vec)
+            .map(|bytes| ChunkBytes::Owned(bytes.to_vec()))
             .ok_or_else(|| ChunkError::Format("range".to_owned()))
     }
-    fn io_counts(&self) -> (u64, u64, u64) {
-        (self.reads.load(std::sync::atomic::Ordering::Relaxed), 0, 0)
+    fn io_counts(&self) -> IoCounts {
+        IoCounts {
+            reads: self.reads.load(std::sync::atomic::Ordering::Relaxed),
+            ..IoCounts::default()
+        }
+    }
+    fn kind(&self) -> &'static str {
+        "memory"
     }
 }
 
@@ -161,12 +167,12 @@ fn cache_respects_budget_and_coalesces_reads() -> Result<(), Box<dyn Error>> {
     let block = SyntheticTetBlock::with_cells_per_axis(8);
     let bytes = build(&block, 300)?;
     let volume = open(bytes.clone(), usize::MAX)?;
-    let opened = volume.io_counts().0;
+    let opened = volume.io_counts().reads;
     assert!(opened <= 2, "open used {opened} reads");
     let ids: Vec<usize> = (0..volume.headers().len()).collect();
     volume.cache().get_many(&ids)?;
     // 所有块在单元段内连续，一次合并读即可。
-    assert_eq!(volume.io_counts().0 - opened, 1);
+    assert_eq!(volume.io_counts().reads - opened, 1);
 
     let small = open(bytes, 1)?;
     let cells = small.cache().get_many(&[0, 1, 2])?;
@@ -238,5 +244,102 @@ fn invalid_inputs_are_rejected() -> Result<(), Box<dyn Error>> {
     progress.cancel();
     let result = build_chunked_volume(&block, ChunkBuildOptions::default(), Vec::new(), &progress)?;
     assert!(result.is_none());
+    Ok(())
+}
+
+/// 测试用临时文件，析构时删除。
+struct TempFile(std::path::PathBuf);
+
+impl TempFile {
+    fn new(name: &str, bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
+        let path =
+            std::env::temp_dir().join(format!("panta-chunk-{}-{name}.pchunk", std::process::id()));
+        std::fs::write(&path, bytes)?;
+        Ok(Self(path))
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+#[test]
+fn mmap_and_positioned_reads_give_identical_results() -> Result<(), Box<dyn Error>> {
+    use super::ChunkReadMode;
+    let block = SyntheticTetBlock::with_cells_per_axis(8);
+    let file = TempFile::new("modes", &build(&block, 200)?)?;
+    let mut results = Vec::new();
+    for (mode, kind) in [
+        (ChunkReadMode::Mmap, "mmap"),
+        (ChunkReadMode::Read, "pread"),
+        (ChunkReadMode::Auto, "mmap"),
+    ] {
+        let volume = ChunkedVolume::open_file_with(&file.0, 1 << 20, mode)?;
+        assert_eq!(volume.reader_kind(), kind);
+        let [low, high] = volume.bounds();
+        let centre = std::array::from_fn(|axis| 0.43 * low[axis] + 0.57 * high[axis]);
+        let plane = SectionPlane::new(centre, [1.0, 0.3, 0.1])?;
+        let section = volume.fine_section(&plane, &|| false)?.ok_or("cancelled")?;
+        let quality = volume.quality(&|| false)?.ok_or("cancelled")?;
+        let counts = volume.io_counts();
+        assert_eq!(counts.files, 1);
+        if kind == "mmap" {
+            assert_eq!(counts.reads, 0);
+            assert!(counts.mapped > 0);
+        } else {
+            assert!(counts.reads > 0);
+            assert_eq!(counts.mapped, 0);
+        }
+        results.push((sorted_keys(&section.triangles), quality.tet_count));
+    }
+    assert!(results.windows(2).all(|pair| pair[0] == pair[1]));
+    Ok(())
+}
+
+#[test]
+fn mapped_files_validate_head_tail_and_chunks() -> Result<(), Box<dyn Error>> {
+    use super::ChunkReadMode;
+    let block = SyntheticTetBlock::with_cells_per_axis(4);
+    let bytes = build(&block, 100)?;
+    let mut bad_head = bytes.clone();
+    bad_head[0] ^= 0xff;
+    let truncated = &bytes[..bytes.len() - 5];
+    let mut flipped = bytes.clone();
+    flipped[40] ^= 0x55;
+    let empty = TempFile::new("empty", &[])?;
+    let bad_head = TempFile::new("head", &bad_head)?;
+    let truncated = TempFile::new("truncated", truncated)?;
+    let flipped = TempFile::new("flipped", &flipped)?;
+    for mode in [ChunkReadMode::Mmap, ChunkReadMode::Read] {
+        assert!(ChunkedVolume::open_file_with(&empty.0, 1 << 20, mode).is_err());
+        assert!(matches!(
+            ChunkedVolume::open_file_with(&bad_head.0, 1 << 20, mode),
+            Err(ChunkError::Format(_))
+        ));
+        assert!(ChunkedVolume::open_file_with(&truncated.0, 1 << 20, mode).is_err());
+        let volume = ChunkedVolume::open_file_with(&flipped.0, 1 << 20, mode)?;
+        let ids: Vec<usize> = (0..volume.headers().len()).collect();
+        assert!(volume.cache().get_many(&ids).is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn exclusive_lock_forces_positioned_read_fallback() -> Result<(), Box<dyn Error>> {
+    use super::ChunkReadMode;
+    let block = SyntheticTetBlock::with_cells_per_axis(4);
+    let file = TempFile::new("locked", &build(&block, 100)?)?;
+    // 另一句柄持有排他锁（模拟写入方）：映射拒绝打开，自动模式回退定位读。
+    let writer = std::fs::OpenOptions::new().read(true).open(&file.0)?;
+    writer.lock()?;
+    assert!(ChunkedVolume::open_file_with(&file.0, 1 << 20, ChunkReadMode::Mmap).is_err());
+    let volume = ChunkedVolume::open_file_with(&file.0, 1 << 20, ChunkReadMode::Auto)?;
+    assert_eq!(volume.reader_kind(), "pread");
+    writer.unlock()?;
+    drop(writer);
+    let volume = ChunkedVolume::open_file_with(&file.0, 1 << 20, ChunkReadMode::Auto)?;
+    assert_eq!(volume.reader_kind(), "mmap");
     Ok(())
 }

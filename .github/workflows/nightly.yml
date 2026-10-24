@@ -31,8 +31,11 @@ jobs:
       - uses: ./.github/actions/panta-cache-restore
       - name: Build and test Rust, native and QML
         run: cargo test --locked --workspace
-      # task 027：小规模 out-of-core 基准，报告读调用次数、读取字节数、打开文件数与延迟（Windows IO 实测）。
-      - name: Out-of-core IO benchmark (small)
+      # task 027 / 028：小规模 out-of-core 基准，报告读调用次数、映射访问、读取字节数、打开文件数与延迟；
+      # 定位读与只读映射两种块读取实现各跑一次（第二次复用同一文件，结束后删除）。
+      - name: Out-of-core IO benchmark (small, pread + mmap)
         shell: bash
-        run: cargo run --release --locked -p panta-mesh --example ooc_bench -- --cells 2M --chunk 65536 --budget-mib 64 --dir "${{ runner.temp }}"
+        run: |
+          cargo run --release --locked -p panta-mesh --example ooc_bench -- --cells 2M --chunk 65536 --budget-mib 64 --dir "${{ runner.temp }}" --reader pread --keep
+          cargo run --release --locked -p panta-mesh --example ooc_bench -- --cells 2M --chunk 65536 --budget-mib 64 --dir "${{ runner.temp }}" --reader mmap --reuse
       - uses: ./.github/actions/panta-cache-save
