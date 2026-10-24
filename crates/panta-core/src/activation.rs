@@ -1225,6 +1225,7 @@ mod tests {
                 .collect(),
             region_count: 1,
             boundary_group_count: 6,
+            cells: None,
         };
         let fields = vec![
             ResultField {

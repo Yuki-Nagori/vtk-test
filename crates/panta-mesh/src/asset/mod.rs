@@ -1,6 +1,10 @@
 //! 面向工程旁置文件的版本化 Mesh 编解码；不依赖 VTK / Netgen 内存布局。
 //!
-//! v3 布局（全部小端）：
+//! v4（task 030）在 v3 容器上为体网格增加原生混合单元流 `VolumeCells` 与
+//! `VolumeCellSummary`；纯四面体与表面资产的块布局与 v3 相同，仅头部版本号不同。
+//! v3 资产继续只读；结果场 sidecar 的容器头部版本保持 3。
+//!
+//! 容器布局（全部小端）：
 //!
 //! ```text
 //! [0..56)   头部：magic、版本、kind、单位、保留字节、payload 长度、目录 SHA-256
@@ -25,14 +29,20 @@ pub use stream::{
     write_surface_asset_streaming, write_volume_asset_streaming,
 };
 
-use crate::{SurfaceMesh, SurfaceTriangle, TetMesh, Tetrahedron, validate_tet_mesh};
+use crate::{
+    CellLayout, CellType, SurfaceMesh, SurfaceTriangle, TetMesh, Tetrahedron, validate_tet_mesh,
+};
 use sha2::{Digest, Sha256};
 use std::fmt::{Display, Formatter};
 use std::io::{self, Read};
 use std::ops::Range;
 
 const MAGIC: &[u8; 8] = b"PNTMESH\0";
-pub const MESH_ASSET_FORMAT_VERSION: u32 = 3;
+pub const MESH_ASSET_FORMAT_VERSION: u32 = 4;
+/// 上一版网格容器：仍可读取，不含混合单元流。
+const V3: u32 = 3;
+/// 结果场 sidecar 的容器头部版本（task 029 起固定，不随网格格式升级）。
+const RESULT_CONTAINER_VERSION: u32 = V3;
 const HEADER_SIZE: usize = 56;
 const TOC_PREFIX_BYTES: usize = 8;
 const TOC_ENTRY_BYTES: usize = 64;
@@ -70,6 +80,11 @@ enum Stream {
     ResultTable = 6,
     /// 结果场数值（task 029）：f64，按字段顺序排列，块不跨字段。
     ResultValues = 7,
+    /// 原生单元（v4，task 030）：VTK 类型码 u32 + region u32 + 8 × u32 节点，
+    /// 未用节点槽为 `u32::MAX`。混合网格以此代替 `VolumeTets`。
+    VolumeCells = 8,
+    /// 混合单元摘要（v4）：拆分后的四面体数 u64，恰好一条记录。
+    VolumeCellSummary = 9,
 }
 
 impl Stream {
@@ -82,6 +97,8 @@ impl Stream {
             5 => Self::VolumeBoundary,
             6 => Self::ResultTable,
             7 => Self::ResultValues,
+            8 => Self::VolumeCells,
+            9 => Self::VolumeCellSummary,
             _ => return None,
         })
     }
@@ -95,6 +112,8 @@ impl Stream {
             Self::VolumeBoundary => 16,
             Self::ResultTable => 1,
             Self::ResultValues => 8,
+            Self::VolumeCells => 40,
+            Self::VolumeCellSummary => 8,
         }
     }
 
@@ -185,7 +204,7 @@ pub fn encode_mesh_asset(mesh: &MeshAsset) -> Result<(Vec<u8>, String), MeshAsse
     }
 }
 
-/// 以 v3 分块布局编码；各块并行重排、压缩与哈希，返回完整文件字节与资产摘要。
+/// 以 v4 分块布局编码；各块并行重排、压缩与哈希，返回完整文件字节与资产摘要。
 pub fn encode_mesh_asset_ref(mesh: MeshAssetRef<'_>) -> Result<(Vec<u8>, String), MeshAssetError> {
     match mesh {
         MeshAssetRef::Surface(mesh) => {
@@ -215,8 +234,14 @@ pub fn encode_mesh_asset_ref(mesh: MeshAssetRef<'_>) -> Result<(Vec<u8>, String)
             }
             let mut jobs = vec![(Stream::VolumeCounts, 0..1)];
             jobs.extend(chunk_jobs(Stream::VolumeNodes, mesh.nodes.len()));
-            jobs.extend(chunk_jobs(Stream::VolumeTets, mesh.tets.len()));
+            if mesh.cells.is_none() {
+                jobs.extend(chunk_jobs(Stream::VolumeTets, mesh.tets.len()));
+            }
             jobs.extend(chunk_jobs(Stream::VolumeBoundary, mesh.boundary.len()));
+            if let Some(cells) = &mesh.cells {
+                jobs.extend(chunk_jobs(Stream::VolumeCells, cells.cell_count()));
+                jobs.push((Stream::VolumeCellSummary, 0..1));
+            }
             let chunks = encode_chunks(&jobs, |job, raw| {
                 encode_volume_records(mesh, job, raw);
             })?;
@@ -264,8 +289,48 @@ fn encode_volume_records(
                 raw.extend_from_slice(&triangle.group.to_le_bytes());
             }
         }
+        Stream::VolumeCells => {
+            let Some(cells) = &mesh.cells else { return };
+            for cell in range {
+                let first = cells
+                    .tet_cells
+                    .partition_point(|&owner| (owner as usize) < cell);
+                encode_cell_record(
+                    cells.types[cell],
+                    mesh.tets[first].region,
+                    cells.cell_nodes(cell),
+                    raw,
+                );
+            }
+        }
+        Stream::VolumeCellSummary => {
+            raw.extend_from_slice(&(mesh.tets.len() as u64).to_le_bytes());
+        }
         Stream::SurfaceTriangles | Stream::ResultTable | Stream::ResultValues => {}
     }
+}
+
+/// 40 B 原生单元记录，见 [`Stream::VolumeCells`]。
+pub(super) fn encode_cell_record(kind: CellType, region: u32, nodes: &[u32], raw: &mut Vec<u8>) {
+    raw.extend_from_slice(&u32::from(kind.vtk_code()).to_le_bytes());
+    raw.extend_from_slice(&region.to_le_bytes());
+    for slot in 0..8 {
+        let node = nodes.get(slot).copied().unwrap_or(u32::MAX);
+        raw.extend_from_slice(&node.to_le_bytes());
+    }
+}
+
+/// 解析 40 B 原生单元记录：返回类型、区域与节点（截取到类型节点数）。
+pub(super) fn decode_cell_record(record: &[u8; 40]) -> Option<(CellType, u32, [u32; 8])> {
+    let (values, _) = record.as_chunks::<4>();
+    let code = u32::from_le_bytes(values[0]);
+    let kind = u8::try_from(code).ok().and_then(CellType::from_vtk)?;
+    let region = u32::from_le_bytes(values[1]);
+    let nodes: [u32; 8] = std::array::from_fn(|slot| u32::from_le_bytes(values[2 + slot]));
+    let padding_ok = nodes[kind.node_count()..]
+        .iter()
+        .all(|&node| node == u32::MAX);
+    padding_ok.then_some((kind, region, nodes))
 }
 
 struct EncodedChunk {
@@ -317,6 +382,15 @@ where
     })
 }
 
+/// 写入头部的容器版本：网格为当前网格格式版本，结果场 sidecar 保持 v3 容器。
+fn container_version(kind: u8) -> u32 {
+    if kind == RESULT_KIND {
+        RESULT_CONTAINER_VERSION
+    } else {
+        MESH_ASSET_FORMAT_VERSION
+    }
+}
+
 fn assemble(kind: u8, chunks: Vec<EncodedChunk>) -> Result<(Vec<u8>, String), MeshAssetError> {
     let toc_len = chunks
         .len()
@@ -356,7 +430,7 @@ fn assemble(kind: u8, chunks: Vec<EncodedChunk>) -> Result<(Vec<u8>, String), Me
         bytes.extend_from_slice(&chunk.stored);
     }
     bytes[..8].copy_from_slice(MAGIC);
-    bytes[8..12].copy_from_slice(&MESH_ASSET_FORMAT_VERSION.to_le_bytes());
+    bytes[8..12].copy_from_slice(&container_version(kind).to_le_bytes());
     bytes[12] = kind;
     bytes[13] = MILLIMETERS;
     bytes[16..24].copy_from_slice(&((total_len - HEADER_SIZE) as u64).to_le_bytes());
@@ -383,7 +457,7 @@ fn map_codec_error(error: io::Error) -> MeshAssetError {
 /// 工程清单可登记的 sidecar 版本：当前写入版本，以及仍可只读的旧版本。
 pub fn is_readable_mesh_asset_version(version: u32) -> bool {
     // COMPAT(task 011; remove-task 012): 清单中 v2 资产仍可激活，见 v2.rs。
-    version == MESH_ASSET_FORMAT_VERSION || version == v2::VERSION
+    version == MESH_ASSET_FORMAT_VERSION || version == V3 || version == v2::VERSION
 }
 
 /// 从完整固定长度头部验证格式并返回总字节长度，以便流式读取端先拒绝异常文件。
@@ -405,14 +479,14 @@ fn container_encoded_len(header: &[u8], result: bool) -> Result<usize, MeshAsset
     if !kind_allowed {
         return Err(MeshAssetError::UnsupportedKind(header[12]));
     }
-    if result && version != MESH_ASSET_FORMAT_VERSION {
+    if result && version != RESULT_CONTAINER_VERSION {
         return Err(MeshAssetError::UnsupportedVersion(version));
     }
     if header[13] != MILLIMETERS {
         return Err(MeshAssetError::UnsupportedUnits(header[13]));
     }
     match version {
-        MESH_ASSET_FORMAT_VERSION => {
+        MESH_ASSET_FORMAT_VERSION | V3 => {
             if header[14] != 0 || header[15] != 0 {
                 return Err(MeshAssetError::InvalidHeader);
             }
@@ -460,6 +534,7 @@ fn parse_layout(header: &[u8], toc: &[u8], total_len: u64) -> Result<Layout, Mes
         return Err(MeshAssetError::ChecksumMismatch);
     }
     let kind = header[12];
+    let version = read_u32_at(header, 8);
     let mut chunks = Vec::new();
     let mut cursor = (HEADER_SIZE + toc.len()) as u64;
     let mut previous_stream = None;
@@ -467,7 +542,11 @@ fn parse_layout(header: &[u8], toc: &[u8], total_len: u64) -> Result<Layout, Mes
         let stream = Stream::from_byte(entry[0]).ok_or(MeshAssetError::UnsupportedLayout)?;
         let stream_allowed = match kind {
             SURFACE_KIND => stream == Stream::SurfaceTriangles,
-            TET_KIND => (Stream::VolumeCounts..=Stream::VolumeBoundary).contains(&stream),
+            TET_KIND => {
+                (Stream::VolumeCounts..=Stream::VolumeBoundary).contains(&stream)
+                    || (version >= MESH_ASSET_FORMAT_VERSION
+                        && matches!(stream, Stream::VolumeCells | Stream::VolumeCellSummary))
+            }
             RESULT_KIND => matches!(stream, Stream::ResultTable | Stream::ResultValues),
             _ => false,
         };
@@ -524,6 +603,17 @@ fn parse_layout(header: &[u8], toc: &[u8], total_len: u64) -> Result<Layout, Mes
             .map(|chunk| chunk.record_count)
             .sum::<usize>();
         if counts != 1 {
+            return Err(MeshAssetError::UnsupportedLayout);
+        }
+        // 纯四面体与混合单元二选一：混合资产不含四面体流，且摘要恰好一条记录。
+        let has = |stream: Stream| chunks.iter().any(|chunk| chunk.stream == stream);
+        let summary = chunks
+            .iter()
+            .filter(|chunk| chunk.stream == Stream::VolumeCellSummary)
+            .map(|chunk| chunk.record_count)
+            .sum::<usize>();
+        let mixed = has(Stream::VolumeCells);
+        if (mixed && (has(Stream::VolumeTets) || summary != 1)) || (!mixed && summary != 0) {
             return Err(MeshAssetError::UnsupportedLayout);
         }
     }
@@ -729,7 +819,8 @@ enum DecodeSink {
         starts: Vec<usize>,
     },
     Volume {
-        raw: [Vec<u8>; 4],
+        /// 按 `stream - VolumeCounts` 下标收集的原始记录（结果场流位置不使用）。
+        raw: [Vec<u8>; 8],
     },
 }
 
@@ -851,8 +942,8 @@ fn decode_surface_records(
     Ok(())
 }
 
-fn decode_volume(raw: &[Vec<u8>; 4]) -> Result<TetMesh, MeshAssetError> {
-    let [counts, nodes, tets, boundary] = raw;
+fn decode_volume(raw: &[Vec<u8>; 8]) -> Result<TetMesh, MeshAssetError> {
+    let [counts, nodes, tets, boundary, _, _, cells, summary] = raw;
     let (counts, _) = counts.as_chunks::<4>();
     let [region_count, boundary_group_count] = [0, 1].map(|index| {
         counts
@@ -897,12 +988,62 @@ fn decode_volume(raw: &[Vec<u8>; 4]) -> Result<TetMesh, MeshAssetError> {
             group: u32::from_le_bytes(values[3]),
         });
     }
+    let mut layout = None;
+    if !cells.is_empty() {
+        let (records, _) = cells.as_chunks::<40>();
+        let mut types = Vec::new();
+        let mut regions = Vec::new();
+        let mut connectivity = Vec::new();
+        types
+            .try_reserve_exact(records.len())
+            .map_err(|_| MeshAssetError::AllocationFailed)?;
+        regions
+            .try_reserve_exact(records.len())
+            .map_err(|_| MeshAssetError::AllocationFailed)?;
+        connectivity
+            .try_reserve_exact(records.len().saturating_mul(8))
+            .map_err(|_| MeshAssetError::AllocationFailed)?;
+        for record in records {
+            let (kind, region, nodes) =
+                decode_cell_record(record).ok_or(MeshAssetError::InvalidMesh)?;
+            types.push(kind);
+            regions.push(region);
+            connectivity.extend_from_slice(&nodes[..kind.node_count()]);
+        }
+        let offsets = crate::cell_offsets(&types, connectivity.len())
+            .map_err(|_| MeshAssetError::InvalidMesh)?;
+        if connectivity
+            .iter()
+            .any(|&node| node as usize >= decoded_nodes.len())
+        {
+            return Err(MeshAssetError::InvalidMesh);
+        }
+        let (tets, tet_cells) =
+            crate::cells::decompose_cells(&types, &offsets, &connectivity, |cell| regions[cell])
+                .map_err(|_| MeshAssetError::InvalidMesh)?;
+        let declared = summary
+            .as_chunks::<8>()
+            .0
+            .first()
+            .map(|value| u64::from_le_bytes(*value));
+        if declared != Some(tets.len() as u64) {
+            return Err(MeshAssetError::InvalidMesh);
+        }
+        decoded_tets = tets;
+        layout = Some(std::sync::Arc::new(CellLayout {
+            types,
+            offsets,
+            connectivity,
+            tet_cells,
+        }));
+    }
     let mesh = TetMesh {
         nodes: decoded_nodes,
         tets: decoded_tets,
         boundary: decoded_boundary,
         region_count,
         boundary_group_count,
+        cells: layout,
     };
     if !validate_tet_mesh(&mesh).is_ok() {
         return Err(MeshAssetError::InvalidMesh);

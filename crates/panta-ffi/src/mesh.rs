@@ -57,6 +57,7 @@ pub(super) fn tet_mesh_from_dto(data: bridge::TetMeshData) -> Result<panta_mesh:
         boundary,
         region_count: data.region_count,
         boundary_group_count: data.boundary_group_count,
+        cells: None,
     })
 }
 

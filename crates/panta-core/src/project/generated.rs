@@ -274,6 +274,7 @@ mod tests {
             ],
             region_count: 1,
             boundary_group_count: 1,
+            cells: None,
         }
     }
 

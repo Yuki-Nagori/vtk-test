@@ -472,6 +472,7 @@ pub fn build_chunked_from_asset_with_fields<W: Write>(
         boundary,
         region_count: counts.region_count,
         boundary_group_count: counts.boundary_group_count,
+        cells: None,
     };
     progress.set_window(0.3, 1.0);
     let result = build_chunked_volume_with_fields(&mesh, fields, options, sink, progress);

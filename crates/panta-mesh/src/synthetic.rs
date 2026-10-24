@@ -137,6 +137,7 @@ impl SyntheticTetBlock {
         crate::VolumeStreamCounts {
             nodes: self.node_count(),
             tets: self.tet_count(),
+            cells: self.tet_count(),
             boundary: self.boundary_count(),
             region_count: 1,
             boundary_group_count: 6,

@@ -196,6 +196,7 @@ fn decode_volume_compressed(payload: &[u8]) -> Result<TetMesh, MeshAssetError> {
         boundary,
         region_count,
         boundary_group_count,
+        cells: None,
     };
     if !validate_tet_mesh(&mesh).is_ok() {
         return Err(MeshAssetError::InvalidMesh);
