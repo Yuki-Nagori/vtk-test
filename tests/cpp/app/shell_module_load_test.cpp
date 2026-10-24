@@ -1,5 +1,6 @@
 // 最小工作台的工程、导入、资产列表与文档接线回归。
 #include "../../support/qml/quick_item_helpers.hpp"
+#include <QColor>
 #include <QFile>
 #include <QFileInfo>
 #include <QMetaEnum>
@@ -12,6 +13,7 @@
 #include <QSize>
 #include <QTemporaryDir>
 #include <QUrl>
+#include <QVariantMap>
 #include <QtQml/qqmlextensionplugin.h>
 #include <QtQuickControls2/qquickstyle.h>
 #include <QtTest/qtest.h>
@@ -92,6 +94,59 @@ class ShellModuleLoadTest final : public QObject {
             QVERIFY(pane->mapToScene(QPointF()).x() >= sidebarRight);
             QVERIFY(pane->mapToScene(QPointF(pane->width(), 0)).x() <= window->width());
         }
+    }
+    void playback_bar_uses_svg_icons_and_shape_coded_loop_state() {
+        QQmlApplicationEngine engine;
+        panta::install_icon_provider(engine);
+        engine.loadFromModule(QStringLiteral("Panta.Shell"), QStringLiteral("App"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto* bar =
+            engine.rootObjects().constFirst()->findChild<QObject*>(QStringLiteral("playbackBar"));
+        QVERIFY(bar);
+        // 只驱动绑定读到的属性；不点击按钮，避免调用假模型上不存在的方法。
+        QVariantMap model{{QStringLiteral("playbackActive"), true},
+                          {QStringLiteral("playbackFrameCount"), 3},
+                          {QStringLiteral("playbackFrame"), 0},
+                          {QStringLiteral("playbackPlaying"), false},
+                          {QStringLiteral("playbackLoop"), true},
+                          {QStringLiteral("playbackFps"), 10},
+                          {QStringLiteral("playbackTimeLabel"), QStringLiteral("t = 0")},
+                          {QStringLiteral("playbackStatus"), QString()},
+                          { QStringLiteral("playbackUnavailable"),
+                            QString() }};
+        QVERIFY(bar->setProperty("model", model));
+        QTRY_VERIFY(bar->property("visible").toBool());
+        const QList<QPair<QString, QString>> buttons{
+            {QStringLiteral("playbackFirstButton"), QStringLiteral("playback-first")},
+            {QStringLiteral("playbackPreviousButton"), QStringLiteral("playback-previous")},
+            {QStringLiteral("playbackPlayButton"), QStringLiteral("playback-play")},
+            {QStringLiteral("playbackNextButton"), QStringLiteral("playback-next")},
+            {QStringLiteral("playbackLastButton"), QStringLiteral("playback-last")},
+            { QStringLiteral("playbackLoopButton"),
+              QStringLiteral("playback-loop") }};
+        for (const auto& [name, icon] : buttons) {
+            auto* button = bar->findChild<QObject*>(name);
+            QVERIFY2(button, qPrintable(name));
+            QCOMPARE(button->property("iconName").toString(), icon);
+            QVERIFY2(button->property("text").toString().isEmpty(), qPrintable(name));
+            QVERIFY2(!button->property("accessibleName").toString().isEmpty(), qPrintable(name));
+            QVERIFY2(panta::monochrome_icon_names().contains(icon), qPrintable(icon));
+        }
+        auto* loop = bar->findChild<QObject*>(QStringLiteral("playbackLoopButton"));
+        QVERIFY(loop->property("checked").toBool());
+        QVERIFY(loop->property("borderColor").value<QColor>().alpha() > 0);
+        QCOMPARE(loop->property("accessibleName").toString(), QStringLiteral("循环播放：开"));
+        model.insert(QStringLiteral("playbackLoop"), false);
+        model.insert(QStringLiteral("playbackPlaying"), true);
+        QVERIFY(bar->setProperty("model", model));
+        QTRY_VERIFY(!loop->property("checked").toBool());
+        QCOMPARE(loop->property("borderColor").value<QColor>().alpha(), 0);
+        QVERIFY(
+            loop->property("accessibleName").toString().startsWith(QStringLiteral("循环播放：关")));
+        QCOMPARE(bar->findChild<QObject*>(QStringLiteral("playbackPlayButton"))
+                     ->property("iconName")
+                     .toString(),
+                 QStringLiteral("playback-pause"));
     }
     void toolbar_routes_project_commands() {
         QTemporaryDir fixture;

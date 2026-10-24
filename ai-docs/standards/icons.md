@@ -1,6 +1,6 @@
 # panta 图标设计规范
 
-更新日期：2026-10-20。适用于最小可视化测试界面的 `qml/icons/` 与实际使用点。资源清单以 [QML 构建配置](../../qml/CMakeLists.txt) 为准；不为已移除的 Ribbon、商业 CAE 面板或 HTML 原型保留图标。
+更新日期：2026-10-24。适用于最小可视化测试界面的 `qml/icons/` 与实际使用点。资源清单以 [QML 构建配置](../../qml/CMakeLists.txt) 为准；不为已移除的 Ribbon、商业 CAE 面板或 HTML 原型保留图标。
 
 ## 视觉语言
 
@@ -12,7 +12,7 @@
 
 ## 资源与调用
 
-当前保留 `caret.svg`、`close.svg`、`open.svg` 和 `stl-file.svg`（导入资产页签）。新增资源先确认是否可复用已有概念，再登记到 QML 构建资源和实际使用点；不增加没有消费者的图标。
+项目自绘：`caret.svg`、`close.svg`、`open.svg` 和 `stl-file.svg`（导入资产页签）。第三方：播放栏 7 个 `playback-*.svg`（见下文来源记录）。新增资源先确认是否可复用已有概念，再登记到 QML 构建资源和实际使用点；不增加没有消费者的图标。
 
 `ThemedIcon.preserveSourceColors` 控制加载方式：单色资源使用 `image://panta-icons/<name>/<argb>`，彩色资源直接通过 `qrc:/qt/qml/Panta/Shell/icons/<name>.svg` 加载。provider 白名单与已打包资源保持一致，未知 ID 返回失败，不静默替换成另一个动作图标。
 
@@ -23,7 +23,23 @@
 
 ## 来源与使用记录
 
-现有操作图标来自项目自绘 SVG 路径；资源文件保留来源说明。新增资源记录作者 / 来源 URL、许可证、版本、修改情况与使用位置。参考截图不证明第三方品牌、专有字形或图标包可复用，来源不明的素材需先核验。
+项目自绘图标在资源文件中保留来源说明。新增资源记录作者 / 来源 URL、许可证、版本、修改情况与使用位置。
+
+第三方图标集按 [034](../task/034-ui-redesign.md) Q3 使用 [Lucide](https://lucide.dev/)（ISC）；Lucide 中由 Feather 派生（MIT）的图标需额外附 MIT 声明，目前未使用。引入规则：
+
+- 固定上游版本，从该版本 tag 的 `icons/<name>.svg` 取原文件；不改几何，只把根属性整理为单行并加注释。
+- 每个 SVG 注释写明上游版本、原文件名、许可证与版权行，并指向 `qml/icons/LICENSE-lucide.txt`（许可全文，随源码分发）。
+- 资源按用途命名（如 `playback-play`），在下表登记原名；单色图标加入 provider 白名单。
+
+| 资源 | 上游（版本 / 原名） | 许可 | 修改 | 使用位置 |
+|---|---|---|---|---|
+| `playback-first.svg` | Lucide 1.61.0 / `skip-back` | ISC | 无几何修改 | `PlaybackBar` 首帧 |
+| `playback-previous.svg` | Lucide 1.61.0 / `step-back` | ISC | 无几何修改 | `PlaybackBar` 上一帧 |
+| `playback-play.svg` | Lucide 1.61.0 / `play` | ISC | 无几何修改 | `PlaybackBar` 播放 |
+| `playback-pause.svg` | Lucide 1.61.0 / `pause` | ISC | 无几何修改 | `PlaybackBar` 暂停 |
+| `playback-next.svg` | Lucide 1.61.0 / `step-forward` | ISC | 无几何修改 | `PlaybackBar` 下一帧 |
+| `playback-last.svg` | Lucide 1.61.0 / `skip-forward` | ISC | 无几何修改 | `PlaybackBar` 末帧 |
+| `playback-loop.svg` | Lucide 1.61.0 / `repeat` | ISC | 无几何修改 | `PlaybackBar` 循环开关（开：描边 + 强调色） |参考截图不证明第三方品牌、专有字形或图标包可复用，来源不明的素材需先核验。
 
 生成式服务输出的权利归属不能证明独创性或没有第三方权利冲突。涉及生成资产时记录服务、输入来源与修改情况；商业发布前按实际素材核对条款与权利。[OpenAI Terms of Use](https://openai.com/policies/row-terms-of-use/)
 
