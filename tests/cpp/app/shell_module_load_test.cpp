@@ -14,6 +14,7 @@
 #include <QQuickWindow>
 #include <QSignalSpy>
 #include <QSize>
+#include <QStandardPaths>
 #include <QStringList>
 #include <QTemporaryDir>
 #include <QUrl>
@@ -33,6 +34,7 @@
 #include <qtmetamacros.h>
 #ifdef PANTA_ENABLE_BRIDGE_MODULE
 #include <project_view_model.hpp>
+#include <settings.hpp>
 Q_IMPORT_QML_PLUGIN(Panta_BridgePlugin)
 Q_IMPORT_QML_PLUGIN(Panta_VisualizationPlugin)
 #endif
@@ -44,7 +46,15 @@ Q_IMPORT_QML_PLUGIN(Panta_ShellPlugin)
 class ShellModuleLoadTest final : public QObject {
     Q_OBJECT
   private slots:
-    void initTestCase() { QQuickStyle::setStyle(QStringLiteral("Basic")); }
+    void initTestCase() {
+        QQuickStyle::setStyle(QStringLiteral("Basic"));
+        // 工作台会写布局偏好（task 036）；隔离到测试目录，不污染开发者配置。
+        QStandardPaths::setTestModeEnabled(true);
+    }
+#ifdef PANTA_ENABLE_BRIDGE_MODULE
+    // 每个用例都从默认布局开始（左栏展开、底部面板折叠）。
+    void init() { QFile::remove(panta::bridge::Settings::layoutSettingsFile()); }
+#endif
     void loads_shell_module() {
         QQmlApplicationEngine engine;
         panta::install_icon_provider(engine);
@@ -55,8 +65,13 @@ class ShellModuleLoadTest final : public QObject {
 #endif
         QVERIFY2(!engine.rootObjects().isEmpty(), "Shell failed to load");
         auto* root = engine.rootObjects().constFirst();
+#ifndef PANTA_ENABLE_BRIDGE_MODULE
         QVERIFY(root->findChild<QObject*>(QStringLiteral("shellCaption")));
-#ifdef PANTA_ENABLE_BRIDGE_MODULE
+#else
+        // task 036：工程名只在窗口标题显示，工具栏与状态栏为独立组件。
+        QVERIFY(root->findChild<QObject*>(QStringLiteral("mainToolBar")));
+        QVERIFY(root->findChild<QObject*>(QStringLiteral("statusBar")));
+        QVERIFY(root->findChild<QObject*>(QStringLiteral("bottomPanel")));
         QVERIFY(root->findChild<QObject*>(QStringLiteral("caeViewport")));
         auto* bar = root->findChild<QObject*>(QStringLiteral("documentTabBar"));
         QVERIFY(bar);
@@ -186,12 +201,67 @@ class ShellModuleLoadTest final : public QObject {
         QVERIFY(QMetaObject::invokeMethod(save, "clicked"));
         QTRY_VERIFY(!project->projectOperationPending());
         QVERIFY(!project->dirty());
-        QCOMPARE(
-            root->findChild<QObject*>(QStringLiteral("shellCaption"))->property("text").toString(),
-            QStringLiteral("Renamed"));
+        QCOMPARE(root->property("title").toString(), QStringLiteral("Renamed · 可视化渲染测试"));
         QVERIFY(QMetaObject::invokeMethod(import, "clicked"));
         QVERIFY(importDialog->property("visible").toBool());
         QVERIFY(QMetaObject::invokeMethod(importDialog, "close"));
+    }
+    // task 036：工具栏为分组图标按钮；底部面板默认折叠，展开状态与高度跨会话保留。
+    void toolbar_icons_and_bottom_panel_follow_layout_settings() {
+        const QList<QPair<QString, QString>> buttons{
+            {QStringLiteral("newProjectButton"), QStringLiteral("project-new")},
+            {QStringLiteral("openProjectButton"), QStringLiteral("project-open")},
+            {QStringLiteral("saveProjectButton"), QStringLiteral("project-save")},
+            {QStringLiteral("importStlButton"), QStringLiteral("mesh-import")},
+            {QStringLiteral("exportMeshButton"), QStringLiteral("mesh-export")},
+            {QStringLiteral("viewPresetMenuButton"), QStringLiteral("view-preset")},
+            {QStringLiteral("resetViewButton"), QStringLiteral("view-reset")},
+            {QStringLiteral("toolbarSectionButton"), QStringLiteral("section")},
+            {QStringLiteral("screenshotButton"), QStringLiteral("screenshot")},
+            {QStringLiteral("bottomPanelToggle"), QStringLiteral("panel-bottom")},
+            { QStringLiteral("taskCancelButton"),
+              QStringLiteral("close") }};
+        {
+            QQmlApplicationEngine engine;
+            panta::install_icon_provider(engine);
+            engine.loadFromModule(QStringLiteral("Panta.Shell"), QStringLiteral("App"));
+            QVERIFY(!engine.rootObjects().isEmpty());
+            auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().constFirst());
+            QVERIFY(window);
+            for (const auto& [name, icon] : buttons) {
+                auto* button = window->findChild<QObject*>(name);
+                QVERIFY2(button, qPrintable(name));
+                QCOMPARE(button->property("iconName").toString(), icon);
+                QVERIFY2(button->property("text").toString().isEmpty(), qPrintable(name));
+                QVERIFY2(!button->property("accessibleName").toString().isEmpty(),
+                         qPrintable(name));
+                QVERIFY2(panta::monochrome_icon_names().contains(icon), qPrintable(icon));
+            }
+            auto* bottom = window->findChild<QQuickItem*>(QStringLiteral("bottomPanel"));
+            auto* body = window->findChild<QQuickItem*>(QStringLiteral("bottomPanelBody"));
+            QVERIFY(bottom && body);
+            QVERIFY(bottom->property("collapsed").toBool());
+            const auto header = bottom->property("headerHeight").toReal();
+            QTRY_COMPARE(bottom->height(), header);
+            QVERIFY(!body->isVisible());
+            QVERIFY(QMetaObject::invokeMethod(bottom, "appendMessage", Q_ARG(QString, "提示"),
+                                              Q_ARG(bool, false)));
+            QCOMPARE(bottom->property("messageCount").toInt(), 1);
+            QVERIFY(QMetaObject::invokeMethod(bottom, "reveal", Q_ARG(int, 2)));
+            QVERIFY(!bottom->property("collapsed").toBool());
+            QCOMPARE(bottom->property("currentIndex").toInt(), 2);
+            QTRY_COMPARE(bottom->height(), 200.0);
+            QVERIFY(body->isVisible());
+        }
+        QQmlApplicationEngine engine;
+        panta::install_icon_provider(engine);
+        engine.loadFromModule(QStringLiteral("Panta.Shell"), QStringLiteral("App"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto* bottom = engine.rootObjects().constFirst()->findChild<QQuickItem*>(
+            QStringLiteral("bottomPanel"));
+        QVERIFY(bottom);
+        QVERIFY(!bottom->property("collapsed").toBool());
+        QTRY_COMPARE(bottom->height(), 200.0);
     }
     void assets_and_document_tabs_follow_saved_project() {
         QTemporaryDir fixture;
@@ -451,10 +521,16 @@ class ShellModuleLoadTest final : public QObject {
         QVERIFY(quality);
         QTRY_VERIFY_WITH_TIMEOUT(quality->isVisible(), 15000);
         for (const char* name : {"volumePanel", "fieldLegend", "fieldRangeModeRow",
-                                 "viewPresetGrid", "sectionNormalZ", "openAnimationButton"}) {
+                                 "sectionNormalZ", "openAnimationButton"}) {
             auto* item = visual_item(sidebar, QString::fromLatin1(name));
             QVERIFY2(item && item->isVisible(), name);
         }
+        // task 036：诊断结果进入底部面板「诊断」页，并自动展开一次。
+        auto* bottom = window->findChild<QQuickItem*>(QStringLiteral("bottomPanel"));
+        QVERIFY(bottom && !bottom->property("collapsed").toBool());
+        QCOMPARE(bottom->property("currentIndex").toInt(), 0);
+        QVERIFY(bottom->isAncestorOf(quality));
+        QVERIFY(!sidebar->isAncestorOf(quality));
         for (const QSize size : {QSize(1280, 720), QSize(1600, 900)}) {
             window->resize(size);
             QTRY_COMPARE(window->width(), size.width());
@@ -489,14 +565,21 @@ class ShellModuleLoadTest final : public QObject {
             auto* scroll = visual_item(sidebar, QStringLiteral("sidebarDetailsScroll"));
             auto* details = visual_item(sidebar, QStringLiteral("sidebarDetails"));
             auto* scrollBar = visual_item(sidebar, QStringLiteral("sidebarDetailsScrollBar"));
-            auto* pick = visual_item(sidebar, QStringLiteral("pickReadout"));
-            QVERIFY(scroll && details && scrollBar && pick);
-            QVERIFY(details->height() > scroll->height());
-            QVERIFY(scrollBar->isVisible());
-            scrollBar->setProperty("position", 1.0 - scrollBar->property("size").toReal());
-            QTRY_VERIFY(pick->mapToScene(QPointF(0, pick->height())).y() <=
+            auto* last = visual_item(sidebar, QStringLiteral("volumePanel"));
+            QVERIFY(scroll && details && scrollBar && last);
+            // 滚动条只在内容超出时出现；出现时滚到底能看到最后一项。
+            const bool overflows = details->height() > scroll->height() + 0.5;
+            QCOMPARE(scrollBar->isVisible(), overflows);
+            if (overflows)
+                scrollBar->setProperty("position", 1.0 - scrollBar->property("size").toReal());
+            QTRY_VERIFY(last->mapToScene(QPointF(0, last->height())).y() <=
                         scroll->mapToScene(QPointF(0, scroll->height())).y() + 0.5);
             scrollBar->setProperty("position", 0.0);
+            // 状态栏单行字段不越出窗口；拾取读数为单行。
+            auto* pick = window->findChild<QQuickItem*>(QStringLiteral("pickReadout"));
+            QVERIFY(pick && pick->isVisible());
+            QVERIFY(!pick->property("text").toString().contains(QLatin1Char('\n')));
+            QVERIFY(pick->mapToScene(QPointF(pick->width(), 0)).x() <= window->width() + 0.5);
             // 设置 PANTA_SHELL_SCREENSHOT_DIR 时保存离屏截图，供任务验收记录（不进 CI 断言）。
             if (const auto dir = qEnvironmentVariable("PANTA_SHELL_SCREENSHOT_DIR");
                 !dir.isEmpty()) {

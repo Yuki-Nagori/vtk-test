@@ -25,8 +25,11 @@ set(PANTA_SHELL_QML_FILES
     Dialogs/ImportDialog.qml
     Dialogs/LargeMeshSettingsDialog.qml
     Dialogs/NewProjectDialog.qml
+    Panels/BottomPanel.qml
     Panels/PlaybackBar.qml
     Panels/ViewportPane.qml
+    Panels/WorkbenchStatusBar.qml
+    Panels/WorkbenchToolBar.qml
     Themes/Theme.qml)
 set(PANTA_SHELL_QML_DEPENDENCIES)
 if(PANTA_ENABLE_BRIDGE_MODULE)

@@ -70,7 +70,12 @@ const QSet<QString>& monochrome_icon_names() {
         QStringLiteral("playback-first"), QStringLiteral("playback-previous"),
         QStringLiteral("playback-play"),  QStringLiteral("playback-pause"),
         QStringLiteral("playback-next"),  QStringLiteral("playback-last"),
-        QStringLiteral("playback-loop")};
+        QStringLiteral("playback-loop"),  QStringLiteral("project-new"),
+        QStringLiteral("project-open"),   QStringLiteral("project-save"),
+        QStringLiteral("mesh-import"),    QStringLiteral("mesh-export"),
+        QStringLiteral("screenshot"),     QStringLiteral("view-preset"),
+        QStringLiteral("view-reset"),     QStringLiteral("section"),
+        QStringLiteral("panel-bottom")};
     return names;
 }
 

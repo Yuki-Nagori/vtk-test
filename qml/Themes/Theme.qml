@@ -54,6 +54,13 @@ QtObject {
     readonly property int documentTabDragThreshold: 4
     readonly property int documentTabAnimationDuration: 150
     readonly property int toolTipDelay: 600
+    // 工作台布局（task 036）：底部面板标题行与状态栏同高；视口列保底高度。
+    readonly property int panelHeaderHeight: 30
+    readonly property int viewportMinimumHeight: 240
+    readonly property int statusFieldMaximumWidth: 360
+    readonly property int statusProgressWidth: 120
+    readonly property int qualityCellWidth: 240
+    readonly property int taskNameWidth: 96
     readonly property real disabledOpacity: 0.4
     readonly property int windowMinimumWidth: 1280
     readonly property int windowMinimumHeight: 720
