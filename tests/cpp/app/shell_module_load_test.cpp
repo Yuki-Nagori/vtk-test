@@ -264,7 +264,7 @@ class ShellModuleLoadTest final : public QObject {
             QTRY_COMPARE(bottom->height(), header);
             QVERIFY(!body->isVisible());
             QVERIFY(QMetaObject::invokeMethod(bottom, "appendMessage", Q_ARG(QString, "提示"),
-                                              Q_ARG(bool, false)));
+                                              Q_ARG(QString, "info")));
             QCOMPARE(bottom->property("messageCount").toInt(), 1);
             QVERIFY(QMetaObject::invokeMethod(bottom, "reveal", Q_ARG(int, 2)));
             QVERIFY(!bottom->property("collapsed").toBool());

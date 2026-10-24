@@ -71,15 +71,34 @@ class PrimitiveSceneTest final : public QObject {
         QCOMPARE(colors->GetSize(), 3);
         double rgb[3];
         colors->GetColor(2.0, rgb);
-        QVERIFY(std::abs(rgb[2] - panta::visualization::field_color_stops[0].blue) < 1e-9);
+        QVERIFY(std::abs(rgb[2] - panta::visualization::cool_to_warm_stops[0].blue) < 1e-9);
         colors->GetColor(6.0, rgb);
-        QVERIFY(std::abs(rgb[0] - panta::visualization::field_color_stops[2].red) < 1e-9);
+        QVERIFY(std::abs(rgb[0] - panta::visualization::cool_to_warm_stops[2].red) < 1e-9);
         colors->GetColor(std::nan(""), rgb);
-        QCOMPARE(rgb[2], panta::visualization::field_missing_color[2]);
+        QCOMPARE(rgb[2], panta::visualization::field_color_maps[0].missing_color[2]);
+
         auto* scalars = mapper->GetInput()->GetPointData()->GetScalars();
         QVERIFY(scalars != nullptr);
         QCOMPARE(scalars->GetNumberOfTuples(), vtkIdType{3});
         QVERIFY(std::isnan(scalars->GetTuple1(1)));
+
+        // 颜色图预设（task 039）：控制点数与端点、缺失色随预设变化；越界索引回退默认。
+        {
+            auto viridis = std::make_shared<panta::visualization::SurfaceMeshSnapshot>(*mesh);
+            viridis->color_map = 1;
+            panta::visualization::replace_primitive_geometry(actor, nullptr, viridis);
+            auto* lut = vtkColorTransferFunction::SafeDownCast(
+                vtkPolyDataMapper::SafeDownCast(actor->GetMapper())->GetLookupTable());
+            QVERIFY(lut != nullptr);
+            QCOMPARE(lut->GetSize(), 5);
+            lut->GetColor(6.0, rgb);
+            QVERIFY(std::abs(rgb[2] - panta::visualization::viridis_stops[4].blue) < 1e-9);
+            lut->GetColor(std::nan(""), rgb);
+            QCOMPARE(rgb[0], 1.0);
+            QCOMPARE(rgb[1], 0.0);
+            QCOMPARE(&panta::visualization::field_color_map(99),
+                     &panta::visualization::field_color_maps[0]);
+        }
 
         // 常值场扩成非零区间；倒置或非有限区间退回 [0, 1]。
         const auto constant = panta::visualization::field_display_range(4.0, 4.0);

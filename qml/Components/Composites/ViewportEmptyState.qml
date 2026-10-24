@@ -41,7 +41,7 @@ Rectangle {
 
     ColumnLayout {
         anchors.centerIn: parent
-        width: Math.min(Theme.viewportEmptyStateWidth, emptyState.width - 2 * Theme.spacingLarge)
+        width: Math.min(Theme.viewportEmptyStateWidth, emptyState.width - 2 * Theme.spacingXXLarge)
         spacing: Theme.spacingMedium
 
         ThemedLabel {
@@ -62,7 +62,7 @@ Rectangle {
         }
         RowLayout {
             Layout.alignment: Qt.AlignHCenter
-            Layout.topMargin: Theme.spacingSmall
+            Layout.topMargin: Theme.spacingXLarge
             spacing: Theme.dialogActionSpacing
 
             ViewportButton {

@@ -20,7 +20,7 @@ void replace_primitive_geometry(vtkActor* actor, vtkRenderWindow* window,
                                 const std::shared_ptr<const SurfaceMeshSnapshot>& mesh);
 /// 场剖面显示区间（task 029）：非有限或倒置区间退回 [0, 1]，常值区间扩成非零宽度。
 std::array<double, 2> field_display_range(double minimum, double maximum);
-/// 为带标量的切面配置查找表（`field_color_stops`、缺失色）与显示区间。
+/// 为带标量的切面配置查找表（`field_color_map(mesh.color_map)` 的控制点与缺失色）与显示区间。
 void configure_field_colors(vtkPolyDataMapper* mapper, const SurfaceMeshSnapshot& mesh);
 /// 视口色标标题（task 038）：`场名 (单位)`，区间口径另起一行；场名为空返回空串。
 std::string scalar_bar_title(const SurfaceMeshSnapshot& mesh);

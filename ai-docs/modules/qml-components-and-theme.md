@@ -39,6 +39,18 @@
 
 保留图标位于 `qml/icons/`，由 CMake 注册到 `/qt/qml/Panta/Shell/icons/`。彩色资源可直接加载，单色工具图标通过 `panta-icons` provider 着色；图标的来源与格式见[图标规范](../standards/icons.md)。图标清单以现存资源为准，不与已移除的原型 symbol 对照。
 
+## 视觉规范（task 039）
+
+按 [034](../task/034-ui-redesign.md)「视觉规范」落地，浅色界面 + 深色视口：
+
+- 颜色：`colorWindow` #f3f4f6（窗口底色、工具栏、分隔柄、对话框标题栏）、`colorPanel` #ffffff、`colorPanelAlt` #f7f8fa（属性分组标题带）、`colorPanelLine` #d5d8de、`colorText` #1f2328、`colorTextMuted` #59636e、`colorTextPlaceholder` #8c959f、`colorAccent` = `colorFocus` #2563eb、`colorSelectionBg` #dbe7fd、`colorWarning` #9a5b00、`colorError` #c62828、`colorSuccess` #1a7f37。
+- 对比度（WCAG 2.x 相对亮度公式，task 039 计算）：正文 15.8:1（白）/ 14.4:1（窗口底色）；次要文字 6.1 / 5.6 / 4.9（选中底色）；警告 5.4 / 4.9；错误 5.6 / 5.1；成功 5.1 / 4.6；强调色 5.2 / 4.7。占位文字 3.0:1 为记录在案的例外（只作示例，字段标签常显）。焦点环用 `colorFocus`，对白底 5.2:1（非文字元素要求 ≥ 3:1）。
+- 状态：`Theme.statusColor(level)` / `Theme.statusIcon(level)` 按 `info` / `success` / `warning` / `error` 给出颜色与 `status-*` 图标；状态栏消息和底部消息列表同时显示图标与着色文字，不只靠颜色。
+- 字体：`Theme.fontFamily` 按平台取 Microsoft YaHei UI / PingFang SC / Noto Sans CJK SC（缺失时 Qt 回退系统字体），主窗口与原子组件统一设置；数值显示（状态栏字段、任务进度、消息、播放时间）用 `Theme.fontFeaturesNumeric`（`tnum`）。字号阶梯 11 说明 / 状态栏、12 属性标签、13 正文与控件、14 分组标题（DemiBold）、16 对话框与空状态标题。
+- 间距：2 / 4 / 8 / 12 / 16 / 24（`spacingTiny` … `spacingXXLarge`）；对话框内容区四边 `dialogContentPadding` 16 px，按钮间距 8 px。
+- 尺寸：常规控件 26 px，树行 22 px，工具按钮 28 px（工具栏图标 20 px、播放栏图标 16 px）；圆角 4 px，对话框 6 px（`DialogFrame` 带 1 px 边框，标题栏同步圆上角）。所有对话框高度随内容收紧（`Math.max(minimumHeight, frame.implicitHeight)`）。
+- 颜色图：`field_color_maps`（`native/visualization` 的 `mesh_source.hpp`）提供冷暖（默认）、Viridis、彩虹（蓝-红）、灰度四个预设，视口查找表、视口色标与属性面板图例共用；在「着色」属性中切换，属会话内视图状态，不写工程。
+
 ## 尺寸与布局
 
 Theme 集中定义 spacing、padding、radius、borderWidth、iconSize、fontSize、controlHeight 与 windowMinimumSize 等语义 token。业务几何尺寸和工程单位不属于 Theme；父布局计算出的宽高也不应被错误地改成固定主题尺寸。
@@ -53,6 +65,6 @@ Theme 集中定义 spacing、padding、radius、borderWidth、iconSize、fontSiz
 
 ## 固定样式维护
 
-`Theme.qml` 保留的 59 个固定常量均有实际消费者，集中颜色、字号、间距和尺寸；只保留固定样式。新属性先确认确有复用或独立语义，不为假设的主题扩展建立 schema、服务、ViewModel 或配置文件。删除组件时同步删除无消费者的常量。
+`Theme.qml` 的固定常量均有实际消费者（task 039 逐个复核：除 `colorAccent` 经 `colorFocus`、状态色经 `statusColor()` 间接使用外，其余都被组件直接引用），集中颜色、字号、间距和尺寸；只保留固定样式。新属性先确认确有复用或独立语义，不为假设的主题扩展建立 schema、服务、ViewModel 或配置文件。删除组件时同步删除无消费者的常量。
 
 控件通过属性绑定使用这些常量；内容测量与父布局的动态宽高仍由布局负责。样式调整检查真实操作流程、中文混排、焦点 / 禁用状态和显示缩放，不增加主题切换或主题偏好测试。

@@ -31,6 +31,11 @@ ToolBar {
     signal sectionToggled(bool active)
     signal screenshotRequested
 
+    // 工具栏按钮 28 px、图标 20 px（034 视觉规范）。
+    component ToolbarButton: ThemedToolButton {
+        controlHeight: Theme.toolButtonSize
+        iconSize: Theme.toolbarIconSize
+    }
     component GroupSeparator: Rectangle {
         Layout.fillHeight: true
         Layout.topMargin: Theme.spacingXSmall
@@ -43,25 +48,25 @@ ToolBar {
 
     RowLayout {
         anchors.fill: parent
-        anchors.leftMargin: Theme.spacingSmall
-        anchors.rightMargin: Theme.spacingSmall
+        anchors.leftMargin: Theme.spacingMedium
+        anchors.rightMargin: Theme.spacingMedium
         spacing: Theme.spacingTiny
 
-        ThemedToolButton {
+        ToolbarButton {
             objectName: "newProjectButton"
             iconName: "project-new"
             accessibleName: "新建工程（Ctrl+N）"
             enabled: toolBar.canCreateOrOpen
             onClicked: toolBar.newProjectRequested()
         }
-        ThemedToolButton {
+        ToolbarButton {
             objectName: "openProjectButton"
             iconName: "project-open"
             accessibleName: "打开工程（Ctrl+O）"
             enabled: toolBar.canCreateOrOpen
             onClicked: toolBar.openProjectRequested()
         }
-        ThemedToolButton {
+        ToolbarButton {
             objectName: "saveProjectButton"
             iconName: "project-save"
             accessibleName: "保存工程（Ctrl+S）"
@@ -69,14 +74,14 @@ ToolBar {
             onClicked: toolBar.saveProjectRequested()
         }
         GroupSeparator {}
-        ThemedToolButton {
+        ToolbarButton {
             objectName: "importStlButton"
             iconName: "mesh-import"
             accessibleName: "导入网格（Ctrl+I）"
             enabled: toolBar.canImport
             onClicked: toolBar.importRequested()
         }
-        ThemedToolButton {
+        ToolbarButton {
             objectName: "exportMeshButton"
             iconName: "mesh-export"
             accessibleName: toolBar.exportPending ? "正在导出…" : "导出活动网格（Ctrl+E）"
@@ -84,7 +89,7 @@ ToolBar {
             onClicked: toolBar.exportRequested()
         }
         GroupSeparator {}
-        ThemedToolButton {
+        ToolbarButton {
             id: viewPresetButton
             objectName: "viewPresetMenuButton"
             iconName: "view-preset"
@@ -108,7 +113,7 @@ ToolBar {
                 }
             }
         }
-        ThemedToolButton {
+        ToolbarButton {
             objectName: "resetViewButton"
             iconName: "view-reset"
             accessibleName: "复位视图"
@@ -117,7 +122,7 @@ ToolBar {
         }
         GroupSeparator {}
         // 开关状态由边框、图标颜色和 tooltip 共同表达，不只靠颜色（同播放栏循环按钮）。
-        ThemedToolButton {
+        ToolbarButton {
             objectName: "toolbarSectionButton"
             iconName: "section"
             checkable: true
@@ -133,7 +138,7 @@ ToolBar {
             }
         }
         GroupSeparator {}
-        ThemedToolButton {
+        ToolbarButton {
             objectName: "screenshotButton"
             iconName: "screenshot"
             accessibleName: "保存视口 PNG 截图（Ctrl+Shift+P）"

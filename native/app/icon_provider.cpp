@@ -66,18 +66,23 @@ class IconProvider final : public QQuickImageProvider {
 const QSet<QString>& monochrome_icon_names() {
     // 限定为视觉上单色的 glyph，彩色语义资源必须保留 SVG 原色加载。
     static const QSet<QString> names{
-        QStringLiteral("close"),          QStringLiteral("caret"),
-        QStringLiteral("playback-first"), QStringLiteral("playback-previous"),
-        QStringLiteral("playback-play"),  QStringLiteral("playback-pause"),
-        QStringLiteral("playback-next"),  QStringLiteral("playback-last"),
-        QStringLiteral("playback-loop"),  QStringLiteral("project-new"),
-        QStringLiteral("project-open"),   QStringLiteral("project-save"),
-        QStringLiteral("mesh-import"),    QStringLiteral("mesh-export"),
-        QStringLiteral("screenshot"),     QStringLiteral("view-preset"),
-        QStringLiteral("view-reset"),     QStringLiteral("section"),
-        QStringLiteral("panel-bottom"),   QStringLiteral("panel-left"),
-        QStringLiteral("visibility-on"),  QStringLiteral("visibility-off"),
-        QStringLiteral("tree-expand")};
+        QStringLiteral("close"),           QStringLiteral("caret"),
+        QStringLiteral("playback-first"),  QStringLiteral("playback-previous"),
+        QStringLiteral("playback-play"),   QStringLiteral("playback-pause"),
+        QStringLiteral("playback-next"),   QStringLiteral("playback-last"),
+        QStringLiteral("playback-loop"),   QStringLiteral("project-new"),
+        QStringLiteral("project-open"),    QStringLiteral("project-save"),
+        QStringLiteral("mesh-import"),     QStringLiteral("mesh-export"),
+        QStringLiteral("screenshot"),      QStringLiteral("view-preset"),
+        QStringLiteral("view-reset"),      QStringLiteral("section"),
+        QStringLiteral("panel-bottom"),    QStringLiteral("panel-left"),
+        QStringLiteral("visibility-on"),   QStringLiteral("visibility-off"),
+        QStringLiteral("tree-expand"),     QStringLiteral("tree-project"),
+        QStringLiteral("tree-asset"),      QStringLiteral("tree-field"),
+        QStringLiteral("tree-time-steps"), QStringLiteral("tree-quality"),
+        QStringLiteral("tree-animation"),  QStringLiteral("status-info"),
+        QStringLiteral("status-success"),  QStringLiteral("status-warning"),
+        QStringLiteral("status-error")};
     return names;
 }
 

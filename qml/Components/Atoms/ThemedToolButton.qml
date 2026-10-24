@@ -25,6 +25,7 @@ ToolButton {
     ToolTip.text: accessibleName
     ToolTip.delay: Theme.toolTipDelay
 
+    font.family: Theme.fontFamily
     font.pixelSize: Theme.fontBody
     implicitHeight: controlHeight
     leftPadding: contentPadding
@@ -36,7 +37,7 @@ ToolButton {
     opacity: enabled ? 1 : Theme.disabledOpacity
 
     background: Rectangle {
-        implicitWidth: Theme.controlHeight
+        implicitWidth: button.controlHeight
         // 强调状态不依赖悬停显示；键盘焦点使用独立轮廓。
         color: {
             if (button.highlighted) {

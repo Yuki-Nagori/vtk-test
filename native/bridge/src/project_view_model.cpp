@@ -1765,9 +1765,11 @@ bool panta::bridge::ProjectViewModel::setSectionField(const QString& name,
     return true;
 }
 
-QVariantList panta::bridge::ProjectViewModel::fieldLegendStops() {
+QVariantList panta::bridge::ProjectViewModel::fieldLegendStops() const {
     QVariantList stops;
-    for (const auto& stop : panta::visualization::field_color_stops) {
+    const auto& preset =
+        panta::visualization::field_color_map(static_cast<std::size_t>(m_fieldColorMap));
+    for (const auto& stop : preset.stops) {
         QVariantMap item;
         item.insert(QStringLiteral("position"), stop.position);
         item.insert(QStringLiteral("color"),
@@ -1778,11 +1780,40 @@ QVariantList panta::bridge::ProjectViewModel::fieldLegendStops() {
     return stops;
 }
 
-QString panta::bridge::ProjectViewModel::fieldMissingColor() {
-    const auto& color = panta::visualization::field_missing_color;
+QString panta::bridge::ProjectViewModel::fieldMissingColor() const {
+    const auto& color =
+        panta::visualization::field_color_map(static_cast<std::size_t>(m_fieldColorMap))
+            .missing_color;
     return QColor::fromRgbF(static_cast<float>(color[0]), static_cast<float>(color[1]),
                             static_cast<float>(color[2]))
         .name();
+}
+
+QStringList panta::bridge::ProjectViewModel::fieldColorMapLabels() {
+    QStringList labels;
+    for (const auto& preset : panta::visualization::field_color_maps)
+        labels.push_back(
+            QString::fromUtf8(preset.label.data(), static_cast<qsizetype>(preset.label.size())));
+    return labels;
+}
+
+bool panta::bridge::ProjectViewModel::setFieldColorMap(int index) {
+    clearError();
+    if (index < 0 || std::cmp_greater_equal(index, panta::visualization::field_color_maps.size()))
+        return fail(QStringLiteral("project.command_invalid"), QStringLiteral("state"),
+                    QStringLiteral("field color map %1 does not exist").arg(index));
+    if (index == m_fieldColorMap)
+        return true;
+    m_fieldColorMap = index;
+    emit fieldLegendChanged();
+    // 已显示的着色切面只换查找表：复制快照并改预设索引，视口按新快照重建 mapper。
+    if (m_activeMesh && !m_activeMesh->scalars.empty()) {
+        auto mesh = std::make_shared<panta::visualization::SurfaceMeshSnapshot>(*m_activeMesh);
+        mesh->color_map = static_cast<std::size_t>(index);
+        m_activeMesh = std::move(mesh);
+        emit meshChanged();
+    }
+    return true;
 }
 
 void panta::bridge::ProjectViewModel::request_section() {
@@ -1906,6 +1937,7 @@ void panta::bridge::ProjectViewModel::request_section() {
                     }
                     // 视口色标（task 038）：口径只在时间步结果上显示，按实际采用的区间。
                     mesh->scalar_title = fieldTitle.toStdString();
+                    mesh->color_map = static_cast<std::size_t>(m_fieldColorMap);
                     mesh->scalar_units = fieldUnits.toStdString();
                     if (timed)
                         mesh->scalar_range_label = globalRange ? "全部时间步" : "当前步";

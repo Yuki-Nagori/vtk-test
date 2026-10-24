@@ -9,7 +9,8 @@ PanelSurface {
 
     property bool busy: false
     property string message: ""
-    property bool messageIsError: false
+    // 消息级别，取值同 Theme.statusColor；空串为普通状态（就绪 / 处理中）。
+    property string messageLevel: ""
     property string pickText: ""
     property bool meshActive: false
     property string lodStatus: ""
@@ -29,7 +30,8 @@ PanelSurface {
         property bool showDetailAlways: false
         Layout.maximumWidth: Theme.statusFieldMaximumWidth
         color: Theme.colorTextMuted
-        font.pixelSize: Theme.fontSmall
+        font.pixelSize: Theme.fontCaption
+        font.features: Theme.fontFeaturesNumeric
         elide: Text.ElideRight
         maximumLineCount: 1
         ToolTip.visible: hover.hovered && detail.length > 0 && (truncated || showDetailAlways)
@@ -41,8 +43,8 @@ PanelSurface {
     }
     component FieldSeparator: Rectangle {
         Layout.fillHeight: true
-        Layout.topMargin: Theme.spacingSmall
-        Layout.bottomMargin: Theme.spacingSmall
+        Layout.topMargin: Theme.spacingXSmall
+        Layout.bottomMargin: Theme.spacingXSmall
         implicitWidth: Theme.borderWidth
         color: Theme.colorPanelLine
     }
@@ -55,9 +57,9 @@ PanelSurface {
     }
     RowLayout {
         anchors.fill: parent
-        anchors.leftMargin: Theme.spacingSmall
-        anchors.rightMargin: Theme.spacingSmall
-        spacing: Theme.spacingSmall
+        anchors.leftMargin: Theme.spacingMedium
+        anchors.rightMargin: Theme.spacingMedium
+        spacing: Theme.spacingMedium
 
         BusyIndicator {
             objectName: "busyIndicator"
@@ -66,11 +68,19 @@ PanelSurface {
             running: statusBar.busy
             visible: running
         }
+        ThemedIcon {
+            objectName: "statusMessageIcon"
+            visible: name.length > 0 && !statusBar.busy
+            name: Theme.statusIcon(statusBar.messageLevel)
+            iconSize: Theme.iconSizeSmall
+            color: Theme.statusColor(statusBar.messageLevel)
+        }
         Label {
             objectName: "statusMessage"
             Layout.fillWidth: true
             text: statusBar.message
-            color: statusBar.messageIsError ? Theme.colorError : Theme.colorTextMuted
+            color: Theme.statusColor(statusBar.messageLevel)
+            font.pixelSize: Theme.fontCaption
             elide: Text.ElideRight
             maximumLineCount: 1
             ToolTip.visible: truncated && messageHover.hovered
@@ -128,7 +138,8 @@ PanelSurface {
             visible: statusBar.taskProgress >= 0
             text: statusBar.taskName + " " + Math.round(statusBar.taskProgress * 100) + "%"
             color: Theme.colorTextMuted
-            font.pixelSize: Theme.fontSmall
+            font.pixelSize: Theme.fontCaption
+            font.features: Theme.fontFeaturesNumeric
         }
         ProgressBar {
             objectName: "taskProgressBar"
