@@ -9,6 +9,7 @@ mod cgns;
 mod obj;
 mod openfoam;
 mod ply;
+pub mod pvd;
 mod text;
 mod vtk_legacy;
 mod vtk_xml;
@@ -21,6 +22,7 @@ pub use obj::parse_obj;
 pub use openfoam::bundle as openfoam_bundle;
 pub use openfoam::{parse_openfoam_grid, parse_openfoam_surface};
 pub use ply::parse_ply;
+pub use pvd::{parse_pvd_grid, parse_pvd_surface};
 pub use vtk_legacy::{parse_vtk_legacy, parse_vtk_legacy_grid};
 pub use vtk_xml::{parse_vtp, parse_vtu, parse_vtu_grid};
 

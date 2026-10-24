@@ -26,6 +26,8 @@ pub enum ImportFormat {
     OpenFoam,
     /// CGNS（task 032）：仅 HDF5 后端，读取非结构 Zone 与 FlowSolution。
     Cgns,
+    /// ParaView `.pvd` 集合（task 033）：按时间列出的 VTU，快照为集合包（见 `formats::pvd`）。
+    Pvd,
     Step,
     Iges,
 }
@@ -42,6 +44,7 @@ impl ImportFormat {
             Self::Ply => "ply",
             Self::OpenFoam => "openfoam",
             Self::Cgns => "cgns",
+            Self::Pvd => "pvd",
             Self::Step => "step",
             Self::Iges => "iges",
         }
@@ -321,6 +324,7 @@ pub fn detect_format(path: &Path) -> Result<ImportFormat, ImportError> {
         "ply" => Ok(ImportFormat::Ply),
         "foam" | "openfoam" => Ok(ImportFormat::OpenFoam),
         "cgns" => Ok(ImportFormat::Cgns),
+        "pvd" => Ok(ImportFormat::Pvd),
         "step" | "stp" => Ok(ImportFormat::Step),
         "iges" | "igs" => Ok(ImportFormat::Iges),
         _ => Err(ImportError::UnsupportedFormat(path.display().to_string())),
@@ -381,6 +385,9 @@ pub fn read_source_with_progress(
     let source_name = source_name(path).map_err(CheckedReadError::Failed)?;
     if format == ImportFormat::OpenFoam {
         return read_openfoam_case(path, source_name, &is_cancelled, on_progress);
+    }
+    if format == ImportFormat::Pvd {
+        return read_pvd_collection(path, source_name, &is_cancelled, on_progress);
     }
     let mut file = match fs::File::open(path) {
         Ok(file) => file,
@@ -513,6 +520,85 @@ fn read_openfoam_case(
     })
 }
 
+/// `.pvd` 集合快照（task 033）：集合文件 + 按时间升序引用的 VTU（路径相对集合文件目录）；
+/// 更早步总字节超出 [`formats::pvd::MAX_EARLIER_STEP_BYTES`] 时只收最新一步。
+fn read_pvd_collection(
+    path: &Path,
+    source_name: String,
+    is_cancelled: &dyn Fn() -> bool,
+    on_progress: &dyn Fn(f64),
+) -> Result<SourceSnapshot, CheckedReadError> {
+    use formats::pvd;
+    let failed = |message: String| {
+        CheckedReadError::Failed(ImportError::Format(formats::FormatError(message)))
+    };
+    let modified_of = |metadata: &fs::Metadata| {
+        metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+    };
+    let metadata = fs::metadata(path).map_err(|error| read_error(path, error))?;
+    let mut modified_unix_ms = modified_of(&metadata);
+    let collection = fs::read(path).map_err(|error| read_error(path, error))?;
+    let steps = pvd::parse_collection(&collection).map_err(|error| failed(error.0))?;
+    let base = path.parent().unwrap_or_else(|| Path::new(""));
+    let mut files = Vec::with_capacity(steps.len());
+    for step in &steps {
+        let file = base.join(&step.file);
+        let metadata = fs::metadata(&file).map_err(|error| read_error(&file, error))?;
+        modified_unix_ms = modified_unix_ms.max(modified_of(&metadata));
+        files.push((step.file.as_str(), file, metadata.len()));
+    }
+    let earlier: u64 = files[..files.len() - 1]
+        .iter()
+        .map(|(_, _, size)| size)
+        .sum();
+    if earlier > pvd::MAX_EARLIER_STEP_BYTES {
+        files.drain(..files.len() - 1);
+    }
+    let total: u64 = files.iter().map(|(_, _, size)| size).sum();
+    let mut bytes = Vec::new();
+    reserve_source_bytes(
+        path,
+        &mut bytes,
+        usize::try_from(total)
+            .unwrap_or(usize::MAX)
+            .saturating_add(collection.len() + 64 * (files.len() + 2)),
+    )?;
+    bytes.extend_from_slice(pvd::MAGIC);
+    let count =
+        u32::try_from(files.len() + 1).map_err(|_| failed("too many datasets".to_owned()))?;
+    bytes.extend(count.to_le_bytes());
+    formats::openfoam_bundle::push_entry_header(&mut bytes, &source_name, collection.len() as u64)
+        .map_err(failed)?;
+    bytes.extend_from_slice(&collection);
+    let mut done = 0u64;
+    for (relative, file, size) in &files {
+        let mut handle = fs::File::open(file).map_err(|error| read_error(file, error))?;
+        formats::openfoam_bundle::push_entry_header(&mut bytes, relative, *size).map_err(failed)?;
+        let start = bytes.len();
+        read_chunks(file, &mut handle, &mut bytes, is_cancelled, &|length| {
+            let read = (length - start) as u64;
+            on_progress(((done + read) as f64 / total.max(1) as f64).min(1.0));
+        })?;
+        if (bytes.len() - start) as u64 != *size {
+            return Err(CheckedReadError::Failed(ImportError::SourceChanged(
+                file.display().to_string(),
+            )));
+        }
+        done += size;
+    }
+    Ok(SourceSnapshot {
+        path: path.to_path_buf(),
+        source_name,
+        format: ImportFormat::Pvd,
+        bytes,
+        modified_unix_ms,
+    })
+}
+
 fn source_name(path: &Path) -> Result<String, ImportError> {
     path.file_name()
         .filter(|value| !value.is_empty())
@@ -562,6 +648,7 @@ pub fn parse_mesh_snapshot_with_progress(
             formats::parse_openfoam_surface(bytes).map_err(ImportError::Format)
         }
         ImportFormat::Cgns => formats::parse_cgns_surface(bytes).map_err(ImportError::Format),
+        ImportFormat::Pvd => formats::parse_pvd_surface(bytes).map_err(ImportError::Format),
         ImportFormat::Step | ImportFormat::Iges => Err(ImportError::UnsupportedFormat(
             snapshot.path.display().to_string(),
         )),
@@ -586,6 +673,7 @@ pub fn parse_volume_snapshot(snapshot: &SourceSnapshot) -> Result<formats::RawGr
         ImportFormat::Cgns => {
             formats::parse_cgns_grid(&snapshot.bytes).map_err(ImportError::Format)
         }
+        ImportFormat::Pvd => formats::parse_pvd_grid(&snapshot.bytes).map_err(ImportError::Format),
         _ => Err(ImportError::UnsupportedFormat(
             snapshot.path.display().to_string(),
         )),

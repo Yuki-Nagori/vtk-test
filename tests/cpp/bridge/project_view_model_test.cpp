@@ -715,6 +715,9 @@ TEST(ProjectViewModelTest, RemembersRecentProjectsAndClassifiesDrops) {
         QStringLiteral("mesh"));
     EXPECT_EQ(model.classifyDroppedUrl(QUrl::fromLocalFile(QStringLiteral("/x/flow.CGNS"))),
               QStringLiteral("mesh"));
+    // ParaView 时间序列集合（task 033）。
+    EXPECT_EQ(model.classifyDroppedUrl(QUrl::fromLocalFile(QStringLiteral("/x/flow.pvd"))),
+              QStringLiteral("mesh"));
     EXPECT_TRUE(
         model.classifyDroppedUrl(QUrl::fromLocalFile(QStringLiteral("/x/a.txt"))).isEmpty());
     EXPECT_TRUE(model.classifyDroppedUrl(QUrl(QStringLiteral("https://e.com/a.stl"))).isEmpty());

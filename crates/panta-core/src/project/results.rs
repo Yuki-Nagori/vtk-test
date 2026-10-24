@@ -643,4 +643,43 @@ mod tests {
         assert!(middle.values[1].is_nan());
         Ok(())
     }
+
+    /// `.pvd` 集合（task 033 PR 2）：按 timestep 升序成为时间步，逐步字段集合可不同；
+    /// 拓扑随时间变化的集合整体拒绝，工程不留下导入记录。
+    #[test]
+    fn pvd_collection_imports_time_steps_and_rejects_moving_meshes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture_dir = temp_directory::Fixture::new()?;
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/mesh/pvd");
+        let mut service = ProjectService::new();
+        let project = service.create(&fixture_dir.root, "Pvd")?;
+        let record = service.import_stl(&root.join("flow.pvd"), "solid-3d", "meters", false)?;
+        assert_eq!(record.format, "pvd");
+        assert_eq!(record.display_name, "flow");
+        let steps = service.result_time_steps(&record.id)?;
+        let summary: Vec<(f64, &str, usize)> = steps
+            .iter()
+            .map(|step| (step.time, step.label.as_str(), step.field_count))
+            .collect();
+        assert_eq!(summary, [(0.0, "0", 3), (0.5, "0.5", 2), (1.0, "1", 2)]);
+        let first = service
+            .result_field_source_at(&record.id, 0)?
+            .read_field("init", FieldAssociation::Cell)?;
+        assert_eq!(first.values, [7.0, 8.0]);
+        let middle = service
+            .result_field_source_at(&record.id, 1)?
+            .read_field("T", FieldAssociation::Node)?;
+        assert_eq!(middle.values[0], 50.0);
+        let mut reopened = ProjectService::new();
+        reopened.open(&project.path)?;
+        assert_eq!(reopened.result_time_steps(&record.id)?, steps);
+
+        assert!(
+            service
+                .import_stl(&root.join("moving.pvd"), "solid-3d", "meters", false)
+                .is_err()
+        );
+        assert_eq!(service.imports()?.len(), 1);
+        Ok(())
+    }
 }
