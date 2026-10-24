@@ -42,6 +42,7 @@
 #include <vtkNew.h>
 #include <vtkObject.h>
 #include <vtkProperty.h>
+#include <vtkScalarBarActor.h>
 #include <vtkWebGPUConfiguration.h>
 #include <webgpu/webgpu_cpp.h>
 #if defined(Q_OS_MACOS)
@@ -128,6 +129,8 @@ struct VtkViewport::Impl {
     vtkSmartPointer<vtkWebGPURenderer> renderer;
     vtkSmartPointer<vtkRenderWindowInteractor> interactor;
     vtkSmartPointer<vtkActor> primitive_actor;
+    /// 视口内色标（task 038），与 primitive_actor 的 mapper 共用查找表。
+    vtkSmartPointer<vtkScalarBarActor> scalar_bar;
     vtkWeakPointer<vtkObject> previous_mapper;
     vtkWeakPointer<vtkObject> webgpu_configuration;
     vtkWeakPointer<vtkObject> retired_actor;
@@ -285,6 +288,7 @@ void VtkViewport::apply_state(const RenderScene& state) {
         return;
     }
     impl_->scene_dirty |= state.background != impl_->pending.background ||
+                          state.background_top != impl_->pending.background_top ||
                           state.primitive_visible != impl_->pending.primitive_visible ||
                           state.mesh != impl_->pending.mesh;
     impl_->pending = state;
@@ -396,13 +400,15 @@ void VtkViewport::ensure_render_window() {
     impl_->render_window->SetHardwareWindow(impl_->hardware_window.get());
     impl_->render_window->SetSize(pixel_width, pixel_height);
     impl_->renderer = vtkSmartPointer<vtkWebGPURenderer>::New();
-    impl_->renderer->SetBackground2(0.98, 0.98, 0.98);
     impl_->renderer->GradientBackgroundOn();
     impl_->primitive_actor = vtkSmartPointer<vtkActor>::New();
+    impl_->scalar_bar = vtkSmartPointer<vtkScalarBarActor>::New();
+    style_scalar_bar(impl_->scalar_bar);
 
     update_mesh_actor();
     impl_->applied_mesh = impl_->pending.mesh;
     impl_->renderer->AddActor(impl_->primitive_actor);
+    impl_->renderer->AddViewProp(impl_->scalar_bar);
     impl_->render_window->AddRenderer(impl_->renderer);
 
 #if defined(Q_OS_WIN)
@@ -474,6 +480,9 @@ void VtkViewport::update_mesh_actor() {
     vtkMapper* previous_mapper = impl_->primitive_actor->GetMapper();
     impl_->previous_mapper = previous_mapper;
     replace_primitive_geometry(impl_->primitive_actor, impl_->render_window, impl_->pending.mesh);
+    if (impl_->scalar_bar != nullptr) {
+        sync_scalar_bar(impl_->scalar_bar, impl_->primitive_actor, impl_->pending.mesh.get());
+    }
 }
 
 void VtkViewport::handle_interaction_event(unsigned long event_id,
@@ -719,6 +728,10 @@ void VtkViewport::sync_native_surface() {
     // ResetCameraClippingRange 只计算可见 prop；恢复网格时先更新 actor 可见性。
     impl_->primitive_actor->SetVisibility(impl_->pending.primitive_visible &&
                                           impl_->primitive_actor->GetMapper() != nullptr);
+    if (impl_->scalar_bar != nullptr) {
+        impl_->scalar_bar->SetVisibility(impl_->pending.primitive_visible &&
+                                         impl_->scalar_bar->GetLookupTable() != nullptr);
+    }
     if (resized) {
         stop_camera_transition();
         impl_->render_window->SetSize(pixel_size.width(), pixel_size.height());
@@ -730,9 +743,13 @@ void VtkViewport::sync_native_surface() {
                                  kModelCameraFitMargin);
     }
     impl_->orientation.update(impl_->renderer->GetActiveCamera());
+    // VTK 渐变：Background 为底部色，Background2 为顶部色。
     impl_->renderer->SetBackground(impl_->pending.background.redF(),
                                    impl_->pending.background.greenF(),
                                    impl_->pending.background.blueF());
+    impl_->renderer->SetBackground2(impl_->pending.background_top.redF(),
+                                    impl_->pending.background_top.greenF(),
+                                    impl_->pending.background_top.blueF());
     impl_->render_window->Render();
     qCDebug(viewport_log) << "frame submitted" << pixel_size;
     impl_->applied_pixel_size = pixel_size;
@@ -769,6 +786,7 @@ void VtkViewport::destroy_render_window() {
     impl_->renderer = nullptr;
     impl_->interactor = nullptr;
     impl_->primitive_actor = nullptr;
+    impl_->scalar_bar = nullptr;
     impl_->applied_mesh.reset();
     if (impl_->hardware_window != nullptr) {
         impl_->hardware_window->Destroy();

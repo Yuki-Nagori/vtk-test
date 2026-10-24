@@ -564,7 +564,15 @@ ApplicationWindow {
                     Layout.fillHeight: true
                     meshSource: projectModel
                     reducedMotion: Settings.reducedMotion
+                    projectOpen: shellWindow.projectOpen
+                    canCreateOrOpen: shellWindow.canCreateOrOpen
+                    canImport: shellWindow.canImport
+                    recentProjects: projectModel.recentProjects
                     onPointPicked: (hit, x, y, z, triangle) => shellWindow.recordPick(hit, x, y, z, triangle)
+                    onImportRequested: importDialog.open()
+                    onNewProjectRequested: newProjectDialog.open()
+                    onOpenProjectRequested: openProjectFileDialog.open()
+                    onRecentProjectRequested: path => projectModel.openProject(path)
                 }
                 PlaybackBar {
                     objectName: "playbackBar"

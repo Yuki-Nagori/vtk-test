@@ -1,8 +1,8 @@
 # 038 — UI 重制阶段 3：视口内色标与空状态
 
-- 状态：planned
+- 状态：in-progress
 - 阶段：UI 重制（[034](034-ui-redesign.md)）
-- 依赖：[037](037-ui-stage2-object-tree.md)
+- 依赖：[037](037-ui-stage2-object-tree.md)、[041](041-sdk-production-migration.md)（SDK 开启 RenderingAnnotation）
 - 优先级：P1
 - 负责人：Grok Bot
 - 创建 / 更新：2026-10-24 / 2026-10-24
@@ -37,7 +37,7 @@
 
 ## 预计改动
 
-`native/visualization/src/vtk/vtk_viewport.cpp` 及头文件、对应测试、`qml/Panels/ViewportPane.qml`、侧栏旧色标 QML 删除。
+`native/visualization/src/vtk/{vtk_viewport,primitive_scene}.cpp` 及头文件、`mesh_source.hpp`（色标元数据）、`render_scene.hpp`（渐变两色）、Bridge 切面快照、对应测试、`qml/Panels/ViewportPane.qml`、新增 `ViewportEmptyState.qml`。属性面板的数值色标按 034 Q2 保留（视口色标负责读图，面板保留精确数值与区间口径切换）。
 
 ## 清理与兼容例外
 
@@ -64,6 +64,10 @@
 ## 决策与工作记录
 
 - 2026-10-24：按 034 用户决定登记任务。
+- 2026-10-24：原 SDK 未编入 RenderingAnnotation，没有 `vtkScalarBarActor`。用户决定把 SDK 生产迁入本仓库并开启该模块（task 041），038 依赖 041 切换产物后实施。
+- 2026-10-24：色标元数据经 `SurfaceMeshSnapshot`（`scalar_title`/`scalar_units`/`scalar_range_label`，UTF-8）传给视口；`sync_scalar_bar` 直接共用 mapper 的查找表，范围与着色天然一致。区间口径只在时间步结果上显示（「全部时间步」/「当前步」，按实际采用的区间）。
+- 2026-10-24：VTK 内置字体不含中文字形。色标文字按平台候选列表取第一个存在的 CJK 字体文件（macOS PingFang/Hiragino/STHeiti，Windows 微软雅黑/黑体/宋体，Linux Noto Sans CJK/文泉驿/Droid Fallback），都不存在时回退内置字体（中文可能缺字，需在目标平台截图确认）。
+- 2026-10-24：空状态采用「无文档时隐藏 `CaeViewport`」：`VtkViewport` 在不可见时隐藏原生表面（既有行为），同一矩形显示 QML 引导页（导入网格 / 新建工程 / 打开工程 / 最近 5 个工程），背景与 VTK 渐变同色。对象树空状态文字保留。原生表面隐藏后 QML 是否可见需在三端 GPU 平台确认；若某平台不满足，按 034 退回对象树空状态。
 
 ## 完成摘要
 

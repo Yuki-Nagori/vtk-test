@@ -27,6 +27,7 @@
 #include <memory>
 #include <panta/qt_adapter/standard_paths.hpp>
 #include <qtestcase.h>
+#include <string>
 #include <system_error>
 #include <thread>
 #include <utility>
@@ -1486,11 +1487,15 @@ TEST(ProjectViewModelTest, ColorsSectionsByResultFieldAndShowsLegend) {
     EXPECT_GE(view_model.fieldLegendMin(), 300.0);
     EXPECT_LE(view_model.fieldLegendMax(), 330.0);
     EXPECT_GT(view_model.fieldMissingVertices(), 0.0);
+    // 视口色标元数据（task 038）：单步结果不带区间口径。
+    EXPECT_EQ(mesh->scalar_title, std::string("temperature"));
+    EXPECT_TRUE(mesh->scalar_range_label.empty());
 
     // 换分量：重算切面，标题带分量名。
     ASSERT_TRUE(view_model.setSectionField(QStringLiteral("velocity"), QStringLiteral("node"), 1));
     ASSERT_TRUE(meshChanged.wait(10000));
     EXPECT_EQ(view_model.fieldLegendTitle(), QStringLiteral("velocity [Y]"));
+    EXPECT_EQ(view_model.mesh_snapshot()->scalar_title, std::string("velocity [Y]"));
     EXPECT_EQ(view_model.fieldMissingVertices(), 0.0);
 
     // 清除字段：切面回到单色，色标隐藏；关闭切面同样隐藏。
@@ -1555,6 +1560,8 @@ TEST(ProjectViewModelTest, PlaysResultTimeStepsAndUpdatesFieldSections) {
     ASSERT_NE(mesh, nullptr);
     ASSERT_FALSE(mesh->scalars.empty());
     EXPECT_GE(*std::min_element(mesh->scalars.begin(), mesh->scalars.end()), 100.0F);
+    EXPECT_EQ(mesh->scalar_title, std::string("T"));
+    EXPECT_EQ(mesh->scalar_range_label, std::string("全部时间步"));
 
     // 换到第 0 步：切面数值随步更新，全局色标不变；切到当前步范围后色标收窄。
     view_model.setPlaybackFrame(0);
@@ -1569,6 +1576,7 @@ TEST(ProjectViewModelTest, PlaysResultTimeStepsAndUpdatesFieldSections) {
     view_model.setFieldRangeGlobal(false);
     ASSERT_TRUE(meshChanged.wait(10000));
     EXPECT_LT(view_model.fieldLegendMax(), 10.0);
+    EXPECT_EQ(view_model.mesh_snapshot()->scalar_range_label, std::string("当前步"));
 
     // 播放：循环关闭时播到末帧自动暂停。
     view_model.setPlaybackLoop(false);

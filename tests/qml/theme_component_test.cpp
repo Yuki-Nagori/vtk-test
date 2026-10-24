@@ -8,6 +8,7 @@
 #include <QFont>
 #include <QImage>
 #include <QImageReader>
+#include <QMetaObject>
 #include <QObject>
 #include <QQmlComponent>
 #include <QQmlEngine>
@@ -17,6 +18,7 @@
 #include <QQuickWindow>
 #include <QRect>
 #include <QSignalSpy>
+#include <QSizeF>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
@@ -869,6 +871,66 @@ class ThemeComponentTest final : public QObject {
         QVERIFY(lastImage.pixelColor(234, 34).lightness() > bandGray.lightness());
         QCOMPARE(lastImage.pixelColor(236, 34), bandGray);
         QCOMPARE(lastImage.pixelColor(130, 37), panelWhite);
+    }
+    void viewport_empty_state_offers_import_open_and_recent_projects() {
+        // 无文档引导（task 038）：启用条件随宿主，最近工程只显示文件名且最多 5 条。
+        QQmlEngine engine;
+        panta::install_icon_provider(engine);
+        QObject owner;
+        QQmlComponent component(
+            &engine, QUrl(QStringLiteral(
+                         "qrc:/qt/qml/Panta/Shell/Components/Composites/ViewportEmptyState.qml")));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QStringList recent;
+        for (int i = 0; i < 7; ++i)
+            recent.append(QStringLiteral("/data/工程%1/demo%1.panta").arg(i));
+        auto* state = qobject_cast<QQuickItem*>(component.createWithInitialProperties(
+            QVariantMap{{QStringLiteral("projectOpen"), false},
+                        {QStringLiteral("canCreateOrOpen"), true},
+                        {QStringLiteral("canImport"), false},
+                        {QStringLiteral("recentProjects"), recent}}));
+        QVERIFY(state != nullptr);
+        state->setParent(&owner);
+        QQuickWindow window;
+        window.resize(640, 420);
+        state->setParentItem(window.contentItem());
+        state->setSize(QSizeF(640, 420));
+        window.show();
+        QVERIFY2(QTest::qWaitForWindowExposed(&window), "window was not exposed");
+
+        QQuickItem* importButton = visual_item(state, QStringLiteral("viewportEmptyImport"));
+        QQuickItem* newButton = visual_item(state, QStringLiteral("viewportEmptyNew"));
+        QQuickItem* openButton = visual_item(state, QStringLiteral("viewportEmptyOpen"));
+        QVERIFY(importButton != nullptr && newButton != nullptr && openButton != nullptr);
+        QVERIFY(!importButton->isEnabled());
+        QVERIFY(newButton->property("primaryAction").toBool());
+        QVERIFY(openButton->isEnabled());
+        QCOMPARE(
+            visual_item(state, QStringLiteral("viewportEmptyHint"))->property("text").toString(),
+            QStringLiteral("新建或打开工程，然后导入网格。"));
+        QQuickItem* firstRecent = visual_item(state, QStringLiteral("viewportEmptyRecent-0"));
+        QVERIFY(firstRecent != nullptr);
+        QCOMPARE(firstRecent->property("text").toString(), QStringLiteral("demo0.panta"));
+        QVERIFY(visual_item(state, QStringLiteral("viewportEmptyRecent-4")) != nullptr);
+        QVERIFY(visual_item(state, QStringLiteral("viewportEmptyRecent-5")) == nullptr);
+
+        QSignalSpy recentRequested(state, SIGNAL(recentProjectRequested(QString)));
+        QSignalSpy openRequested(state, SIGNAL(openProjectRequested()));
+        QMetaObject::invokeMethod(firstRecent, "clicked");
+        QMetaObject::invokeMethod(openButton, "clicked");
+        QCOMPARE(recentRequested.count(), 1);
+        QCOMPARE(recentRequested.at(0).at(0).toString(), recent.first());
+        QCOMPARE(openRequested.count(), 1);
+
+        // 工程已打开：导入成为主操作并可用。
+        state->setProperty("projectOpen", true);
+        state->setProperty("canImport", true);
+        QVERIFY(importButton->isEnabled());
+        QVERIFY(importButton->property("primaryAction").toBool());
+        QVERIFY(!newButton->property("primaryAction").toBool());
+        QSignalSpy importRequested(state, SIGNAL(importRequested()));
+        QMetaObject::invokeMethod(importButton, "clicked");
+        QCOMPARE(importRequested.count(), 1);
     }
 };
 

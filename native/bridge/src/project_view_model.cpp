@@ -1904,6 +1904,11 @@ void panta::bridge::ProjectViewModel::request_section() {
                         mesh->scalar_min = globalMin;
                         mesh->scalar_max = globalMax;
                     }
+                    // 视口色标（task 038）：口径只在时间步结果上显示，按实际采用的区间。
+                    mesh->scalar_title = fieldTitle.toStdString();
+                    mesh->scalar_units = fieldUnits.toStdString();
+                    if (timed)
+                        mesh->scalar_range_label = globalRange ? "全部时间步" : "当前步";
                 }
                 mesh->vertices.reserve(coordinates.size() / 3);
                 for (std::size_t offset = 0; offset + 2 < coordinates.size(); offset += 3)

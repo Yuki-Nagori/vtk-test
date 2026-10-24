@@ -68,6 +68,15 @@ QtObject {
     readonly property int treeIndent: 16
     readonly property int propertyLabelWidth: 96
     readonly property color colorSelection: "#cfe3f7"
+    // 视口深色画布（task 038）：与 VTK 渐变背景同色，无文档时的引导页沿用。
+    readonly property color colorViewportTop: "#2b3442"
+    readonly property color colorViewportBottom: "#11161d"
+    readonly property color colorViewportText: "#e6e9ee"
+    readonly property color colorViewportTextMuted: "#9aa4b2"
+    readonly property color colorViewportHover: "#3a4556"
+    readonly property color colorViewportLine: "#5a6678"
+    readonly property int viewportEmptyStateWidth: 360
+    readonly property int viewportRecentProjectLimit: 5
     readonly property int windowMinimumWidth: 1280
     readonly property int windowMinimumHeight: 720
     readonly property int newProjectDialogWidth: 620
