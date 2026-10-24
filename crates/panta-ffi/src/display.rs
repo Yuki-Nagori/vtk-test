@@ -432,6 +432,7 @@ mod tests {
                     path: volume_path.clone(),
                     digest: digest.clone(),
                     kind: StreamedKind::Volume(block.counts()),
+                    chunks: None,
                 }),
             })
         };
@@ -472,6 +473,7 @@ mod tests {
                     path: surface_path.clone(),
                     digest: digest.to_owned(),
                     kind: StreamedKind::Surface { triangles: 5_000 },
+                    chunks: None,
                 }),
             })
         };

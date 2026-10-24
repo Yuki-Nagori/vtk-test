@@ -85,6 +85,8 @@ ProjectViewModel::ProjectViewModel(QObject* parent)
     m_animationPoll.setInterval(10);
     connect(&m_animationPoll, &QTimer::timeout, this, &ProjectViewModel::tick_animation);
     loadLargeMeshLimits();
+    configureDerivedChunkCache();
+    refreshAvailableMemory();
     reset_documents();
 }
 
@@ -1166,11 +1168,13 @@ void ProjectViewModel::refresh_workspace(bool forceActiveNotification) {
 }
 
 void ProjectViewModel::activateDocument(const QString& documentId) {
+    refreshAvailableMemory();
     panta::ffi::project_service_workspace_activate(*m_service, documentId.toStdString());
     refresh_workspace(!m_activeMesh);
 }
 
 void ProjectViewModel::closeDocument(const QString& documentId) {
+    refreshAvailableMemory();
     panta::ffi::project_service_workspace_close(*m_service, documentId.toStdString());
     refresh_workspace();
 }
@@ -1180,6 +1184,7 @@ void ProjectViewModel::openImportRecord(const QString& recordId) {
     if (index < 0) {
         return;
     }
+    refreshAvailableMemory();
     panta::ffi::project_service_workspace_open_import(
         *m_service, recordId.toStdString(), m_importedPartNames.value(index).toStdString());
     refresh_workspace();

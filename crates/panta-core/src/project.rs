@@ -12,7 +12,7 @@ mod model;
 mod repository;
 mod service;
 mod workspace;
-pub use crate::activation::ActivationLimits;
+pub use crate::activation::{ActivationLimits, VolumeMode};
 pub use error::ProjectError;
 use mesh_cache::SurfaceMeshCache;
 pub use model::{ProjectCommand, ProjectSnapshot};
@@ -568,6 +568,7 @@ mod tests {
             surface_triangles: 50_000_000,
             surface_budget: 5_000_000,
             volume_cells: 2_000_000,
+            ..super::ActivationLimits::DEFAULT
         };
         assert!(service.set_activation_limits(custom).is_ok());
         assert_eq!(service.activation_limits(), custom);

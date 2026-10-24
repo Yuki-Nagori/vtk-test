@@ -54,6 +54,7 @@ use volume::project_service_volume_summary;
 mod limits;
 use limits::{
     default_large_mesh_limits, project_service_large_mesh_limits,
+    project_service_set_available_memory, project_service_set_derived_chunk_dir,
     project_service_set_large_mesh_limits,
 };
 mod animation;
@@ -303,6 +304,10 @@ pub mod bridge {
         pub surface_triangles: u64,
         pub surface_budget: u64,
         pub volume_cells: u64,
+        /// 体网格模式（task 028）：0 按阈值分块、1 按可用内存自动、2 禁用分块完整驻留。
+        pub volume_mode: u32,
+        /// 分块块缓存预算（MiB）。
+        pub chunk_cache_mib: u64,
     }
 
     #[derive(Default)]
@@ -424,6 +429,10 @@ pub mod bridge {
             service: &mut ProjectService,
             limits: LargeMeshLimits,
         ) -> ProjectDiagnostic;
+        /// 宿主报告的可用物理内存（B，0 表示未知），激活前调用（task 028）。
+        fn project_service_set_available_memory(service: &mut ProjectService, bytes: u64);
+        /// 派生分块缓存目录（task 028）；空字符串表示不缓存，大体网格逐次流式扫描。
+        fn project_service_set_derived_chunk_dir(service: &mut ProjectService, directory: &str);
         fn format_project_dimensions(size_x: f64, size_y: f64, size_z: f64, unit: &str) -> String;
         fn mesh_type_catalog() -> Vec<ChoiceDefinition>;
         fn default_mesh_type() -> String;

@@ -1,7 +1,7 @@
 # 028 — out-of-core 铺开：只读映射块读取、接入应用与大网格设置
 
-- 状态：in-progress
-- 阶段：PR 1/2（只读映射块读取）已实现；PR 2（接入应用与 026 设置）待做
+- 状态：done
+- 阶段：PR 1/2（只读映射块读取）已合入；PR 2/2（接入应用与 026 设置）已实现
 - 依赖：[027](027-out-of-core-block-prototype.md)、[026](026-lod-user-settings.md)、[025](025-lod-streaming-diagnostics-export.md)
 - 优先级：P1
 - 负责人：Grok Bot
@@ -11,8 +11,8 @@
 
 027 原型已验证分块切面在 1 亿四面体下的延迟与内存。本任务把它铺开为应用能力，分两个 PR：
 
-1. **只读映射块读取**（用户决策 2026-10-24 12:03 UTC+8：现在就加 mmap）。块读取抽象在 `ChunkSource` 接口后，映射与合并定位读都是实现：默认映射，定位读作回退。目标是减少 Windows 上的读系统调用，并为完整驻留模式提供映射读取。
-2. **接入应用与 026 设置**：超过阈值的体网格激活时生成派生 `.pchunk`，切面、质量和导出走 `ChunkedVolume`。设置项包括：触发阈值、“禁用分块、完整驻留”、“按可用内存自动”、块缓存预算。Linux glibc 多 arena 内存滞留在 launcher 侧用 `MALLOC_ARENA_MAX` 处理。
+1. **只读映射块读取**（用户决策 2026-10-24 12:03 UTC+8：现在就加 mmap）。块读取抽象在 `ChunkSource` 接口后，映射与合并定位读都是实现：默认映射，定位读作回退。目标是减少 Windows 上的读系统调用。映射只用于分块按需读；完整驻留模式不用映射（见 PR 2 用户决策）。
+2. **接入应用与 026 设置**：超过阈值的体网格激活时生成派生 `.pchunk`，切面和质量走 `ChunkedVolume`（导出仍读源资产，见 PR 2 设计）。设置项包括：触发阈值、“禁用分块、完整驻留”、“按可用内存自动”、块缓存预算。Linux glibc 多 arena 内存滞留在应用入口用 `mallopt(M_ARENA_MAX, 2)` 处理（等价于 `MALLOC_ARENA_MAX=2`）。
 
 ## 必读
 
@@ -31,19 +31,23 @@
 
 PR 1 只改 `panta-mesh`（领域库），新增第三方依赖 `memmap2`（MIT/Apache-2.0，Unix 依赖 libc，Windows 无额外依赖），不新增跨组依赖。
 
+PR 2 沿既有方向接线：`panta-mesh`（`build_chunked_from_asset`、`plane_through_nodes`）→ `panta-core`（激活、派生缓存、工程服务）→ `panta-ffi`（CXX 桥）→ `native/qt-adapter`（可用物理内存）→ `native/bridge`（ViewModel、QSettings）→ QML 设置对话框；`native/app` 入口加 `mallopt`。不新增第三方依赖。
+
 ## 前置条件与待决策
 
 - 已决策（用户）：放开 unsafe 引入 mmap，只限一个隔离小模块。
+- 已决策（用户，2026-10-24 12:31 UTC+8）：“禁用分块、完整驻留”模式不用 mmap，用 MiB 级缓冲大块顺序读一次性读入进程自有内存，读完立即关闭文件、释放锁，不保留映射；mmap 只用于分块按需读，继续保持锁和校验。
 - 已决策（本任务，保守）：映射打开失败（锁冲突、空文件、地址空间不足等）时自动回退定位读，不报错；仅 `ChunkReadMode::Mmap` 显式要求时报错。
 
 ## 实施步骤
 
 1. PR 1：映射模块、接口改造、校验加强、测试、基准对比、nightly 与规范更新。
-2. PR 2：派生分块缓存、设置、FFI / C++ / QML、launcher 环境变量、文档。
+2. PR 2：派生分块缓存、设置、FFI / C++ / QML、应用入口 `mallopt`、文档。
 
 ## 预计改动
 
 - PR 1：`Cargo.toml`（workspace 依赖与 lint 注释）、`crates/panta-mesh/{Cargo.toml, src/lib.rs, src/mapped.rs（新建）, src/chunked/*, examples/ooc_bench.rs}`、`.github/workflows/nightly.yml`、`ai-docs/standards/rust.md`、`ai-docs/architecture/mesh.md`。
+- PR 2：`crates/panta-mesh/src/chunked/{build.rs, volume.rs, mod.rs, tests.rs}`、`crates/panta-core/src/{activation.rs, derived_chunks.rs（新建）, lib.rs, project/*}`、`crates/panta-ffi/src/{lib.rs, limits.rs, display.rs}`、`native/qt-adapter`（`system_memory`，新建）、`native/bridge/src/{large_mesh_settings.cpp, project_view_model.*}`、`native/app/main.cpp`、`qml/Dialogs/LargeMeshSettingsDialog.qml`、C++ / QML 测试、`ai-docs/{architecture/mesh.md, standards/rust.md, task-index.md}`。`setLargeMeshLimits` 由 3 参数改为 5 参数，唯一调用方为设置对话框，不保留旧签名。
 - `ChunkSource::read_at` 返回 `ChunkBytes`（原为 `Vec<u8>`），`io_counts` 返回 `IoCounts`（原为三元组）。均为 crate 内部新接口（027 刚合入，无外部调用方），不保留旧签名。
 
 ## 清理与兼容例外
@@ -59,7 +63,7 @@ PR 1 只改 `panta-mesh`（领域库），新增第三方依赖 `memmap2`（MIT/
 | 每块校验 | 每块是带校验和的 zstd 帧，解压后核对节点 / 单元计数；`read_at` 越界返回错误 |
 | 残余风险 | Unix 上不遵守建议锁的外部进程截断文件时，访问已失效页会触发 SIGBUS（进程崩溃）。用户态无法完全消除，已在 rust.md 登记。本项目写入方都写临时文件再 rename，不就地改写已发布文件；PR 2 的派生缓存放在应用缓存目录，同样只 rename 发布 |
 
-Windows 附注：他人持排他锁时，Windows 强制锁会让定位读回退也失败（`ERROR_LOCK_VIOLATION`，os error 33），打开以 IO 错误结束，不会读到半写数据；Unix 建议锁不拦读，自动模式回退定位读。两种行为都由单测按平台断言（nightly Windows 首跑发现，已修）。文件映射存在时不能删除或替换该文件。PR 2 重建派生缓存前必须先释放对应的 `ChunkedVolume`。
+Windows 附注：他人持排他锁时，Windows 强制锁会让定位读回退也失败（`ERROR_LOCK_VIOLATION`，os error 33），打开以 IO 错误结束，不会读到半写数据；Unix 建议锁不拦读，自动模式回退定位读。两种行为都由单测按平台断言（nightly Windows 首跑发现，已修）。文件映射存在时不能删除或替换该文件。PR 2 因此从不重写已有的有效派生文件，清理时删除失败直接忽略。
 
 ## 验收标准
 
@@ -67,7 +71,10 @@ Windows 附注：他人持排他锁时，Windows 强制锁会让定位读回退�
 - [x] 映射与定位读的切面三角形集合、质量统计完全一致（单测）；映射读调用计数为 0。
 - [x] 空文件、坏文件头、截断、块内翻转在两种实现下都被拒绝（单测）；他人持排他锁时映射拒绝打开：Unix 自动回退定位读，Windows 因强制锁以 IO 错误失败（单测按平台断言，nightly Windows 验证）。
 - [x] `ooc_bench --reader` 在 1 亿四面体下对比延迟、读调用、内存（见下表）；nightly Windows 小基准两种实现都跑。
-- [ ] PR 2：应用接入与设置（待做）。
+- [x] PR 2：超过有效阈值的体网格激活后生成 / 复用派生 `.pchunk`，质量与切面走分块并与驻留路径一致（`chunked_streamed_commands_match_resident_commands`、`plane_through_nodes_matches_resident_section_position`）；从 v3 资产构建与从驻留网格构建字节一致（`build_from_v3_asset_matches_build_from_resident_mesh`）。
+- [x] PR 2：派生文件只建一次、重启复用、内存不足跳过、按时间保留最新 4 个（`derived_chunks_are_built_once_reused_and_gated_by_memory`、`derived_chunk_cache_keeps_the_newest_files`）。
+- [x] PR 2：三种模式与块缓存预算可在设置中修改、校验、持久化，旧设置文件缺键时取默认（Rust / FFI / C++ ViewModel 测试）；可用物理内存查询在 Linux 返回合理值（qt-adapter 测试，nightly 覆盖 macOS / Windows）。
+- [x] PR 2：完整驻留模式用 8 MiB 缓冲顺序读，不映射；`mapped.rs` SAFETY 注释与本文写明 UB 风险、缓解与 Unix 残余风险。
 
 ## 验证计划与结果
 
@@ -109,16 +116,63 @@ Windows 附注：他人持排他锁时，Windows 强制锁会让定位读回退�
 - Windows 进程内存（工作集 / 专用字节）在 nightly 中仍为 N/A。
 - Defender 实时扫描对映射与读两种方式的影响。
 
+## PR 2 设计
+
+### 激活路径
+
+1. 有效阈值：`VolumeMode::Threshold` 用手设阈值；`AutoMemory` 用 `可用物理内存 / 2 / 190 B`（190 B 为完整驻留每四面体的估计占用），限在阈值合法范围内，查询不到（0）时退回手设阈值；`Resident` 为无穷大，始终完整驻留。
+2. 超过阈值：先走 025 流式路径只驻留外表面，激活即可显示；随后在同一后台任务里调用 `derived_chunks::open_or_build`：
+   - 目录为 `QStandardPaths::CacheLocation/volume-chunks`，文件名 `<资产 SHA-256>.pchunk`。摘要覆盖资产目录，资产变了文件名就变，已有有效文件（打开校验通过且四面体 / 节点数一致）直接复用，从不重写。
+   - 生成前估算内存：四面体 × 48 B + 节点 × 24 B + 边界三角 × 16 B。超过可用内存一半时跳过（参考：1 亿四面体合成数据仅分块构建峰值 RSS 1.82 GiB，约 18 B / 四面体；应用路径还要驻留源四面体与节点，48 B 是保守值）。
+   - 构建写临时文件（8 MiB 缓冲）再 rename，期间响应取消；其他进程同时生成了有效文件时保留对方的。失败、取消、内存不足都不影响激活，回退 025 流式诊断与切面。
+   - 清理：按修改时间（复用时会 touch）保留最新 4 个；超过 24 小时的残留临时文件删除；Windows 上正被映射的文件删不掉时忽略。
+3. 分块存在时，质量与切面走 `ChunkedVolume`；切面平面用 `plane_through_nodes`，与驻留路径 `section_plane_origin` 位级一致。导出仍读 v3 源资产（导出需要完整原始单元顺序，块文件不是导出源）。
+4. 块缓存预算修改后立即通过 `ChunkCache::set_budget` 作用于已打开的分块体网格；模式与阈值只影响之后的激活。
+5. 宿主在激活、关闭、打开导入记录前刷新可用物理内存：Windows `GlobalMemoryStatusEx`，macOS `host_statistics64`（free + inactive + purgeable），Linux `/proc/meminfo` 的 `MemAvailable`。导入完成后自动激活沿用最近一次的值。
+
+### 完整驻留模式的读取
+
+“禁用分块、完整驻留”与低于阈值的体网格走驻留路径：`BufReader::with_capacity(8 MiB)` 顺序读 v3 资产到进程自有内存，读完立即关闭文件（锁随句柄释放），不保留任何映射。
+
+### 只读映射的 UB 风险与缓解
+
+映射把文件内容暴露为 `&[u8]`。映射存活期间文件被任何进程**修改或截断**都是未定义行为：修改违反共享引用内容不变的前提；截断后访问越界页在 Unix 上 SIGBUS、在 Windows 上访问冲突，进程崩溃。缓解措施：
+
+| 措施 | 作用 |
+|---|---|
+| 整文件共享锁，持有到映射释放 | 他人持排他锁时映射打开失败，回退定位读 |
+| Windows 共享模式只给 `FILE_SHARE_READ`，不给 `FILE_SHARE_WRITE` / `FILE_SHARE_DELETE`；`LockFileEx` 为强制锁 | Windows 上其他进程无法写入、截断、删除或改名，风险在 OS 层排除 |
+| 打开时校验长度、头尾与块表；每次读取校验区间不越过文件长度 | 不按未校验偏移访问映射 |
+| 每块 zstd 帧校验和 + 解压后节点 / 单元计数 | 内容不一致返回错误，不继续使用 |
+| 写入方只写临时文件再 rename | 本项目从不就地改写已发布文件；rename 不影响已打开的映射 |
+
+**残余风险（Unix）**：`flock` 是建议锁，拦不住不合作的进程。外部程序或用户手工就地改写、截断正在映射的派生文件时，校验只能发现已读入的不一致，无法阻止并发修改；截断后访问相应页仍会 SIGBUS。用户态无法消除，派生文件放在应用缓存目录、不面向用户编辑，以降低触发概率。
+
+### Linux glibc arena
+
+应用入口在未设置 `MALLOC_ARENA_MAX` 环境变量时调用 `mallopt(M_ARENA_MAX, 2)`（仅 `__GLIBC__`）。原因：分块读取与 Rayon 线程各自分配 MiB 级缓冲，glibc 默认每核最多 8 个 arena，释放后的块滞留在各 arena，RSS 长期偏高（027 实测见该任务）。上限 2 风险低：本应用热点是少量大块分配，arena 竞争影响小；用户显式设置环境变量时尊重用户。Windows（系统堆）与 macOS（libmalloc）不受影响。
+
+### 需要 GUI 验收 / 推迟项
+
+- 设置对话框新增的模式下拉框与块缓存字段只有 offscreen 冒烟与 QML 组件测试，真实窗口观感、窄窗口布局未验收。
+- 切面拖动时的粗级别预览（027 的体素 + 简化外表面）尚未接入视口：应用目前在松手后显示精细切面。接入需要视口交互与 GPU 验收，推迟（不属于本次批准范围的新增工作，记为候选，未实施）。
+- 派生文件生成期间没有单独的进度显示（与激活共用后台任务）；大文件首次激活会多花分块构建时间（1 亿四面体约 13 s 量级，box 实测为合成数据）。
+
 ## 风险与回退
 
 - 映射不可用或冷盘变慢：`ChunkReadMode::Read` 随时可切回定位读；自动模式在打开失败时已经回退。
-- SIGBUS 残余风险见上表；回退方式同上。
+- SIGBUS 残余风险见上文；回退方式同上。
+- 派生缓存异常（磁盘满、权限、损坏）：生成失败不影响激活，回退 025 流式；用户可删除缓存目录 `volume-chunks` 强制重建。
+- 自动模式估计偏差：190 B / 四面体与 48 B / 四面体都是估计值，用户可改用手设阈值或完整驻留。
 
 ## 决策与工作记录
 
+- 2026-10-24：PR 2。用户决策（12:31 UTC+8）完整驻留不用 mmap，改为 8 MiB 缓冲顺序读。派生缓存放在应用缓存目录（不入工程，可随时重建），生成门槛为可用内存一半；导出不走分块（保守，保持导出源唯一）。glibc 用 `mallopt` 而不是 launcher 环境变量：应用入口一处生效，不影响子进程。
 - 2026-10-24：分支 nightly run 40061488592 的 Windows 跑出锁冲突单测失败。原因是 Windows 强制锁也拒绝定位读，属于预期语义，单测改为按平台断言。
 - 2026-10-24：创建任务。PR 1：新增依赖 memmap2 0.9.12；unsafe 例外登记在 `panta_mesh::mapped`。`ChunkSource` 返回零拷贝 `ChunkBytes`，映射实现对合并区段做 `madvise(WILLNEED)`（仅 Unix）。打开新增文件头校验，定位读的打开读调用从 2 次变为 3 次（文件 > 1 MiB 时）。nightly 小基准改为 pread + mmap 两次运行。027 合入后首次 nightly（run 40060731130）Windows 成功。
 
 ## 完成摘要
 
-未完成（PR 2 待做）。
+- PR 1：`panta_mesh::mapped` 只读映射、`MmapChunkSource` 默认、定位读回退、IO 计数、nightly 三平台通过。
+- PR 2：体网格三种模式 + 块缓存预算设置（Rust 校验、FFI、QSettings 持久化、QML 对话框）；派生分块缓存（按资产摘要命名、只建一次、内存门槛、保留最新 4 个）；分块质量与切面接入工程服务；完整驻留改为 8 MiB 顺序读、不映射；可用物理内存宿主查询；glibc arena 上限；UB 风险与残余风险写入 SAFETY 注释与本文。
+- 未做（推迟，需 GUI / GPU）：拖动粗级别切面预览接入视口；派生文件生成进度单独显示。

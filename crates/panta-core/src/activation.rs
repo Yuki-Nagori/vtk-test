@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError};
 
 use panta_io::import::ImportError;
+use panta_mesh::chunked::ChunkedVolume;
 use panta_mesh::{
     MeshAsset, MeshAssetError, MeshAssetReader, SurfaceMesh, TetMesh, VolumeStreamCounts,
 };
@@ -57,6 +58,8 @@ pub struct Outcome {
     pub volume: Option<Arc<TetMesh>>,
     /// 体网格单元数超过激活阈值：四面体不驻留，`mesh` 为流式提取的精确外表面（task 025）。
     pub streamed_volume: Option<VolumeStreamCounts>,
+    /// 流式体网格的派生分块文件（task 028）。
+    pub chunked_volume: Option<Arc<ChunkedVolume>>,
 }
 
 /// 超过此面数的表面资产激活时改为流式构建显示 LOD，不整体读入（约 1.4 GiB 展开体积）。
@@ -68,16 +71,58 @@ pub const LOD_ACTIVATION_TRIANGLES: u64 = 20_000_000;
 /// 默认值取 1000 万以 8 GiB 内存机器为保守上限（基准见 task 025 文档）。
 pub const VOLUME_STREAM_ACTIVATION_CELLS: u64 = 10_000_000;
 
-/// 大网格激活设置（task 026）：表面 LOD 触发面数与 LOD 输出预算、体网格流式激活单元数。
-/// 只影响之后的激活；已驻留文档不重算。
+/// 完整驻留体网格的估计内存（B / 四面体）：task 025 实测 1010 万四面体峰值 1.8 GiB。
+pub const RESIDENT_BYTES_PER_TET: u64 = 190;
+/// 分块块缓存预算默认值（MiB，task 028）：1 亿四面体斜切冷精细约读 500 MiB 块，1 GiB 可覆盖一次精细切面。
+pub const DEFAULT_CHUNK_CACHE_MIB: u64 = 1024;
+/// 完整驻留顺序读的缓冲大小：MiB 级单次读，减少 Windows 上的读调用（task 028）。
+pub(crate) const RESIDENT_READ_BUFFER: usize = 8 << 20;
+
+/// 体网格激活模式（task 028）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VolumeMode {
+    /// 四面体数超过 [`ActivationLimits::volume_cells`] 时分块按需读取。
+    #[default]
+    Threshold,
+    /// 按可用物理内存的一半推算阈值（[`RESIDENT_BYTES_PER_TET`] / 四面体）；宿主未提供内存时用手动阈值。
+    AutoMemory,
+    /// 禁用分块、完整驻留：始终整体读入进程内存（大块顺序读，读完即关闭文件，不映射）。
+    Resident,
+}
+
+impl VolumeMode {
+    /// FFI 编码：0 阈值、1 按可用内存自动、2 完整驻留。
+    pub fn from_index(index: u32) -> Option<Self> {
+        match index {
+            0 => Some(Self::Threshold),
+            1 => Some(Self::AutoMemory),
+            2 => Some(Self::Resident),
+            _ => None,
+        }
+    }
+
+    pub fn index(self) -> u32 {
+        match self {
+            Self::Threshold => 0,
+            Self::AutoMemory => 1,
+            Self::Resident => 2,
+        }
+    }
+}
+
+/// 大网格激活设置（task 026 / 028）：表面 LOD 触发面数与 LOD 输出预算、体网格分块阈值、
+/// 体网格模式与块缓存预算。只影响之后的激活；已驻留文档不重算（块缓存预算立即生效）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ActivationLimits {
     /// 表面资产面数超过此值时只驻留显示 LOD。
     pub surface_triangles: u64,
     /// 显示 LOD 的面数上限。
     pub surface_budget: u64,
-    /// 体网格四面体数超过此值时单元不驻留、命令按需流式读取。
+    /// 体网格四面体数超过此值时单元不驻留、命令按需分块读取。
     pub volume_cells: u64,
+    pub volume_mode: VolumeMode,
+    /// 分块块缓存预算（MiB）。
+    pub chunk_cache_mib: u64,
 }
 
 impl Default for ActivationLimits {
@@ -91,6 +136,8 @@ impl ActivationLimits {
         surface_triangles: LOD_ACTIVATION_TRIANGLES,
         surface_budget: panta_mesh::DEFAULT_LOD_TRIANGLE_BUDGET as u64,
         volume_cells: VOLUME_STREAM_ACTIVATION_CELLS,
+        volume_mode: VolumeMode::Threshold,
+        chunk_cache_mib: DEFAULT_CHUNK_CACHE_MIB,
     };
     /// 表面触发阈值范围（面）。
     pub const SURFACE_TRIANGLES_RANGE: std::ops::RangeInclusive<u64> = 1_000_000..=2_000_000_000;
@@ -98,6 +145,8 @@ impl ActivationLimits {
     pub const SURFACE_BUDGET_RANGE: std::ops::RangeInclusive<u64> = 100_000..=20_000_000;
     /// 体网格流式激活阈值范围（四面体）。
     pub const VOLUME_CELLS_RANGE: std::ops::RangeInclusive<u64> = 1_000_000..=10_000_000_000;
+    /// 块缓存预算范围（MiB）：64 MiB 到 1 TiB。
+    pub const CHUNK_CACHE_MIB_RANGE: std::ops::RangeInclusive<u64> = 64..=1_048_576;
 
     /// 范围校验；违反时 detail 指出字段，供界面显示。
     pub fn validate(&self) -> Result<(), crate::project::ProjectError> {
@@ -117,14 +166,53 @@ impl ActivationLimits {
         if !Self::VOLUME_CELLS_RANGE.contains(&self.volume_cells) {
             return invalid("volume_cells");
         }
+        if !Self::CHUNK_CACHE_MIB_RANGE.contains(&self.chunk_cache_mib) {
+            return invalid("chunk_cache_mib");
+        }
         Ok(())
+    }
+
+    /// 生效的体网格分块阈值（四面体）。`available_memory` 为宿主报告的可用物理内存（B），0 表示未知。
+    pub fn volume_cell_threshold(&self, available_memory: u64) -> u64 {
+        match self.volume_mode {
+            VolumeMode::Threshold => self.volume_cells,
+            VolumeMode::Resident => u64::MAX,
+            VolumeMode::AutoMemory if available_memory == 0 => self.volume_cells,
+            VolumeMode::AutoMemory => (available_memory / 2 / RESIDENT_BYTES_PER_TET).clamp(
+                *Self::VOLUME_CELLS_RANGE.start(),
+                *Self::VOLUME_CELLS_RANGE.end(),
+            ),
+        }
+    }
+
+    /// 块缓存预算（B）。
+    pub fn chunk_cache_bytes(&self) -> usize {
+        usize::try_from(self.chunk_cache_mib.saturating_mul(1 << 20)).unwrap_or(usize::MAX)
     }
     /// 完整读取（导出等只读命令）：不走 LOD 或流式激活。
     pub(crate) const RESIDENT: Self = Self {
         surface_triangles: u64::MAX,
         surface_budget: u64::MAX,
         volume_cells: u64::MAX,
+        volume_mode: VolumeMode::Resident,
+        chunk_cache_mib: DEFAULT_CHUNK_CACHE_MIB,
     };
+}
+
+/// 宿主环境（task 028）：可用内存与派生分块缓存目录，worker 开始读取时取值。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ActivationEnvironment {
+    /// 可用物理内存（B），0 表示未知。
+    pub(crate) available_memory: u64,
+    /// 派生 `.pchunk` 缓存目录；`None` 时超过阈值的体网格退回逐次流式扫描（task 025）。
+    pub(crate) derived_dir: Option<PathBuf>,
+}
+
+/// 一次读取的全部设置。
+#[derive(Debug, Clone, Default)]
+pub(crate) struct LoadOptions {
+    pub(crate) limits: ActivationLimits,
+    pub(crate) environment: ActivationEnvironment,
 }
 
 /// 激活成功的负载。
@@ -136,6 +224,8 @@ pub(crate) struct LoadedMesh {
     pub(crate) volume: Option<Arc<TetMesh>>,
     /// 流式体网格（task 025）：单元未驻留，值为资产计数。
     pub(crate) streamed_volume: Option<VolumeStreamCounts>,
+    /// 流式体网格的派生分块文件（task 028）；不可用时命令退回逐次流式扫描。
+    pub(crate) chunked_volume: Option<Arc<ChunkedVolume>>,
 }
 
 impl LoadedMesh {
@@ -145,6 +235,7 @@ impl LoadedMesh {
             lod_source: 0,
             volume: None,
             streamed_volume: None,
+            chunked_volume: None,
         }
     }
 }
@@ -178,6 +269,8 @@ pub struct ActivationCoordinator {
     generation: AtomicU64,
     /// 已校验的大网格设置；worker 开始读取时取值（task 026）。
     limits: Mutex<ActivationLimits>,
+    /// 宿主环境（task 028）。
+    environment: Mutex<ActivationEnvironment>,
 }
 
 impl std::fmt::Debug for ActivationCoordinator {
@@ -203,6 +296,27 @@ impl ActivationCoordinator {
 
     pub(crate) fn limits(&self) -> ActivationLimits {
         *self.limits.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(crate) fn set_available_memory(&self, bytes: u64) {
+        self.environment
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .available_memory = bytes;
+    }
+
+    pub(crate) fn set_derived_dir(&self, directory: Option<PathBuf>) {
+        self.environment
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .derived_dir = directory;
+    }
+
+    pub(crate) fn environment(&self) -> ActivationEnvironment {
+        self.environment
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// 提交一次激活。同会话同记录的在飞 attempt 直接复用（去重）；
@@ -351,6 +465,7 @@ fn publish(
         lod_source_triangles: 0,
         volume: None,
         streamed_volume: None,
+        chunked_volume: None,
     };
     match result {
         Ok(Some(loaded)) if !entry.cancel_requested.load(Ordering::SeqCst) => {
@@ -359,6 +474,7 @@ fn publish(
             outcome.lod_source_triangles = loaded.lod_source;
             outcome.volume = loaded.volume;
             outcome.streamed_volume = loaded.streamed_volume;
+            outcome.chunked_volume = loaded.chunked_volume;
         }
         Ok(_) => {}
         Err(error) => {
@@ -379,8 +495,15 @@ fn run_attempt(
     request: ActivationRequest,
     cancel_requested: Arc<AtomicBool>,
 ) {
-    let limits = coordinator.limits();
-    let result = load_asset(request, || cancel_requested.load(Ordering::SeqCst), limits);
+    let options = LoadOptions {
+        limits: coordinator.limits(),
+        environment: coordinator.environment(),
+    };
+    let result = load_asset_with(
+        request,
+        || cancel_requested.load(Ordering::SeqCst),
+        &options,
+    );
     coordinator.complete(attempt, result);
 }
 
@@ -404,6 +527,19 @@ fn load_asset(
     cancelled: impl Fn() -> bool,
     limits: ActivationLimits,
 ) -> Result<Option<LoadedMesh>, ActivationFailure> {
+    let options = LoadOptions {
+        limits,
+        environment: ActivationEnvironment::default(),
+    };
+    load_asset_with(request, cancelled, &options)
+}
+
+fn load_asset_with(
+    request: ActivationRequest,
+    cancelled: impl Fn() -> bool,
+    options: &LoadOptions,
+) -> Result<Option<LoadedMesh>, ActivationFailure> {
+    let limits = options.limits;
     if cancelled() {
         return Ok(None);
     }
@@ -424,12 +560,9 @@ fn load_asset(
     )? {
         return Ok(loaded);
     }
-    if let Some(loaded) = load_streamed_volume(
-        &asset_path,
-        &request.expected_digest,
-        &cancelled,
-        limits.volume_cells,
-    )? {
+    if let Some(loaded) =
+        load_streamed_volume(&asset_path, &request.expected_digest, &cancelled, options)?
+    {
         return Ok(loaded);
     }
     let Some((asset, digest)) = read_mesh_asset(&asset_path, &cancelled)? else {
@@ -506,8 +639,11 @@ fn load_streamed_volume(
     path: &std::path::Path,
     expected_digest: &str,
     cancelled: &impl Fn() -> bool,
-    cell_threshold: u64,
+    options: &LoadOptions,
 ) -> Result<Option<Option<LoadedMesh>>, ActivationFailure> {
+    let cell_threshold = options
+        .limits
+        .volume_cell_threshold(options.environment.available_memory);
     let Ok(mut chunks) = panta_mesh::VolumeAssetChunks::open(path) else {
         return Ok(None);
     };
@@ -525,11 +661,25 @@ fn load_streamed_volume(
     let result = with_cancellation(cancelled, |progress| {
         panta_mesh::boundary_surface_streaming(&mut chunks, Some(progress))
     })?;
+    drop(chunks);
     match result {
-        Ok(Some(surface)) if !cancelled() => Ok(Some(Some(LoadedMesh {
-            streamed_volume: Some(counts),
-            ..LoadedMesh::surface(surface)
-        }))),
+        Ok(Some(surface)) if !cancelled() => {
+            let chunked_volume = crate::derived_chunks::open_or_build(
+                path,
+                expected_digest,
+                counts,
+                options,
+                cancelled,
+            )?;
+            if cancelled() {
+                return Ok(Some(None));
+            }
+            Ok(Some(Some(LoadedMesh {
+                streamed_volume: Some(counts),
+                chunked_volume,
+                ..LoadedMesh::surface(surface)
+            })))
+        }
         Ok(_) => Ok(Some(None)),
         Err(panta_mesh::VolumeStreamError::Asset(error)) => Err(stream_failure(path, error)),
         Err(panta_mesh::VolumeStreamError::Invalid(detail)) => Err(ActivationFailure {
@@ -541,7 +691,7 @@ fn load_streamed_volume(
 }
 
 /// 在作用域线程中运行流式任务，当前线程轮询宿主取消并置位进度句柄，任务在批次边界停止。
-fn with_cancellation<T: Send>(
+pub(crate) fn with_cancellation<T: Send>(
     cancelled: &impl Fn() -> bool,
     work: impl FnOnce(&panta_mesh::Progress) -> T + Send,
 ) -> Result<T, ActivationFailure> {
@@ -604,14 +754,19 @@ fn read_mesh_asset(
         .metadata()
         .map_err(|error| read_failure(format!("{}: {error}", path.display())))?
         .len();
-    let reader =
-        MeshAssetReader::open(BufReader::new(file), file_len).map_err(|error| match error {
-            MeshAssetError::Io(kind) => read_failure(format!("{}: {kind}", path.display())),
-            other => import_failure(ImportError::UnsupportedFormat(format!(
-                "{}: {other}",
-                path.display()
-            ))),
-        })?;
+    // 完整驻留（用户决策 2026-10-24 12:31 UTC+8）：MiB 级大块顺序读进进程自有内存，不映射；
+    // `read` 消费读取器，返回时文件句柄已关闭。
+    let reader = MeshAssetReader::open(
+        BufReader::with_capacity(RESIDENT_READ_BUFFER, file),
+        file_len,
+    )
+    .map_err(|error| match error {
+        MeshAssetError::Io(kind) => read_failure(format!("{}: {kind}", path.display())),
+        other => import_failure(ImportError::UnsupportedFormat(format!(
+            "{}: {other}",
+            path.display()
+        ))),
+    })?;
     if cancelled() {
         return Ok(None);
     }
@@ -853,6 +1008,7 @@ mod tests {
             surface_triangles: 1_000,
             surface_budget: 500,
             volume_cells: 1_000,
+            ..ActivationLimits::DEFAULT
         };
         let lod = load_asset(request(), || false, small)
             .map_err(|f| f.detail)?
@@ -894,6 +1050,7 @@ mod tests {
             surface_triangles: u64::MAX,
             surface_budget: 500,
             volume_cells: 1_000,
+            ..ActivationLimits::DEFAULT
         };
         let streamed = load_asset(request(), || false, limits)
             .map_err(|f| f.detail)?
@@ -933,6 +1090,165 @@ mod tests {
     }
 
     #[test]
+    fn derived_chunks_are_built_once_reused_and_gated_by_memory()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = crate::project::temp_directory::Fixture::new()?;
+        let block = panta_mesh::SyntheticTetBlock::with_cells_per_axis(6);
+        let file = File::create(fixture.root.join("volume.pmesh"))?;
+        let (_, digest) =
+            panta_mesh::write_volume_asset_streaming(file, block.counts(), &block, None)?
+                .ok_or("cancelled")?;
+        let request = || ActivationRequest {
+            project_root: fixture.root.clone(),
+            relative_path: "volume.pmesh".to_owned(),
+            expected_digest: digest.clone(),
+        };
+        let cache = fixture.root.join("cache").join("volume-chunks");
+        let mut options = LoadOptions {
+            limits: ActivationLimits {
+                volume_cells: 1_000,
+                ..ActivationLimits::DEFAULT
+            },
+            environment: ActivationEnvironment {
+                available_memory: 0,
+                derived_dir: Some(cache.clone()),
+            },
+        };
+        let target = cache.join(crate::derived_chunks::file_name(&digest).ok_or("digest")?);
+        let listing = || -> Result<Vec<String>, std::io::Error> {
+            let mut names = std::fs::read_dir(&cache)?
+                .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
+                .collect::<Result<Vec<_>, _>>()?;
+            names.sort();
+            Ok(names)
+        };
+        {
+            let loaded = load_asset_with(request(), || false, &options)
+                .map_err(|f| f.detail)?
+                .ok_or("cancelled")?;
+            let chunks = loaded.chunked_volume.ok_or("chunks missing")?;
+            assert_eq!(chunks.tet_count(), block.tet_count() as u64);
+            assert_eq!(chunks.cache().budget(), options.limits.chunk_cache_bytes());
+            assert_eq!(loaded.streamed_volume, Some(block.counts()));
+            let bytes = std::fs::read(&target)?;
+            // 第二次激活复用同一文件，不重写。
+            let again = load_asset_with(request(), || false, &options)
+                .map_err(|f| f.detail)?
+                .ok_or("cancelled")?;
+            assert!(again.chunked_volume.is_some());
+            assert_eq!(std::fs::read(&target)?, bytes);
+            assert_eq!(listing()?.len(), 1);
+        }
+        // 无效文件（头部校验失败）重建；Windows 上须先释放映射才能覆盖。
+        std::fs::write(&target, b"not a chunk file")?;
+        {
+            let rebuilt = load_asset_with(request(), || false, &options)
+                .map_err(|f| f.detail)?
+                .ok_or("cancelled")?;
+            assert!(rebuilt.chunked_volume.is_some());
+        }
+        // 可用内存不足以构建时退回逐次流式扫描，不写文件。
+        std::fs::remove_file(&target)?;
+        options.environment.available_memory = 1;
+        let gated = load_asset_with(request(), || false, &options)
+            .map_err(|f| f.detail)?
+            .ok_or("cancelled")?;
+        assert!(gated.chunked_volume.is_none());
+        assert_eq!(gated.streamed_volume, Some(block.counts()));
+        assert!(listing()?.is_empty());
+        // 没有缓存目录时同样退回（task 025 行为）。
+        options.environment = ActivationEnvironment::default();
+        let plain = load_asset_with(request(), || false, &options)
+            .map_err(|f| f.detail)?
+            .ok_or("cancelled")?;
+        assert!(plain.chunked_volume.is_none());
+        // 完整驻留模式不分块。
+        options.limits.volume_mode = VolumeMode::Resident;
+        let resident = load_asset_with(request(), || false, &options)
+            .map_err(|f| f.detail)?
+            .ok_or("cancelled")?;
+        assert!(resident.streamed_volume.is_none() && resident.chunked_volume.is_none());
+        assert_eq!(
+            resident.volume.map(|v| v.tets.len()),
+            Some(block.tet_count())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn derived_chunk_cache_keeps_the_newest_files() -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = crate::project::temp_directory::Fixture::new()?;
+        let base = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        for index in 0..6u64 {
+            let path = fixture.root.join(format!("{index:064x}.pchunk"));
+            let file = File::create(&path)?;
+            file.set_modified(base + std::time::Duration::from_secs(index * 60))?;
+        }
+        let stale = fixture.root.join("a.pchunk.tmp-1-2");
+        File::create(&stale)?.set_modified(base - std::time::Duration::from_secs(86_400))?;
+        let fresh = fixture.root.join("b.pchunk.tmp-1-2");
+        File::create(&fresh)?;
+        let other = fixture.root.join("notes.txt");
+        File::create(&other)?;
+        let keep = fixture.root.join(format!("{:064x}.pchunk", 0));
+        crate::derived_chunks::prune(&fixture.root, &keep);
+        let mut names: Vec<String> = std::fs::read_dir(&fixture.root)?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        let expected = [
+            format!("{:064x}.pchunk", 0),
+            format!("{:064x}.pchunk", 3),
+            format!("{:064x}.pchunk", 4),
+            format!("{:064x}.pchunk", 5),
+            "b.pchunk.tmp-1-2".to_owned(),
+            "notes.txt".to_owned(),
+        ];
+        assert_eq!(names, expected);
+        assert_eq!(crate::derived_chunks::file_name("sha256:short"), None);
+        assert_eq!(crate::derived_chunks::file_name("md5:00"), None);
+        Ok(())
+    }
+
+    #[test]
+    fn volume_modes_resolve_the_effective_threshold() {
+        let manual = ActivationLimits {
+            volume_cells: 20_000_000,
+            ..ActivationLimits::DEFAULT
+        };
+        assert_eq!(manual.volume_cell_threshold(64 << 30), 20_000_000);
+        let resident = ActivationLimits {
+            volume_mode: VolumeMode::Resident,
+            ..manual
+        };
+        assert_eq!(resident.volume_cell_threshold(0), u64::MAX);
+        let auto = ActivationLimits {
+            volume_mode: VolumeMode::AutoMemory,
+            ..manual
+        };
+        assert_eq!(auto.volume_cell_threshold(0), 20_000_000);
+        // 64 GiB 可用：一半 32 GiB / 190 B ≈ 1.8 亿四面体。
+        assert_eq!(
+            auto.volume_cell_threshold(64 << 30),
+            (32u64 << 30) / RESIDENT_BYTES_PER_TET
+        );
+        assert_eq!(auto.volume_cell_threshold(1 << 20), 1_000_000);
+        assert_eq!(auto.volume_cell_threshold(u64::MAX), 10_000_000_000);
+        for index in 0..3 {
+            assert_eq!(
+                VolumeMode::from_index(index).map(VolumeMode::index),
+                Some(index)
+            );
+        }
+        assert_eq!(VolumeMode::from_index(3), None);
+        assert_eq!(
+            ActivationLimits::RESIDENT.volume_cell_threshold(0),
+            u64::MAX
+        );
+    }
+
+    #[test]
     fn activation_limits_validate_ranges_and_budget_below_threshold() {
         let field = |limits: ActivationLimits| match limits.validate() {
             Ok(()) => String::new(),
@@ -947,12 +1263,14 @@ mod tests {
             surface_triangles: 1_000_000,
             surface_budget: 100_000,
             volume_cells: 1_000_000,
+            ..ActivationLimits::DEFAULT
         };
         assert_eq!(field(lowest), "");
         let highest = ActivationLimits {
             surface_triangles: 2_000_000_000,
             surface_budget: 20_000_000,
             volume_cells: 10_000_000_000,
+            ..ActivationLimits::DEFAULT
         };
         assert_eq!(field(highest), "");
         let cases = [

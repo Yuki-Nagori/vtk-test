@@ -16,7 +16,7 @@ Rust 2024 edition 随 Rust 1.85.0 发布；这只是 edition 的起点，不代�
 - crate 名使用 `panta-` 前缀，模块/函数 `snake_case`、类型 `PascalCase`。默认使用 rustfmt；workspace 内 Clippy 以 `cargo clippy --locked --workspace --all-targets -- -D warnings` 运行，warning 直接失败。第三方源码不纳入本项目 lint。
 - 领域库用结构化 `Result`，在应用边界补充上下文；不在正常输入、文件读写和协议处理路径使用 `unwrap`/`expect` 代替错误处理。
 - ID 使用 newtype；持久化 DTO 和内存领域对象分离。文件路径采用 `Path`/`PathBuf`，不假定操作系统路径一定能无损转成 UTF-8 字符串。
-- `unsafe` 集中在边界模块，每处注明安全前提、所有者和线程条件。workspace 默认 `unsafe_code = "deny"`；当前登记的 allow 仅包括 CXX 桥接生成胶水、`panta-foundation::crash` 专用模块，以及 `panta-mesh::mapped` 只读文件映射模块（task 028，用户决策 2026-10-24：引入 `memmap2`，只封装 `Mmap::map`；只读打开 + 整文件共享锁，Windows 共享模式不给写 / 删除；上层打开时校验长度、头尾与索引，按块校验 zstd 校验和与计数；Unix 外部进程无视建议锁截断文件会触发 SIGBUS 是已登记的残余风险），均不得向业务代码外扩；其他模块需要映射时复用 `MappedFile`，不另开 unsafe。新增手写 unsafe 需专用模块并逐块写 `// SAFETY:`。不得为了通过类型检查无依据实现 `Send`/`Sync`。
+- `unsafe` 集中在边界模块，每处注明安全前提、所有者和线程条件。workspace 默认 `unsafe_code = "deny"`；当前登记的 allow 仅包括 CXX 桥接生成胶水、`panta-foundation::crash` 专用模块，以及 `panta-mesh::mapped` 只读文件映射模块（task 028，用户决策 2026-10-24：引入 `memmap2`，只封装 `Mmap::map`，只用于分块按需读，完整驻留模式不映射；只读映射在文件被修改或截断时是 UB 风险；只读打开 + 整文件共享锁，Windows 共享模式不给写 / 删除；上层打开时校验长度、头尾与索引，按块校验 zstd 校验和与计数；Unix 外部进程无视建议锁截断文件会触发 SIGBUS 是已登记的残余风险），均不得向业务代码外扩；其他模块需要映射时复用 `MappedFile`，不另开 unsafe。新增手写 unsafe 需专用模块并逐块写 `// SAFETY:`。不得为了通过类型检查无依据实现 `Send`/`Sync`。
 - 大型数据使用明确所有者和借用/共享策略；`Arc` 解决共享所有权，不自动保证内部修改安全。异步运行时是否引入由具体任务决定，不先堆叠多套 runtime。
 - panic 不作为业务错误；FFI 捕获策略依赖 panic 配置，`panic=abort` 不可由 `catch_unwind` 恢复。引擎隔离依靠外部进程，不能靠捕获 panic 承诺所有故障可恢复。
 - 单元测试留在被测 `.rs` 的 `#[cfg(test)]` 模块中以访问私有项；公共 API 的黑盒/跨模块测试放根 `tests/rust/` 并由所属 crate 的 `[[test]]` 注册。根跨语言聚合测试放 `tests/integration/`，具体见[测试规范](testing.md)。

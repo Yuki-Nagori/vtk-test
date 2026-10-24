@@ -6,7 +6,10 @@ panta_native_defaults(panta_qt_adapter)
 target_sources(
   panta_qt_adapter
   PRIVATE include/panta/qt_adapter/standard_paths.hpp
-          include/panta/qt_adapter/system_motion_preference.hpp src/standard_paths.cpp
+          include/panta/qt_adapter/system_memory.hpp
+          include/panta/qt_adapter/system_motion_preference.hpp
+          src/standard_paths.cpp
+          src/system_memory.cpp
           src/system_motion_preference.cpp)
 target_include_directories(panta_qt_adapter PUBLIC include)
 target_link_libraries(panta_qt_adapter PUBLIC Qt6::Core)

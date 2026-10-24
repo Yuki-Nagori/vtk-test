@@ -18,7 +18,9 @@ mod volume;
 
 use std::fmt::{Display, Formatter};
 
-pub use build::{ChunkBuildOptions, ChunkBuildSummary, TetSource, build_chunked_volume};
+pub use build::{
+    ChunkBuildOptions, ChunkBuildSummary, TetSource, build_chunked_from_asset, build_chunked_volume,
+};
 pub use cache::{ChunkCache, Prefetcher};
 pub use format::{
     ChunkBytes, ChunkCells, ChunkHeader, ChunkReadMode, ChunkSource, FileChunkSource, IoCounts,

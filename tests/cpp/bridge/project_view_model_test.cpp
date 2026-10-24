@@ -728,23 +728,48 @@ TEST(ProjectViewModelTest, LargeMeshLimitsPersistAndFallBackToDefaults) {
     EXPECT_EQ(defaultTriangles, 20'000'000.0);
     EXPECT_EQ(defaultBudget, 2'000'000.0);
     EXPECT_EQ(defaultCells, 10'000'000.0);
+    EXPECT_EQ(model.volumeMode(), 0);
+    EXPECT_EQ(model.chunkCacheMib(), 1024.0);
 
     QSignalSpy changed(&model, &ProjectViewModel::largeMeshLimitsChanged);
-    ASSERT_TRUE(model.setLargeMeshLimits(30'000'000.0, 3'000'000.0, 50'000'000.0));
+    ASSERT_TRUE(model.setLargeMeshLimits(30'000'000.0, 3'000'000.0, 50'000'000.0, 1, 4096.0));
     EXPECT_EQ(changed.count(), 1);
     // 预算不低于阈值、非整数与超范围都在 Rust/适配层被拒绝，原设置不变。
-    EXPECT_FALSE(model.setLargeMeshLimits(30'000'000.0, 30'000'000.0, 50'000'000.0));
+    EXPECT_FALSE(model.setLargeMeshLimits(30'000'000.0, 30'000'000.0, 50'000'000.0, 1, 4096.0));
     EXPECT_EQ(model.errorCode(), QStringLiteral("project.lod_settings_invalid"));
-    EXPECT_FALSE(model.setLargeMeshLimits(30'000'000.5, 3'000'000.0, 50'000'000.0));
-    EXPECT_FALSE(model.setLargeMeshLimits(30'000'000.0, 3'000'000.0, 1.0));
+    EXPECT_FALSE(model.setLargeMeshLimits(30'000'000.5, 3'000'000.0, 50'000'000.0, 1, 4096.0));
+    EXPECT_FALSE(model.setLargeMeshLimits(30'000'000.0, 3'000'000.0, 1.0, 1, 4096.0));
     EXPECT_EQ(model.lodActivationTriangles(), 30'000'000.0);
     EXPECT_EQ(model.volumeStreamCells(), 50'000'000.0);
+    // 体网格模式与块缓存预算（task 028）：未知模式、负数与超范围预算被拒绝。
+    EXPECT_FALSE(model.setLargeMeshLimits(30'000'000.0, 3'000'000.0, 50'000'000.0, 3, 4096.0));
+    EXPECT_EQ(model.errorDetail(), QStringLiteral("volume_mode"));
+    EXPECT_FALSE(model.setLargeMeshLimits(30'000'000.0, 3'000'000.0, 50'000'000.0, -1, 4096.0));
+    EXPECT_FALSE(model.setLargeMeshLimits(30'000'000.0, 3'000'000.0, 50'000'000.0, 1, 32.0));
+    EXPECT_EQ(model.errorDetail(), QStringLiteral("chunk_cache_mib"));
+    EXPECT_EQ(model.volumeMode(), 1);
+    EXPECT_EQ(model.chunkCacheMib(), 4096.0);
 
     {
         ProjectViewModel restored;
         EXPECT_EQ(restored.lodActivationTriangles(), 30'000'000.0);
         EXPECT_EQ(restored.lodBudgetTriangles(), 3'000'000.0);
         EXPECT_EQ(restored.volumeStreamCells(), 50'000'000.0);
+        EXPECT_EQ(restored.volumeMode(), 1);
+        EXPECT_EQ(restored.chunkCacheMib(), 4096.0);
+    }
+    {
+        // task 026 写出的文件没有模式与块缓存键：其余设置生效，这两项取默认值。
+        QSettings settings(file, QSettings::IniFormat);
+        settings.remove(QStringLiteral("large_mesh/volume_mode"));
+        settings.remove(QStringLiteral("large_mesh/chunk_cache_mib"));
+        settings.sync();
+    }
+    {
+        ProjectViewModel legacy;
+        EXPECT_EQ(legacy.volumeStreamCells(), 50'000'000.0);
+        EXPECT_EQ(legacy.volumeMode(), 0);
+        EXPECT_EQ(legacy.chunkCacheMib(), 1024.0);
     }
 
     {

@@ -281,6 +281,57 @@ pub fn build_chunked_volume<W: Write>(
     }))
 }
 
+/// 从 v3 体网格资产构建分块文件（task 028 派生缓存）：节点、单元、边界各顺序读一遍，
+/// 驻留紧凑数组（约 20 B / 单元 + 24 B / 节点）后分块。峰值约为单元数 × 40 B 加节点数组，
+/// 远小于完整驻留（约 190 B / 单元）；完全不驻留的构建属于候选 task“超大体文件流式导入”。
+/// 进度：读取占 0..0.3，分块占 0.3..1（使用调用方进度的默认窗口）。取消返回 `Ok(None)`。
+pub fn build_chunked_from_asset<W: Write>(
+    asset: &mut crate::VolumeAssetChunks,
+    options: ChunkBuildOptions,
+    sink: W,
+    progress: &crate::Progress,
+) -> Result<Option<ChunkBuildSummary>, ChunkError> {
+    let asset_error = |error: crate::MeshAssetError| ChunkError::Format(error.to_string());
+    let counts = asset.counts();
+    let Some(nodes) = asset
+        .read_nodes(Some((progress, 0.0, 0.05)))
+        .map_err(asset_error)?
+    else {
+        return Ok(None);
+    };
+    let mut tets = Vec::new();
+    tets.try_reserve_exact(counts.tets)
+        .map_err(|_| ChunkError::Invalid("not enough memory for the tet array".to_owned()))?;
+    let finished = asset
+        .visit_tets(Some((progress, 0.05, 0.25)), |batch| {
+            for chunk in batch {
+                tets.extend_from_slice(chunk);
+            }
+            !progress.is_cancelled()
+        })
+        .map_err(asset_error)?;
+    if !finished {
+        return Ok(None);
+    }
+    let Some(boundary) = asset
+        .read_boundary(Some((progress, 0.25, 0.3)))
+        .map_err(asset_error)?
+    else {
+        return Ok(None);
+    };
+    let mesh = TetMesh {
+        nodes,
+        tets,
+        boundary,
+        region_count: counts.region_count,
+        boundary_group_count: counts.boundary_group_count,
+    };
+    progress.set_window(0.3, 1.0);
+    let result = build_chunked_volume(&mesh, options, sink, progress);
+    progress.set_window(0.0, 1.0);
+    result
+}
+
 fn centroids(source: &dyn TetSource) -> Vec<Item> {
     let count = source.tet_count();
     let mut items = vec![

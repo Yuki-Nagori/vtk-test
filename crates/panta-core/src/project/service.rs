@@ -31,6 +31,8 @@ pub struct ProjectService {
     pub(super) volume_meshes: HashMap<String, Arc<panta_mesh::TetMesh>>,
     /// 流式激活的体网格（task 025）：单元不驻留，按需从资产读取；值为资产计数。
     pub(super) streamed_volumes: HashMap<String, panta_mesh::VolumeStreamCounts>,
+    /// 流式体网格的派生分块文件（task 028）：切面与质量按需读块。
+    pub(super) chunked_volumes: HashMap<String, std::sync::Arc<panta_mesh::chunked::ChunkedVolume>>,
     pub(super) activation: Arc<crate::activation::ActivationCoordinator>,
     // 候选提交期间锁住工程元数据；Mesh 驻留和只读显示操作仍可继续。
     pub(super) pending_project: Option<super::command_job::PendingProjectOperation>,
@@ -94,6 +96,7 @@ impl ProjectService {
         self.mesh_lod_sources.clear();
         self.volume_meshes.clear();
         self.streamed_volumes.clear();
+        self.chunked_volumes.clear();
         self.activation_attempts.clear();
         self.activation.advance_generation();
         self.reset_document_workspace();
@@ -254,21 +257,35 @@ impl ProjectService {
         Ok(asset.relative_path.clone())
     }
 
-    /// 请求取消一次在飞激活；`Cancelled` 终态由 worker 在安全检查点确认。
     /// 校验并替换大网格设置（task 026）；只影响之后的激活，已驻留文档不重算。
+    /// 块缓存预算（task 028）立即作用于已打开的分块体网格（超出部分按 LRU 淘汰）。
     pub fn set_activation_limits(
         &mut self,
         limits: crate::activation::ActivationLimits,
     ) -> Result<(), ProjectError> {
         limits.validate()?;
         self.activation.set_limits(limits);
+        for volume in self.chunked_volumes.values() {
+            volume.cache().set_budget(limits.chunk_cache_bytes());
+        }
         Ok(())
+    }
+
+    /// 宿主报告的可用物理内存（B，0 表示未知），用于“按可用内存自动”与派生分块构建（task 028）。
+    pub fn set_available_memory(&mut self, bytes: u64) {
+        self.activation.set_available_memory(bytes);
+    }
+
+    /// 派生分块缓存目录（task 028）；`None` 时超过阈值的体网格逐次流式扫描。
+    pub fn set_derived_chunk_dir(&mut self, directory: Option<std::path::PathBuf>) {
+        self.activation.set_derived_dir(directory);
     }
 
     pub fn activation_limits(&self) -> crate::activation::ActivationLimits {
         self.activation.limits()
     }
 
+    /// 请求取消一次在飞激活；`Cancelled` 终态由 worker 在安全检查点确认。
     pub fn cancel_asset_activation(&mut self, attempt: u64) -> bool {
         self.activation.cancel(attempt)
     }

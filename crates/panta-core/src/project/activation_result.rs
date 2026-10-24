@@ -41,6 +41,15 @@ impl ProjectService {
                         self.streamed_volumes.remove(&outcome.import_id);
                     }
                 }
+                match outcome.chunked_volume.take() {
+                    Some(chunks) => {
+                        self.chunked_volumes
+                            .insert(outcome.import_id.clone(), chunks);
+                    }
+                    None => {
+                        self.chunked_volumes.remove(&outcome.import_id);
+                    }
+                }
                 match outcome.volume.take() {
                     Some(volume) => {
                         self.volume_meshes.insert(outcome.import_id.clone(), volume);
@@ -128,6 +137,7 @@ mod tests {
             lod_source_triangles: 0,
             volume: None,
             streamed_volume: None,
+            chunked_volume: None,
         }
     }
 
