@@ -357,10 +357,13 @@ pub mod bridge {
             path: &str,
             progress: &TaskProgress,
         ) -> ProjectDiagnostic;
-        /// 体网格轴向切面显示坐标；后台线程调用，取消时 ready 为假且无错误。
+        /// 体网格任意平面切面显示坐标；法向在 Rust 侧单位化，`fraction` 为法向投影区间位置。
+        /// 后台线程调用，取消时 ready 为假且无错误。
         fn section_mesh_display(
             input: Box<MeshDisplayInput>,
-            axis: u32,
+            normal_x: f64,
+            normal_y: f64,
+            normal_z: f64,
             fraction: f64,
             progress: &TaskProgress,
         ) -> AnimationFrameResult;

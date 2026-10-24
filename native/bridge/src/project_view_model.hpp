@@ -12,6 +12,7 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
+#include <array>
 #include <functional>
 #include <optional>
 #include <panta/visualization/mesh_source.hpp>
@@ -83,7 +84,9 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     Q_PROPERTY(bool volumeAvailable READ volumeAvailable NOTIFY volumeChanged)
     Q_PROPERTY(QString volumeInfo READ volumeInfo NOTIFY volumeChanged)
     Q_PROPERTY(bool sectionActive READ sectionActive NOTIFY volumeChanged)
-    Q_PROPERTY(int sectionAxis READ sectionAxis NOTIFY volumeChanged)
+    Q_PROPERTY(double sectionNormalX READ sectionNormalX NOTIFY volumeChanged)
+    Q_PROPERTY(double sectionNormalY READ sectionNormalY NOTIFY volumeChanged)
+    Q_PROPERTY(double sectionNormalZ READ sectionNormalZ NOTIFY volumeChanged)
     Q_PROPERTY(double sectionFraction READ sectionFraction NOTIFY volumeChanged)
 
   public:
@@ -241,12 +244,16 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     [[nodiscard]] bool animationPlaying() const { return m_animationPlaying; }
     [[nodiscard]] int animationFps() const { return m_animationFps; }
     [[nodiscard]] QString animationStatus() const;
-    /// 体网格单切面（task 021）：只替换视口显示，不写工程、不生成资产。
-    Q_INVOKABLE bool setSection(bool enabled, int axis, double fraction);
+    /// 体网格单切面（task 021/024）：平面由法向 (nx, ny, nz) 和沿法向投影区间的 0..1 位置确定；
+    /// 只替换视口显示，不写工程、不生成资产。启用时零法向或非有限值被拒绝。
+    Q_INVOKABLE bool setSection(bool enabled, double normalX, double normalY, double normalZ,
+                                double fraction);
     [[nodiscard]] bool volumeAvailable() const { return m_volumeAvailable; }
     [[nodiscard]] QString volumeInfo() const { return m_volumeInfo; }
     [[nodiscard]] bool sectionActive() const { return m_sectionActive; }
-    [[nodiscard]] int sectionAxis() const { return m_sectionAxis; }
+    [[nodiscard]] double sectionNormalX() const { return m_sectionNormal[0]; }
+    [[nodiscard]] double sectionNormalY() const { return m_sectionNormal[1]; }
+    [[nodiscard]] double sectionNormalZ() const { return m_sectionNormal[2]; }
     [[nodiscard]] double sectionFraction() const { return m_sectionFraction; }
 
   signals:
@@ -358,7 +365,7 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     bool m_volumeAvailable = false;
     QString m_volumeInfo;
     bool m_sectionActive = false;
-    int m_sectionAxis = 2;
+    std::array<double, 3> m_sectionNormal{0.0, 0.0, 1.0};
     double m_sectionFraction = 0.5;
     std::optional<rust::Box<panta::ffi::AnimationSequence>> m_animation;
     QTimer m_animationPoll;

@@ -41,36 +41,41 @@ pub fn volume_quality(volume: &TetMesh, progress: &Progress) -> Option<TetQualit
     panta_mesh::tet_quality(volume, progress)
 }
 
-/// 轴向单平面切面显示网格；`axis` 为 0/1/2，`fraction` 为沿轴包围盒的 0..=1 位置。
+/// 任意单平面切面显示网格（task 024）。`normal` 为平面法向（内部单位化），
+/// `fraction` 为体网格节点在法向上投影区间的 0..=1 位置；轴向切面即法向取坐标轴。
 /// 只用于显示，不生成新的网格资产；取消返回 `Ok(None)`。
-pub fn section_along_axis(
+pub fn section_plane(
     volume: &TetMesh,
-    axis: usize,
+    normal: [f64; 3],
     fraction: f64,
     progress: &Progress,
 ) -> Result<Option<SurfaceMesh>, ProjectError> {
-    if axis > 2 || !fraction.is_finite() {
+    let length = normal.iter().map(|value| value * value).sum::<f64>().sqrt();
+    if !length.is_finite() || length == 0.0 || !fraction.is_finite() {
         return Err(ProjectError::CommandInvalid(
-            "section axis or position is invalid".to_owned(),
+            "section normal or position is invalid".to_owned(),
         ));
     }
-    let (low, high) = volume
-        .nodes
-        .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), point| {
-            (low.min(point[axis]), high.max(point[axis]))
-        });
-    let mut origin = [0.0; 3];
-    origin[axis] = low + (high - low) * fraction.clamp(0.0, 1.0);
-    let mut normal = [0.0; 3];
-    normal[axis] = 1.0;
+    let normal = normal.map(|value| value / length);
+    let project =
+        |point: &[f64; 3]| point[0] * normal[0] + point[1] * normal[1] + point[2] * normal[2];
+    let (low, high) =
+        volume
+            .nodes
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), point| {
+                let offset = project(point);
+                (low.min(offset), high.max(offset))
+            });
+    let offset = low + (high - low) * fraction.clamp(0.0, 1.0);
+    let origin = normal.map(|value| value * offset);
     panta_mesh::section_surface(volume, origin, normal, progress)
         .map_err(|error| ProjectError::CommandInvalid(error.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{export_tet_mesh_vtu, section_along_axis, volume_quality};
+    use super::{export_tet_mesh_vtu, section_plane, volume_quality};
     use crate::project::{ProjectError, ProjectService, temp_directory};
     use panta_mesh::Progress;
     use std::path::PathBuf;
@@ -101,16 +106,23 @@ mod tests {
         let quality = volume_quality(&volume, &progress).ok_or("quality cancelled")?;
         assert_eq!(quality.tet_count, volume.tets.len());
         assert!(quality.min_dihedral_degrees > 0.0);
-        let section = section_along_axis(&volume, 2, 0.5, &progress)?.ok_or("section cancelled")?;
+        let section =
+            section_plane(&volume, [0.0, 0.0, 1.0], 0.5, &progress)?.ok_or("section cancelled")?;
         assert!(!section.triangles.is_empty());
+        for normal in [[0.0, 0.0, 0.0], [f64::NAN, 0.0, 1.0]] {
+            assert!(matches!(
+                section_plane(&volume, normal, 0.5, &progress),
+                Err(ProjectError::CommandInvalid(_))
+            ));
+        }
         assert!(matches!(
-            section_along_axis(&volume, 3, 0.5, &progress),
+            section_plane(&volume, [0.0, 0.0, 1.0], f64::NAN, &progress),
             Err(ProjectError::CommandInvalid(_))
         ));
         let cancelled = Progress::new();
         cancelled.cancel();
         assert!(volume_quality(&volume, &cancelled).is_none());
-        assert!(section_along_axis(&volume, 0, 0.5, &cancelled)?.is_none());
+        assert!(section_plane(&volume, [1.0, 0.0, 0.0], 0.5, &cancelled)?.is_none());
         let out = fixture_dir.root.join("out.vtu");
         assert!(matches!(
             export_tet_mesh_vtu(&volume, &out, &cancelled),
@@ -169,6 +181,66 @@ mod tests {
             .volume_for_import(&record.id)
             .ok_or("volume lost")?;
         assert_eq!(reopened_volume.tets.len(), volume.tets.len());
+        Ok(())
+    }
+
+    #[test]
+    fn oblique_section_matches_axis_section_and_keeps_the_negative_side()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture_dir = temp_directory::Fixture::new()?;
+        let mut service = ProjectService::new();
+        service.create(&fixture_dir.root, "Section")?;
+        let record = service.import_stl(
+            &fixture("tet_ball_ascii.vtu"),
+            "solid-3d",
+            "millimeters",
+            false,
+        )?;
+        let volume = service
+            .volume_for_import(&record.id)
+            .ok_or("volume missing")?;
+        let progress = Progress::new();
+
+        // 轴向法向：与按 Z 包围盒直接构造的平面完全一致，且法向长度不影响结果。
+        let (low, high) = volume
+            .nodes
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), point| {
+                (low.min(point[2]), high.max(point[2]))
+            });
+        let origin = [0.0, 0.0, low + (high - low) * 0.3];
+        let expected = panta_mesh::section_surface(&volume, origin, [0.0, 0.0, 1.0], &progress)?
+            .ok_or("section cancelled")?;
+        let axis =
+            section_plane(&volume, [0.0, 0.0, 1.0], 0.3, &progress)?.ok_or("section cancelled")?;
+        let scaled =
+            section_plane(&volume, [0.0, 0.0, 2.5], 0.3, &progress)?.ok_or("section cancelled")?;
+        assert_eq!(axis, expected);
+        assert_eq!(scaled, expected);
+
+        // 斜法向：所有顶点位于平面的负侧（含平面），且切口顶点落在平面上。
+        let normal = [1.0 / 2f64.sqrt(), 1.0 / 2f64.sqrt(), 0.0];
+        let (low, high) =
+            volume
+                .nodes
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), point| {
+                    let offset = point[0] * normal[0] + point[1] * normal[1];
+                    (low.min(offset), high.max(offset))
+                });
+        let offset = low + (high - low) * 0.5;
+        let oblique =
+            section_plane(&volume, [1.0, 1.0, 0.0], 0.5, &progress)?.ok_or("section cancelled")?;
+        assert!(!oblique.triangles.is_empty());
+        let mut on_plane = 0usize;
+        for vertex in oblique.triangles.iter().flatten() {
+            let signed = vertex[0] * normal[0] + vertex[1] * normal[1] - offset;
+            assert!(signed <= 1e-9, "{signed}");
+            if signed.abs() <= 1e-9 {
+                on_plane += 1;
+            }
+        }
+        assert!(on_plane > 0);
         Ok(())
     }
 }
