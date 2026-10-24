@@ -46,9 +46,9 @@ panta/
 │   ├── mesh/{include,src/netgen}/         # 当前：native 网格 DTO、CXX 校验适配与 Netgen adapter
 │   └── visualization/{include,src/vtk}/   # 当前：显示契约与 VTK 后端（含 navigation/）
 ├── qml/
-│   ├── App.qml                # 最小工具栏、资产列表与视口工作台
+│   ├── App.qml                # 工作台装配：工具栏、左栏、视口列、底部面板与状态栏
 │   ├── Components/
-│   ├── Panels/                # ViewportPane：文档页签与 VTK 装配
+│   ├── Panels/                # 视口、播放栏、左栏、底部面板、工具栏与状态栏
 │   ├── Dialogs/               # NewProjectDialog、ImportDialog
 │   └── Themes/                # Theme 单例
 ├── schemas/                   # 规划：本地工程与结果导入格式契约

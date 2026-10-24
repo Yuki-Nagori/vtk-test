@@ -1,6 +1,6 @@
 // 统一播放工具栏（task 033）：对照 ParaView 的 VCR 控件——首帧、上一帧、播放 / 暂停、
 // 下一帧、末帧、循环、帧率与时间轴。来源为时序动画序列（task 020）或结果场时间步；
-// 位于视口下方，不遮挡渲染。
+// 位于视口下方，不遮挡渲染；无播放源时显示为禁用细条（034 Q6），避免视口高度跳动。
 pragma ComponentBehavior: Bound
 
 import QtQuick
@@ -15,17 +15,18 @@ PanelSurface {
     readonly property int lastFrame: active ? Math.max(0, model.playbackFrameCount - 1) : 0
 
     implicitHeight: content.implicitHeight + Theme.spacingSmall * 2
-    visible: active || (model !== null && model.playbackUnavailable.length > 0)
+    visible: model !== null
 
-    ColumnLayout {
+    RowLayout {
         id: content
         anchors.fill: parent
         anchors.margins: Theme.spacingSmall
         spacing: 2
 
         RowLayout {
+            objectName: "playbackControls"
             Layout.fillWidth: true
-            visible: bar.active
+            enabled: bar.active
             spacing: 2
             // 图标为 Lucide SVG（task 035，Q9）；不依赖系统字体里的 ⏮⏭⏸ 字形。
             ThemedToolButton {
@@ -72,6 +73,7 @@ PanelSurface {
             Slider {
                 objectName: "playbackFrameSlider"
                 Layout.fillWidth: true
+                visible: bar.active
                 from: 0
                 to: bar.lastFrame
                 stepSize: 1
@@ -82,12 +84,14 @@ PanelSurface {
             }
             Label {
                 objectName: "playbackTimeLabel"
+                visible: bar.active
                 text: bar.active ? bar.model.playbackTimeLabel : ""
                 elide: Text.ElideRight
                 Layout.maximumWidth: 200
             }
             SpinBox {
                 objectName: "playbackFpsSpin"
+                visible: bar.active
                 from: 1
                 to: 60
                 editable: true
@@ -103,7 +107,7 @@ PanelSurface {
             objectName: "playbackStatus"
             Layout.fillWidth: true
             visible: !bar.active
-            text: !bar.active && bar.model !== null ? bar.model.playbackUnavailable : ""
+            text: bar.active || bar.model === null ? "" : bar.model.playbackUnavailable.length > 0 ? bar.model.playbackUnavailable : "无播放源：打开动画序列或带时间步的结果后可播放"
             color: Theme.colorTextMuted
             font.pixelSize: Theme.fontSmall
             elide: Text.ElideRight

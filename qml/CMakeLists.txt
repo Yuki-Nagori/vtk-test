@@ -28,6 +28,7 @@ set(PANTA_SHELL_QML_FILES
     Panels/BottomPanel.qml
     Panels/PlaybackBar.qml
     Panels/ViewportPane.qml
+    Panels/WorkbenchSidebar.qml
     Panels/WorkbenchStatusBar.qml
     Panels/WorkbenchToolBar.qml
     Themes/Theme.qml)

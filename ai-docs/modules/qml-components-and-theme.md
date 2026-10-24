@@ -4,9 +4,9 @@
 
 ## 当前工作台
 
-`qml/App.qml` 组装工作台：顶部 `WorkbenchToolBar`（图标 + tooltip 分组：工程 | 导入 / 导出 | 视图预设 复位 | 切面 | 截图）、左侧模型资产与属性、中央视口列（页签、视口、播放栏）与其下可折叠的 `BottomPanel`（诊断 / 消息 / 任务），底部 `WorkbenchStatusBar` 单行显示消息、拾取读数、单位、LOD / 流式状态、时间步与后台任务进度。底部面板高度与折叠状态由 Bridge `Settings` 写入用户设置，不进工程（task 036）。`ProjectViewModel` 是工程快照和异步结果的 Qt 投影；QML 不维护第二份已提交工程状态。当前布局与启用条件以源码和真实窗口验收为准。
+`qml/App.qml` 组装工作台：顶部 `WorkbenchToolBar`（图标 + tooltip 分组：工程 | 导入 / 导出 | 视图预设 复位 | 切面 | 截图）、左侧 `WorkbenchSidebar`（标题行 + 纵向 `SplitView`：上为模型资产列表，下为属性面板容器；可拖动宽度 260–480 px，可折叠为只含展开按钮的窄轨）、中央视口列（视口上方页签、视口、视口下方播放栏；无播放源时播放栏为禁用细条）与其下可折叠的 `BottomPanel`（诊断 / 消息 / 任务），底部 `WorkbenchStatusBar` 单行显示消息、拾取读数、单位、LOD / 流式状态、时间步与后台任务进度。左栏宽度 / 折叠与底部面板高度 / 折叠由 Bridge `Settings` 写入用户设置，不进工程（task 036）。`ProjectViewModel` 是工程快照和异步结果的 Qt 投影；QML 不维护第二份已提交工程状态。当前布局与启用条件以源码和真实窗口验收为准。
 
-`NewProjectDialog` 管理工程名称与目录候选，`ImportDialog` 管理文件、单位和网格类型候选及预检。确认操作经 ViewModel 进入 Rust；准入、完成和失败分别展示，失败保留已提交资产。`ViewportPane` 组合 `DocumentTabBar` 与 `CaeViewport`，页签和活动资产由 Rust 文档工作区提供，VTK 管理原生显示。初始、创建及重开工程均不创建默认文档；关闭最后一个资产页签后恢复空视口。
+`NewProjectDialog` 管理工程名称与目录候选，`ImportDialog` 管理文件、单位和网格类型候选及预检。确认操作经 ViewModel 进入 Rust；准入、完成和失败分别展示，失败保留已提交资产。`ViewportPane` 自上而下组合 `DocumentTabBar` 与 `CaeViewport`；原生视口压在 Qt Quick 之上，视口矩形内不叠放 QML 控件，菜单使用 `Popup.Window`，页签和活动资产由 Rust 文档工作区提供，VTK 管理原生显示。初始、创建及重开工程均不创建默认文档；关闭最后一个资产页签后恢复空视口。
 
 `qml/Themes/Theme.qml` 保留颜色、间距、字号及必要窗口/控件尺寸的只读门面。应用使用系统标题栏；主题值只影响界面，不决定资产身份、网格单位或业务规则。本仓库使用固定 QML 常量，不提供运行期主题切换或外部覆盖配置。
 
@@ -21,10 +21,11 @@
 | 文档组件 | `qml/Components/Composites/DocumentTabBar.qml` | 页签选择、关闭与重排意图；已确认文档状态归 Rust |
 | 弹窗外壳 | `qml/Components/Composites/` | `DialogWindow`、`DialogFrame`、`DialogTitleBar`、`DialogButtonRow` 组合通用窗口结构 |
 | 工程弹窗 | `qml/Dialogs/` | `NewProjectDialog.qml`、`ImportDialog.qml` 的候选输入、预检和确认 |
-| 视口 | `qml/Panels/ViewportPane.qml` | 文档页签、加载状态、诊断与 `CaeViewport` 装配 |
+| 视口 | `qml/Panels/ViewportPane.qml` | 文档页签与 `CaeViewport` 装配 |
+| 工作台面板 | `qml/Panels/` | `WorkbenchToolBar`、`WorkbenchSidebar`、`BottomPanel`、`WorkbenchStatusBar`、`PlaybackBar`；只经属性与信号和 App 交互，不导入 Bridge 的面板也进入无 Bridge 构建 |
 | 工作台 | `qml/App.qml`、`qml/AppNoBridge.qml` | 正常工程入口与无 Bridge 构建的最小资源入口 |
 
-控件可封装 Qt Quick Controls，但应保留焦点、键盘、禁用和可访问性行为。App 的工具栏与资产列表可直接使用 Qt Controls；无需为了统一命名把简单控件再包一层。业务弹窗的输入和按钮按主题组合，职责约束见[QML 规范](../standards/qml.md#原子组件与主题参数项目约定)。
+控件可封装 Qt Quick Controls，但应保留焦点、键盘、禁用和可访问性行为。面板内部可直接使用 Qt Controls；无需为了统一命名把简单控件再包一层。业务弹窗的输入和按钮按主题组合，职责约束见[QML 规范](../standards/qml.md#原子组件与主题参数项目约定)。
 
 原子/组合组件公开语义明确的属性与信号。默认尺寸通过 Theme token 绑定，组合层显式传参数，不通过 parent 链查找业务状态。布局决定分配空间；组件不同时强制互相冲突的 anchors 与固定尺寸，也不用 imperative 赋值覆盖应保持的主题绑定。
 
@@ -42,7 +43,7 @@
 
 Theme 集中定义 spacing、padding、radius、borderWidth、iconSize、fontSize、controlHeight 与 windowMinimumSize 等语义 token。业务几何尺寸和工程单位不属于 Theme；父布局计算出的宽高也不应被错误地改成固定主题尺寸。
 
-界面使用 Qt 逻辑像素，不自行乘 DPR。资产列表分配必要宽度，视口占剩余空间；长工程名、错误文案、中文文案、字体变化和小窗口需要单独检查。页签选择、关闭和重排不得依赖显示名寻址，须保持稳定文档 ID。
+界面使用 Qt 逻辑像素，不自行乘 DPR。左栏宽度取自用户设置并夹在 260–480 px，视口列占剩余空间且保留 `Theme.viewportMinimumWidth` / `viewportMinimumHeight`；长工程名、错误文案、中文文案、字体变化和小窗口需要单独检查。页签选择、关闭和重排不得依赖显示名寻址，须保持稳定文档 ID。
 
 ## 验证与后续组件整理
 

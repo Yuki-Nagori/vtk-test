@@ -39,7 +39,7 @@
 | 033 | [播放控制与时序结果场](task/033-playback-time-series-results.md) | done |
 | 034 | [UI 重制：现状评估与设计方案](task/034-ui-redesign.md) | in-progress |
 | 035 | [UI 重制阶段 0：现状缺陷修复（不改布局）](task/035-ui-stage0-defect-fixes.md) | implemented |
-| 036 | [UI 重制阶段 1：布局骨架](task/036-ui-stage1-layout-skeleton.md) | in-progress |
+| 036 | [UI 重制阶段 1：布局骨架](task/036-ui-stage1-layout-skeleton.md) | implemented |
 | 037 | [UI 重制阶段 2：对象树与上下文属性面板](task/037-ui-stage2-object-tree.md) | planned |
 | 038 | [UI 重制阶段 3：视口内色标与空状态](task/038-ui-stage3-viewport-legend.md) | planned |
 | 039 | [UI 重制阶段 4：视觉规范落地](task/039-ui-stage4-visual-spec.md) | planned |

@@ -27,6 +27,17 @@ PanelSurface {
         anchors.fill: parent
         spacing: 0
 
+        // 页签在视口上方（task 036）；视口矩形内不叠放任何 QML 控件。
+        DocumentTabBar {
+            objectName: "documentTabBar"
+            Layout.fillWidth: true
+            documents: panel.meshSource ? panel.meshSource.openDocuments : []
+            activeDocumentId: panel.meshSource ? panel.meshSource.activeDocumentId : ""
+            reducedMotion: panel.reducedMotion
+            onActivateDocument: documentId => panel.meshSource.activateDocument(documentId)
+            onCloseDocument: documentId => panel.meshSource.closeDocument(documentId)
+            onMoveDocument: (fromIndex, toIndex) => panel.meshSource.moveDocument(fromIndex, toIndex)
+        }
         Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -38,17 +49,6 @@ PanelSurface {
                 meshSource: panel.meshSource
                 onPointPicked: (hit, x, y, z, triangle) => panel.pointPicked(hit, x, y, z, triangle)
             }
-        }
-
-        DocumentTabBar {
-            objectName: "documentTabBar"
-            Layout.fillWidth: true
-            documents: panel.meshSource ? panel.meshSource.openDocuments : []
-            activeDocumentId: panel.meshSource ? panel.meshSource.activeDocumentId : ""
-            reducedMotion: panel.reducedMotion
-            onActivateDocument: documentId => panel.meshSource.activateDocument(documentId)
-            onCloseDocument: documentId => panel.meshSource.closeDocument(documentId)
-            onMoveDocument: (fromIndex, toIndex) => panel.meshSource.moveDocument(fromIndex, toIndex)
         }
     }
 }
