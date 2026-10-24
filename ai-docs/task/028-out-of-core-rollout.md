@@ -78,6 +78,7 @@ Windows 附注：他人持排他锁时，Windows 强制锁会让定位读回退�
 | 2026-10-24 | `cargo test --release -p panta-mesh chunked` | 全过 | 10/10 通过（新增 3 个：两实现一致、映射校验、锁冲突回退） |
 | 2026-10-24 | `cargo lint clippy --check`、`cargo format` | 无告警 | 通过 |
 | 2026-10-24 | nightly run 40060731130（027 合入后首次，12:02–12:06 UTC+8） | Windows 编译 `seek_read` 路径并跑小基准 | 成功。Windows 2M：打开 10.1 ms / 2 次读；冷精细 45.7 ms（5 次读）/ 53.3 ms（7 次读）；粗级别 max 3–4 ms；质量 0.15 s（2 次读）。内存在 Windows 上为 N/A |
+| 2026-10-24 | 分支 nightly run 40061488592，之后修复并重跑 run 40061921092（12:19–12:27 UTC+8） | Windows 编译映射模块，跑单测和两种实现的小基准 | 首次失败：锁冲突单测撞上 Windows 强制锁语义，已修。重跑三平台全部成功。Windows 2M（热页缓存）：打开 pread 11.4 ms / 3 次读，mmap 10.7 ms / 0 次读；oblique 冷精细 49.0 → 47.5 ms；axis_z 55.8 → 50.9 ms；拖动读调用 18 / 8 → 0；质量 0.156 → 0.147 s。内存为 N/A |
 | 2026-10-24 | `MALLOC_ARENA_MAX=2 ooc_bench --cells 100M --reuse --reader {pread,mmap} --budget-mib {1024,256}` | 映射不慢于定位读，匿名内存不增 | 见下表；日志 `/workspace/bench/mmap-compare.log`（box 本地，未入库） |
 
 1 亿四面体（99,488,250），文件 0.84 GiB，页缓存热（box 无 root 无法清缓存，冷盘差异未测）：
