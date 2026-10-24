@@ -59,13 +59,13 @@ PR 1 只改 `panta-mesh`（领域库），新增第三方依赖 `memmap2`（MIT/
 | 每块校验 | 每块是带校验和的 zstd 帧，解压后核对节点 / 单元计数；`read_at` 越界返回错误 |
 | 残余风险 | Unix 上不遵守建议锁的外部进程截断文件时，访问已失效页会触发 SIGBUS（进程崩溃）。用户态无法完全消除，已在 rust.md 登记。本项目写入方都写临时文件再 rename，不就地改写已发布文件；PR 2 的派生缓存放在应用缓存目录，同样只 rename 发布 |
 
-Windows 附注：文件映射存在时不能删除或替换该文件。PR 2 重建派生缓存前必须先释放对应的 `ChunkedVolume`。
+Windows 附注：他人持排他锁时，Windows 强制锁会让定位读回退也失败（`ERROR_LOCK_VIOLATION`，os error 33），打开以 IO 错误结束，不会读到半写数据；Unix 建议锁不拦读，自动模式回退定位读。两种行为都由单测按平台断言（nightly Windows 首跑发现，已修）。文件映射存在时不能删除或替换该文件。PR 2 重建派生缓存前必须先释放对应的 `ChunkedVolume`。
 
 ## 验收标准
 
 - [x] `unsafe` 仅在 `panta_mesh::mapped`，模块级 allow，一个 unsafe 块且带 `// SAFETY:`；rust.md 与根 Cargo.toml 注释已登记。
 - [x] 映射与定位读的切面三角形集合、质量统计完全一致（单测）；映射读调用计数为 0。
-- [x] 空文件、坏文件头、截断、块内翻转在两种实现下都被拒绝（单测）；他人持排他锁时自动回退定位读（单测）。
+- [x] 空文件、坏文件头、截断、块内翻转在两种实现下都被拒绝（单测）；他人持排他锁时映射拒绝打开：Unix 自动回退定位读，Windows 因强制锁以 IO 错误失败（单测按平台断言，nightly Windows 验证）。
 - [x] `ooc_bench --reader` 在 1 亿四面体下对比延迟、读调用、内存（见下表）；nightly Windows 小基准两种实现都跑。
 - [ ] PR 2：应用接入与设置（待做）。
 
@@ -115,6 +115,7 @@ Windows 附注：文件映射存在时不能删除或替换该文件。PR 2 重�
 
 ## 决策与工作记录
 
+- 2026-10-24：分支 nightly run 40061488592 的 Windows 跑出锁冲突单测失败。原因是 Windows 强制锁也拒绝定位读，属于预期语义，单测改为按平台断言。
 - 2026-10-24：创建任务。PR 1：新增依赖 memmap2 0.9.12；unsafe 例外登记在 `panta_mesh::mapped`。`ChunkSource` 返回零拷贝 `ChunkBytes`，映射实现对合并区段做 `madvise(WILLNEED)`（仅 Unix）。打开新增文件头校验，定位读的打开读调用从 2 次变为 3 次（文件 > 1 MiB 时）。nightly 小基准改为 pread + mmap 两次运行。027 合入后首次 nightly（run 40060731130）Windows 成功。
 
 ## 完成摘要

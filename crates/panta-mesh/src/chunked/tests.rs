@@ -331,12 +331,17 @@ fn exclusive_lock_forces_positioned_read_fallback() -> Result<(), Box<dyn Error>
     use super::ChunkReadMode;
     let block = SyntheticTetBlock::with_cells_per_axis(4);
     let file = TempFile::new("locked", &build(&block, 100)?)?;
-    // 另一句柄持有排他锁（模拟写入方）：映射拒绝打开，自动模式回退定位读。
+    // 另一句柄持有排他锁（模拟写入方）：映射拒绝打开。Unix 建议锁不拦读，自动模式回退定位读；
+    // Windows 排他锁是强制锁，定位读也被拒（ERROR_LOCK_VIOLATION），打开以 IO 错误失败而不是读到半写数据。
     let writer = std::fs::OpenOptions::new().read(true).open(&file.0)?;
     writer.lock()?;
     assert!(ChunkedVolume::open_file_with(&file.0, 1 << 20, ChunkReadMode::Mmap).is_err());
-    let volume = ChunkedVolume::open_file_with(&file.0, 1 << 20, ChunkReadMode::Auto)?;
-    assert_eq!(volume.reader_kind(), "pread");
+    let fallback = ChunkedVolume::open_file_with(&file.0, 1 << 20, ChunkReadMode::Auto);
+    if cfg!(windows) {
+        assert!(matches!(fallback, Err(ChunkError::Io(_))));
+    } else {
+        assert_eq!(fallback?.reader_kind(), "pread");
+    }
     writer.unlock()?;
     drop(writer);
     let volume = ChunkedVolume::open_file_with(&file.0, 1 << 20, ChunkReadMode::Auto)?;
