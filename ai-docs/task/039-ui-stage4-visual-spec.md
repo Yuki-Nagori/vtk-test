@@ -1,6 +1,6 @@
 # 039 — UI 重制阶段 4：视觉规范落地
 
-- 状态：in-progress
+- 状态：implemented
 - 阶段：UI 重制（[034](034-ui-redesign.md)）
 - 依赖：[038](038-ui-stage3-viewport-legend.md)
 - 优先级：P2
@@ -48,8 +48,8 @@ Shell、app 图标 provider、可视化（颜色图预设）；不新增跨组�
 - [x] `App.qml` 与各组件中没有写死的颜色、字号、间距（`rg` 检查颜色和数值字面量，例外须注明理由）。
 - [x] 每个新图标都有来源、许可、版本和使用位置记录，provider 白名单与打包清单一致，无效 ID 测试通过。
 - [x] 正文和次要文字对比度 ≥ 4.5:1（列出检查值）；焦点环在所有可聚焦控件上可见。
-- [ ] 规范文档与实现一致，无失效描述。
-- [ ] 改动 C++/QML 的 PR 在分支上跑 nightly 并通过；每个 commit 的代码、测试、文档和 task 自洽，索引状态一致。
+- [x] 规范文档与实现一致，无失效描述。
+- [x] 改动 C++/QML 的 PR 在分支上跑 nightly 并通过；每个 commit 的代码、测试、文档和 task 自洽，索引状态一致。
 
 ## 验证计划与结果
 
@@ -77,6 +77,11 @@ Shell、app 图标 provider、可视化（颜色图预设）；不新增跨组�
 - 2026-10-24：颜色图预设 4 个：冷暖（ParaView Cool to Warm，默认，沿用 029）、Viridis（matplotlib，CC0，等距 5 点采样）、彩虹（ParaView Blue to Red Rainbow，CAE 常用）、灰度。034 列举的是「如 Cool to Warm、Viridis、灰度」，加入彩虹是因为 CAE 用户最常用、ParaView 内置；它不是感知均匀色表，默认仍为冷暖。缺失色按预设取（冷暖黄、Viridis 红、彩虹灰、灰度红），保证与色表本身可区分。预设属会话内视图状态（与字段选择一致，不写工程）；切换时复制当前快照只改预设索引，不重算切面。
 - 2026-10-24：对话框统一：四个对话框内容区四边 `dialogContentPadding` 16 px，高度一律随内容收紧（新建工程 / 生成体网格 / 大网格设置原为固定 360 px，删除 `newProjectDialogHeight`）；`DialogFrame` 圆角 6 px + 1 px 边框，标题栏同步圆上角；按钮间距 5 → 8 px 回到栅格。
 
+## 工作日志
+
+- 2026-10-24：PR #61（038）合并为 f1f4c35（23:31，UTC+8）；039 分支 rebase 到该 main 后开 PR。
+- 2026-10-24：039 PR CI 与分支 nightly 通过后合并（合并提交见 040 工作日志）。
+
 ## 完成摘要
 
-未完成。
+已实施：浅色 UI token 与对比度修正（warning #9a5b00）、字号 / 间距 / 控件高度 / 圆角阶梯、状态等级（info / success / warning / error，图标 + 文字）、新增 10 个图标并补齐 Lucide / Feather 许可、4 个颜色图预设（冷暖默认、Viridis、彩虹、灰度）、四个对话框统一内边距与随内容收紧的高度，Theme / 图标 / 组件规范同步。离屏截图见 `/workspace/shots/039/`。CJK 字体与 `tnum`、DPR 1.25–2.0、真实 GPU 颜色图需在目标平台人工确认，确认前状态保持 implemented。

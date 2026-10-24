@@ -42,7 +42,7 @@
 | 036 | [UI 重制阶段 1：布局骨架](task/036-ui-stage1-layout-skeleton.md) | implemented |
 | 037 | [UI 重制阶段 2：对象树与上下文属性面板](task/037-ui-stage2-object-tree.md) | implemented |
 | 038 | [UI 重制阶段 3：视口内色标与空状态](task/038-ui-stage3-viewport-legend.md) | implemented |
-| 039 | [UI 重制阶段 4：视觉规范落地](task/039-ui-stage4-visual-spec.md) | in-progress |
+| 039 | [UI 重制阶段 4：视觉规范落地](task/039-ui-stage4-visual-spec.md) | implemented |
 | 040 | [UI 重制阶段 5：工作流完善](task/040-ui-stage5-workflows.md) | planned |
 | 041 | [预编译 SDK 生产迁入 vtk-test 并开启 RenderingAnnotation](task/041-sdk-production-migration.md) | done |
 
