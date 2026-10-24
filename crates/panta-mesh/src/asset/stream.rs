@@ -5,8 +5,8 @@ use super::{
     CHUNK_ALIGNMENT, ChunkEntry, HEADER_SIZE, Layout, MAGIC, MESH_ASSET_FORMAT_VERSION,
     MILLIMETERS, MeshAssetError, RESULT_KIND, SURFACE_KIND, Stream, TET_KIND, TOC_ENTRY_BYTES,
     TOC_PREFIX_BYTES, align_up, chunk_jobs, chunk_raw, container_encoded_len,
-    decode_surface_records, encode_chunks, parallel_map, parse_layout, read_exact_io, toc_len,
-    worker_count,
+    decode_surface_records, encode_cell_record, encode_chunks, parallel_map, parse_layout,
+    read_exact_io, toc_len, worker_count,
 };
 use crate::{Progress, SurfaceTriangle, Tetrahedron};
 use sha2::{Digest, Sha256};
@@ -72,12 +72,20 @@ pub struct VolumeStreamCounts {
 /// 按下标区间生成体网格记录的数据源；各方法须恰好追加 `range.len()` 条记录。
 pub trait VolumeSource: Sync {
     fn nodes(&self, range: Range<usize>, out: &mut Vec<[f64; 3]>);
+    /// 纯四面体网格的四面体；混合单元源（`counts.cells != counts.tets`）不会被调用。
     fn tets(&self, range: Range<usize>, out: &mut Vec<Tetrahedron>);
     fn boundary(&self, range: Range<usize>, out: &mut Vec<SurfaceTriangle>);
+    /// 混合单元网格（task 030）的原始单元记录：类型、区域、节点（类型节点数之后的槽位忽略）。
+    /// 只在 `counts.cells != counts.tets` 时调用；纯四面体源无需实现。
+    fn cells(&self, range: Range<usize>, out: &mut Vec<CellRecord>) {
+        let _ = (range, out);
+    }
 }
 
-/// 流式写入纯四面体体网格资产（task 025；v4 头部，块布局同 v3）：节点、四面体、边界三角形按块生成并立即写出。
-/// 写入端只做逐记录检查（坐标有限、节点下标 / 区域 / 边界组在范围内）；
+/// 流式写入体网格资产（task 025；v4 头部，纯四面体的块布局同 v3）：节点、单元、边界三角形按块生成并立即写出。
+/// `counts.cells != counts.tets` 时为混合单元资产（task 030）：写 `VolumeCells` 原始单元记录与
+/// `VolumeCellSummary`（拆分四面体数 = `counts.tets`），不写 `VolumeTets`。
+/// 写入端只做逐记录检查（坐标有限、节点下标 / 区域 / 边界组在范围内、混合单元可拆分且拆分总数相符）；
 /// 方向、重复单元等整体校验在完整读取（`MeshAssetReader`）时执行。
 pub fn write_volume_asset_streaming<W: Write + Seek>(
     writer: W,
@@ -85,20 +93,31 @@ pub fn write_volume_asset_streaming<W: Write + Seek>(
     source: &impl VolumeSource,
     progress: Option<&Progress>,
 ) -> Result<Option<(u64, String)>, MeshAssetError> {
+    let mixed = counts.cells != counts.tets;
     if counts.nodes == 0
         || counts.tets == 0
-        || counts.cells != counts.tets
+        || counts.cells == 0
+        || counts.cells > counts.tets
         || u32::try_from(counts.nodes).is_err()
+        || u32::try_from(counts.tets).is_err()
         || counts.region_count == 0
     {
         return Err(MeshAssetError::InvalidMesh);
     }
     let mut jobs = vec![(Stream::VolumeCounts, 0..1)];
     jobs.extend(chunk_jobs(Stream::VolumeNodes, counts.nodes));
-    jobs.extend(chunk_jobs(Stream::VolumeTets, counts.tets));
+    if !mixed {
+        jobs.extend(chunk_jobs(Stream::VolumeTets, counts.tets));
+    }
     jobs.extend(chunk_jobs(Stream::VolumeBoundary, counts.boundary));
+    if mixed {
+        jobs.extend(chunk_jobs(Stream::VolumeCells, counts.cells));
+        jobs.push((Stream::VolumeCellSummary, 0..1));
+    }
     let node_limit = counts.nodes as u32;
-    write_streams(
+    // 混合单元拆分出的四面体总数，写完后与 `counts.tets` 核对。
+    let decomposed = std::sync::atomic::AtomicUsize::new(0);
+    let written = write_streams(
         writer,
         TET_KIND,
         &jobs,
@@ -153,14 +172,41 @@ pub fn write_volume_asset_streaming<W: Write + Seek>(
                     raw.extend_from_slice(&face.group.to_le_bytes());
                 }
             }
-            Stream::SurfaceTriangles
-            | Stream::ResultTable
-            | Stream::ResultValues
-            | Stream::VolumeCells
-            | Stream::VolumeCellSummary => {}
+            Stream::VolumeCells => {
+                let mut cells = Vec::with_capacity(range.len());
+                source.cells(range.clone(), &mut cells);
+                if cells.len() != range.len() {
+                    return;
+                }
+                let mut tets = Vec::new();
+                for &(kind, region, nodes) in &cells {
+                    let nodes = &nodes[..kind.node_count()];
+                    tets.clear();
+                    if region >= counts.region_count
+                        || nodes.iter().any(|&node| node >= node_limit)
+                        || crate::cells::decompose_cell(kind, nodes, &mut tets).is_err()
+                    {
+                        raw.clear();
+                        return;
+                    }
+                    decomposed.fetch_add(tets.len(), std::sync::atomic::Ordering::Relaxed);
+                    encode_cell_record(kind, region, nodes, raw);
+                }
+            }
+            Stream::VolumeCellSummary => {
+                raw.extend_from_slice(&(counts.tets as u64).to_le_bytes());
+            }
+            Stream::SurfaceTriangles | Stream::ResultTable | Stream::ResultValues => {}
         },
         progress,
-    )
+    )?;
+    if mixed
+        && written.is_some()
+        && decomposed.load(std::sync::atomic::Ordering::Relaxed) != counts.tets
+    {
+        return Err(MeshAssetError::InvalidMesh);
+    }
+    Ok(written)
 }
 
 /// 通用流式写出：先占位头部与目录，按批并行编码并写出数据块，最后回填。

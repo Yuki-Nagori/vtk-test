@@ -1,20 +1,24 @@
 //! 分块构建（task 027）：k-d 空间划分 → Morton 排序块 → 并行编码 → 单文件大缓冲顺序写。
+//! v3（task 030）：划分单位是原始单元，混合单元的拆分四面体整体落在同一块。
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
+use std::ops::Range;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 
 use super::cache::parallel_map;
 use super::format::{
-    ChunkCells, ChunkFieldInfo, ChunkHeader, ChunkSurface, ChunkTable, FORMAT_VERSION, FieldBlock,
-    HEAD_LEN, HEAD_MAGIC, VOXELS_PER_AXIS, Writer, compress, encode_cells, encode_surface,
-    encode_table, encode_tail,
+    ChunkCellLayout, ChunkCells, ChunkFieldInfo, ChunkHeader, ChunkSurface, ChunkTable,
+    FORMAT_VERSION, FieldBlock, HEAD_LEN, HEAD_MAGIC, VOXELS_PER_AXIS, Writer, compress,
+    encode_cells, encode_surface, encode_table, encode_tail,
 };
 use super::{ChunkError, worker_count};
 use crate::field_section::{range_key, tuple};
-use crate::{FieldAssociation, ResultField, SurfaceMesh, SurfaceTriangle, TetMesh, Tetrahedron};
+use crate::{
+    CellLayout, FieldAssociation, ResultField, SurfaceMesh, SurfaceTriangle, TetMesh, Tetrahedron,
+};
 
 /// 分块构建的结果场来源（task 029）：逐个加载，构建峰值只多一个场。
 pub trait FieldProvider {
@@ -75,6 +79,7 @@ fn field_info(field: &ResultField) -> ChunkFieldInfo {
 }
 
 /// 随机访问的四面体源：分块构建按下标取节点、单元与边界面，不要求整体驻留。
+/// 混合单元网格（task 030）另给出原始单元布局，四面体为其拆分结果（按原始单元成段排列）。
 pub trait TetSource: Sync {
     fn node_count(&self) -> usize;
     fn tet_count(&self) -> usize;
@@ -82,6 +87,10 @@ pub trait TetSource: Sync {
     fn tet(&self, index: usize) -> Tetrahedron;
     fn boundary_count(&self) -> usize;
     fn boundary_face(&self, index: usize) -> SurfaceTriangle;
+    /// 原始单元布局；纯四面体源为 `None`（原始单元即四面体）。
+    fn cell_layout(&self) -> Option<&CellLayout> {
+        None
+    }
 }
 
 impl TetSource for TetMesh {
@@ -102,6 +111,61 @@ impl TetSource for TetMesh {
     }
     fn boundary_face(&self, index: usize) -> SurfaceTriangle {
         self.boundary[index]
+    }
+    fn cell_layout(&self) -> Option<&CellLayout> {
+        self.cells.as_deref()
+    }
+}
+
+/// 原始单元到拆分四面体的映射：纯四面体时恒等，混合时 `starts[c]..starts[c + 1]`。
+struct CellMap<'a> {
+    layout: Option<&'a CellLayout>,
+    starts: Vec<u32>,
+    count: usize,
+}
+
+impl<'a> CellMap<'a> {
+    fn new(source: &'a dyn TetSource) -> Result<Self, ChunkError> {
+        let Some(layout) = source.cell_layout() else {
+            return Ok(Self {
+                layout: None,
+                starts: Vec::new(),
+                count: source.tet_count(),
+            });
+        };
+        let count = layout.cell_count();
+        let invalid = || ChunkError::Invalid("cell layout does not match the tets".to_owned());
+        if layout.tet_cells.len() != source.tet_count() || count == 0 {
+            return Err(invalid());
+        }
+        let mut starts = Vec::with_capacity(count + 1);
+        starts.push(0u32);
+        for (tet, &owner) in layout.tet_cells.iter().enumerate() {
+            // 要求单元依次出现、每个单元至少一个四面体：所属单元只能是当前单元或下一个。
+            let (owner, current) = (owner as usize, starts.len() - 1);
+            if owner == current + 1 {
+                starts.push(tet as u32);
+            } else if owner != current {
+                return Err(invalid());
+            }
+        }
+        if starts.len() != count {
+            return Err(invalid());
+        }
+        starts.push(source.tet_count() as u32);
+        Ok(Self {
+            layout: Some(layout),
+            starts,
+            count,
+        })
+    }
+
+    fn tets(&self, cell: usize) -> Range<usize> {
+        if self.layout.is_some() {
+            self.starts[cell] as usize..self.starts[cell + 1] as usize
+        } else {
+            cell..cell + 1
+        }
     }
 }
 
@@ -128,7 +192,7 @@ impl TetSource for crate::SyntheticTetBlock {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChunkBuildOptions {
-    /// 每块单元数上限；k-d 中位数二分，实际块大小在上限的一半到上限之间。
+    /// 每块原始单元数上限；k-d 中位数二分，实际块大小在上限的一半到上限之间。
     pub max_chunk_cells: usize,
     /// 简化外表面相对完整外表面的面数比例分母。
     pub simplify_ratio: usize,
@@ -148,6 +212,8 @@ pub struct ChunkBuildSummary {
     pub chunk_count: usize,
     pub tet_count: u64,
     pub node_count: u64,
+    /// 原始单元数（纯四面体等于 `tet_count`）。
+    pub cell_count: u64,
     pub bytes_written: u64,
     /// 下层写调用次数（经 8 MiB 缓冲合并后）。
     pub write_calls: u64,
@@ -239,7 +305,8 @@ pub fn build_chunked_volume_with_fields<W: Write>(
             "chunk options must be positive".to_owned(),
         ));
     }
-    let mut items = centroids(source);
+    let cells = CellMap::new(source)?;
+    let mut items = centroids(source, &cells);
     progress.set_fraction(0.1);
     let mut leaves = Vec::new();
     split(&mut items, 0, options.max_chunk_cells, 0, &mut leaves);
@@ -279,8 +346,8 @@ pub fn build_chunked_volume_with_fields<W: Write>(
         let (sender, receiver) = mpsc::sync_channel::<(usize, Encoded)>(workers * 2);
         for _ in 0..workers {
             let sender = sender.clone();
-            let (next, cancelled, first_error, boundary) =
-                (&next, &cancelled, &first_error, &boundary);
+            let (next, cancelled, first_error, boundary, cells) =
+                (&next, &cancelled, &first_error, &boundary, &cells);
             scope.spawn(move || {
                 loop {
                     let index = next.fetch_add(1, Ordering::Relaxed);
@@ -288,7 +355,7 @@ pub fn build_chunked_volume_with_fields<W: Write>(
                         break;
                     }
                     let (start, end) = leaves[index];
-                    match encode_leaf(source, boundary, &items[start..end], options) {
+                    match encode_leaf(source, cells, boundary, &items[start..end], options) {
                         Ok(encoded) => {
                             if sender.send((index, encoded)).is_err() {
                                 break;
@@ -341,7 +408,7 @@ pub fn build_chunked_volume_with_fields<W: Write>(
 
     for (field_index, info) in infos.iter().enumerate() {
         let field = fields.load(field_index)?;
-        check_field(&field, info, source)?;
+        check_field(&field, info, source, cells.count)?;
         for header in &mut headers {
             header.field_ranges.push([f64::NAN; 2]);
             header.field_blocks.push(FieldBlock::default());
@@ -389,6 +456,7 @@ pub fn build_chunked_volume_with_fields<W: Write>(
     let table = ChunkTable {
         tet_count: tet_count as u64,
         node_count: source.node_count() as u64,
+        cell_count: cells.count as u64,
         fields: infos,
         surface_offset,
         surface_len: relative,
@@ -412,13 +480,15 @@ pub fn build_chunked_volume_with_fields<W: Write>(
         chunk_count: table.chunks.len(),
         tet_count: table.tet_count,
         node_count: table.node_count,
+        cell_count: table.cell_count,
         bytes_written: counting.bytes,
         write_calls: counting.calls,
     }))
 }
 
-/// 从 v3 体网格资产构建分块文件（task 028 派生缓存）：节点、单元、边界各顺序读一遍，
-/// 驻留紧凑数组（约 20 B / 单元 + 24 B / 节点）后分块。峰值约为单元数 × 40 B 加节点数组，
+/// 从体网格资产构建分块文件（task 028 派生缓存）：节点、单元、边界各顺序读一遍，
+/// 驻留紧凑数组（约 20 B / 单元 + 24 B / 节点；混合资产另加约 4 B / 拆分四面体 +
+/// 37 B / 原始单元的布局）后分块。峰值约为单元数 × 40 B 加节点数组，
 /// 远小于完整驻留（约 190 B / 单元）；完全不驻留的构建属于候选 task“超大体文件流式导入”。
 /// 进度：读取占 0..0.3，分块占 0.3..1（使用调用方进度的默认窗口）。取消返回 `Ok(None)`。
 pub fn build_chunked_from_asset<W: Write>(
@@ -446,19 +516,71 @@ pub fn build_chunked_from_asset_with_fields<W: Write>(
     else {
         return Ok(None);
     };
+    let memory = || ChunkError::Invalid("not enough memory for the cell arrays".to_owned());
     let mut tets = Vec::new();
-    tets.try_reserve_exact(counts.tets)
-        .map_err(|_| ChunkError::Invalid("not enough memory for the tet array".to_owned()))?;
-    let finished = asset
-        .visit_tets(Some((progress, 0.05, 0.25)), |batch| {
-            for chunk in batch {
-                tets.extend_from_slice(chunk);
-            }
-            !progress.is_cancelled()
-        })
-        .map_err(asset_error)?;
-    if !finished {
-        return Ok(None);
+    let mut layout = None;
+    if asset.is_mixed() {
+        // 混合资产（task 030）：读原生单元流，按与驻留加载相同的规则确定性拆分，保留原始单元布局。
+        let mut types = Vec::new();
+        let mut regions = Vec::new();
+        let mut connectivity = Vec::new();
+        types
+            .try_reserve_exact(counts.cells)
+            .map_err(|_| memory())?;
+        regions
+            .try_reserve_exact(counts.cells)
+            .map_err(|_| memory())?;
+        let finished = asset
+            .visit_cells(Some((progress, 0.05, 0.25)), |batch| {
+                for (kind, region, nodes) in batch.iter().flatten() {
+                    types.push(*kind);
+                    regions.push(*region);
+                    connectivity.extend_from_slice(&nodes[..kind.node_count()]);
+                }
+                !progress.is_cancelled()
+            })
+            .map_err(asset_error)?;
+        if !finished {
+            return Ok(None);
+        }
+        let invalid = |_| ChunkError::Format("mixed cell stream invalid".to_owned());
+        let offsets = crate::cell_offsets(&types, connectivity.len()).map_err(invalid)?;
+        if connectivity
+            .iter()
+            .any(|&node| node as usize >= nodes.len())
+        {
+            return Err(ChunkError::Format(
+                "mixed cell node out of range".to_owned(),
+            ));
+        }
+        let (decomposed, tet_cells) =
+            crate::cells::decompose_cells(&types, &offsets, &connectivity, |cell| regions[cell])
+                .map_err(invalid)?;
+        if decomposed.len() != counts.tets {
+            return Err(ChunkError::Format(
+                "mixed cell tet count mismatch".to_owned(),
+            ));
+        }
+        tets = decomposed;
+        layout = Some(std::sync::Arc::new(CellLayout {
+            types,
+            offsets,
+            connectivity,
+            tet_cells,
+        }));
+    } else {
+        tets.try_reserve_exact(counts.tets).map_err(|_| memory())?;
+        let finished = asset
+            .visit_tets(Some((progress, 0.05, 0.25)), |batch| {
+                for chunk in batch {
+                    tets.extend_from_slice(chunk);
+                }
+                !progress.is_cancelled()
+            })
+            .map_err(asset_error)?;
+        if !finished {
+            return Ok(None);
+        }
     }
     let Some(boundary) = asset
         .read_boundary(Some((progress, 0.25, 0.3)))
@@ -472,7 +594,7 @@ pub fn build_chunked_from_asset_with_fields<W: Write>(
         boundary,
         region_count: counts.region_count,
         boundary_group_count: counts.boundary_group_count,
-        cells: None,
+        cells: layout,
     };
     progress.set_window(0.3, 1.0);
     let result = build_chunked_volume_with_fields(&mesh, fields, options, sink, progress);
@@ -480,8 +602,9 @@ pub fn build_chunked_from_asset_with_fields<W: Write>(
     result
 }
 
-fn centroids(source: &dyn TetSource) -> Vec<Item> {
-    let count = source.tet_count();
+/// 各原始单元的节点平均质心（纯四面体即四面体质心）。
+fn centroids(source: &dyn TetSource, cells: &CellMap<'_>) -> Vec<Item> {
+    let count = cells.count;
     let mut items = vec![
         Item {
             centroid: [0.0; 3],
@@ -495,14 +618,22 @@ fn centroids(source: &dyn TetSource) -> Vec<Item> {
             scope.spawn(move || {
                 for (offset, item) in slice.iter_mut().enumerate() {
                     let id = part * per + offset;
-                    let tet = source.tet(id);
+                    let tet;
+                    let nodes = match cells.layout {
+                        Some(layout) => layout.cell_nodes(id),
+                        None => {
+                            tet = source.tet(id).nodes;
+                            &tet[..]
+                        }
+                    };
                     let mut sum = [0.0f64; 3];
-                    for node in tet.nodes {
+                    for &node in nodes {
                         let point = source.node(node as usize);
                         (0..3).for_each(|axis| sum[axis] += point[axis]);
                     }
+                    let corners = nodes.len() as f64;
                     *item = Item {
-                        centroid: sum.map(|value| (value / 4.0) as f32),
+                        centroid: sum.map(|value| (value / corners) as f32),
                         id: id as u32,
                     };
                 }
@@ -645,13 +776,25 @@ const TET_FACES: [[usize; 3]; 4] = [[0, 2, 1], [0, 1, 3], [1, 2, 3], [0, 3, 2]];
 
 fn encode_leaf(
     source: &dyn TetSource,
+    cells: &CellMap<'_>,
     boundary: &BoundaryIndex,
     items: &[Item],
     options: ChunkBuildOptions,
 ) -> Result<Encoded, ChunkError> {
+    // `ids` 是块内原始单元（升序）；`owners` 是每个拆分四面体所属的原始单元。
     let mut ids: Vec<u32> = items.iter().map(|item| item.id).collect();
     ids.sort_unstable();
-    let tets: Vec<Tetrahedron> = ids.iter().map(|&id| source.tet(id as usize)).collect();
+    let mut tets = Vec::with_capacity(ids.len());
+    let mut owners = Vec::with_capacity(ids.len());
+    for &id in &ids {
+        for tet in cells.tets(id as usize) {
+            tets.push(source.tet(tet));
+            owners.push(id);
+        }
+    }
+    if u32::try_from(tets.len()).is_err() {
+        return Err(ChunkError::Invalid("chunk too large".to_owned()));
+    }
     let mut global_nodes: Vec<u32> = tets.iter().flat_map(|tet| tet.nodes).collect();
     global_nodes.sort_unstable();
     global_nodes.dedup();
@@ -680,6 +823,7 @@ fn encode_leaf(
         }
     }
     let mut header = ChunkHeader::empty(bounds, tets.len() as u32, nodes.len() as u32);
+    header.cell_count = ids.len() as u32;
     mark_voxels(&mut header, &nodes, &local_tets);
 
     let mut surface = ChunkSurface {
@@ -690,7 +834,7 @@ fn encode_leaf(
         },
     };
     let mut index = LeafIndex::default();
-    for (tet, &id) in tets.iter().zip(&ids) {
+    for (tet, &id) in tets.iter().zip(&owners) {
         for face in TET_FACES {
             if let Some(triangle) = boundary.face(face.map(|corner| tet.nodes[corner])) {
                 surface
@@ -714,13 +858,38 @@ fn encode_leaf(
         };
     }
 
-    let cells = ChunkCells {
+    let layout = cells.layout.map(|layout| {
+        let mut chunk = ChunkCellLayout {
+            types: Vec::with_capacity(ids.len()),
+            offsets: Vec::with_capacity(ids.len() + 1),
+            connectivity: Vec::new(),
+            tet_cells: Vec::with_capacity(tets.len()),
+        };
+        chunk.offsets.push(0);
+        for (local_cell, &id) in ids.iter().enumerate() {
+            chunk.types.push(layout.types[id as usize]);
+            chunk.connectivity.extend(
+                layout
+                    .cell_nodes(id as usize)
+                    .iter()
+                    .map(|&node| local(node)),
+            );
+            chunk.offsets.push(chunk.connectivity.len() as u32);
+            let tet_count = cells.tets(id as usize).len();
+            chunk
+                .tet_cells
+                .extend(std::iter::repeat_n(local_cell as u32, tet_count));
+        }
+        chunk
+    });
+    let chunk_cells = ChunkCells {
         global_nodes: global_nodes.iter().map(|&node| u64::from(node)).collect(),
         nodes,
         tets: local_tets,
-        global_cells: ids.iter().map(|&id| u64::from(id)).collect(),
+        global_cells: owners.iter().map(|&id| u64::from(id)).collect(),
+        layout,
     };
-    let raw_cells = encode_cells(&cells);
+    let raw_cells = encode_cells(&chunk_cells);
     index.nodes = global_nodes;
     index.cells = ids;
     let raw_surface = encode_surface(&surface);
@@ -740,10 +909,11 @@ fn check_field(
     field: &ResultField,
     info: &ChunkFieldInfo,
     source: &dyn TetSource,
+    cell_count: usize,
 ) -> Result<(), ChunkError> {
     let tuples = match info.association {
         FieldAssociation::Node => source.node_count(),
-        FieldAssociation::Cell => source.tet_count(),
+        FieldAssociation::Cell => cell_count,
     };
     if field_info(field) != *info || field.values.len() != tuples * usize::from(info.components) {
         return Err(ChunkError::Invalid(format!(
