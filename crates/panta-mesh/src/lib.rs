@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 
 mod asset;
+pub mod chunked;
 mod diagnostics;
 mod lod;
 mod progress;

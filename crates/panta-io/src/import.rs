@@ -290,8 +290,8 @@ impl Display for CheckedReadError {
 
 impl std::error::Error for CheckedReadError {}
 
-/// 每个读取块（256 KiB）后查询一次取消检查点。
-const READ_CHUNK_BYTES: usize = 256 * 1024;
+/// 每个读取块（4 MiB）后查询一次取消检查点；块取大以减少 Windows 上的读调用次数（task 027）。
+const READ_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 
 /// 与 [`read_source`] 相同的读取契约，但分块执行并在每个检查点查询
 /// `is_cancelled`；取消与 I/O 失败分别返回，供异步激活流程在安全点停止。
@@ -657,7 +657,7 @@ mod tests {
     #[test]
     fn preview_progress_covers_chunked_read_then_parse() -> Result<(), Box<dyn std::error::Error>> {
         let fixture = Fixture::new()?;
-        let count = 20_000usize;
+        let count = 340_000usize;
         let mut bytes = vec![0u8; 84 + count * 50];
         bytes[80..84].copy_from_slice(&u32::try_from(count)?.to_le_bytes());
         let path = fixture.root.join("progress.stl");
@@ -667,7 +667,7 @@ mod tests {
         session.preview_with_progress(&path, || false, &|value| seen.borrow_mut().push(value))?;
         let seen = seen.into_inner();
         assert!(seen.windows(2).all(|pair| pair[0] <= pair[1]));
-        // 1 MB 源按 256 KiB 分块：至少 4 个读取进度点，读取阶段终点为 50%。
+        // 约 17 MB 源按 4 MiB 分块：至少 4 个读取进度点，读取阶段终点为 50%。
         assert!(seen.iter().filter(|value| **value <= 0.5).count() >= 4);
         assert!(seen.contains(&0.5));
         assert_eq!(seen.last(), Some(&1.0));
@@ -946,7 +946,7 @@ mod tests {
             }),
             Err(CheckedReadError::Cancelled(path)) if path == large_source.display().to_string()
         ));
-        // 第二次检查发生在首个 256 KiB 数据块读取后。
+        // 第二次检查发生在首个 4 MiB 数据块读取后。
         assert_eq!(checkpoints.load(Ordering::Relaxed), 2);
         // 不存在的文件以 Failed(Missing) 表达，不冒充取消。
         assert!(matches!(
