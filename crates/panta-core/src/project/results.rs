@@ -70,11 +70,11 @@ impl ProjectService {
         let counts = self
             .volume_meshes
             .get(import_id)
-            .map(|volume| (volume.nodes.len(), volume.tets.len()))
+            .map(|volume| (volume.nodes.len(), volume.cell_count()))
             .or_else(|| {
                 self.streamed_volumes
                     .get(import_id)
-                    .map(|counts| (counts.nodes, counts.tets))
+                    .map(|counts| (counts.nodes, counts.cells))
             });
         Ok(Some(ResultFieldSource {
             path,

@@ -33,7 +33,18 @@ Rust 拥有资产身份、来源 revision、转换 / 网格任务策略、领域
 
 Netgen API 依据：[v6.2.2604 `nglib.h`](https://github.com/NGSolve/netgen/blob/v6.2.2604/nglib/nglib.h)。最终能否对特定输入直接体网格化，仍由未来网格任务的封闭性、方向、容差及失败诊断测试决定。
 
-工程 schema 4 在 `.panta` 中保存 `mesh_assets` 索引，Mesh payload 以工程内相对路径旁置，打开工程不立即读取网格。`crates/panta-mesh/src/asset/mod.rs` 定义 sidecar v3：56 B 头部（类型、毫米单位、目录 SHA-256）后接分块目录，数据块按 64 B 对齐、每块约 4 MiB 未压缩记录、独立 Zstandard 压缩（不可压缩时原样保存）并带块级 SHA-256；资产摘要为目录摘要。目录条目为 LOD 层级、时间步和块内过滤器预留字段，v3 要求为 0、读取端显式拒绝非 0 值。`MeshAssetReader` 先校验头部与目录，再按批读取数据块并多线程解码，批次间响应取消。v2（单 Zstandard 流 + 整段摘要）只读兼容见 [task 011](../task/011-mesh-asset-chunked-storage.md) 与清理任务 [012](../task/012-mesh-asset-v2-removal.md)。解码验证版本、摘要与范围后构造领域 Mesh；路径授权由工程服务负责。SurfaceMesh 保留完整三角面顶点语义，新导入不复制来源 STL，旧 schema 不自动迁移。
+工程 schema 4 在 `.panta` 中保存 `mesh_assets` 索引，Mesh payload 以工程内相对路径旁置，打开工程不立即读取网格。`crates/panta-mesh/src/asset/mod.rs` 定义 sidecar v4（task 030；块布局与 v3 相同，只新增混合单元流，v3 继续可读）：56 B 头部（类型、毫米单位、目录 SHA-256）后接分块目录，数据块按 64 B 对齐、每块约 4 MiB 未压缩记录、独立 Zstandard 压缩（不可压缩时原样保存）并带块级 SHA-256；资产摘要为目录摘要。目录条目为 LOD 层级、时间步和块内过滤器预留字段，v3 / v4 要求为 0、读取端显式拒绝非 0 值。`MeshAssetReader` 先校验头部与目录，再按批读取数据块并多线程解码，批次间响应取消。v2（单 Zstandard 流 + 整段摘要）只读兼容见 [task 011](../task/011-mesh-asset-chunked-storage.md) 与清理任务 [012](../task/012-mesh-asset-v2-removal.md)。解码验证版本、摘要与范围后构造领域 Mesh；路径授权由工程服务负责。SurfaceMesh 保留完整三角面顶点语义，新导入不复制来源 STL，旧 schema 不自动迁移。
+
+## 原生混合单元（task 030）
+
+- IR：`TetMesh.cells: Option<Arc<CellLayout>>`。`None` 为纯四面体（单元 ID = 四面体下标）；`Some` 时 `CellLayout` 为 VTK 风格的 `types`（VTK 单元编码）、`offsets`（n + 1 项，首项 0，单调递增）与 `connectivity`（u32 节点下标），另附 `tet_cells`（每个拆分四面体所属原始单元，非递减）。支持 tet(10)、hex(12)、wedge(13)、pyramid(14)；polyhedron(42) 编码已预留，当前显式拒绝（需要面流布局，另立任务）。
+- 局部节点顺序（与 VTK 9.x `vtkTetra` / `vtkHexahedron` / `vtkWedge` / `vtkPyramid` 一致，参考坐标下体积为正）：
+  - tet `0 1 2 3`：`(0,1,2)` 的右手法向指向 3。
+  - hex `0–7`：底面 `0 1 2 3` 右手法向指向顶面，`4 5 6 7` 分别位于 `0 1 2 3` 正上方。
+  - wedge `0–5`：三角形 `0 1 2` 与 `3 4 5` 对应（`i` 与 `i+3` 相连）；`(0,1,2)` 的右手法向指向 `3 4 5`（VTK 注释写作“`(0,2,1)` 法向背离 `(3,4,5)`”）。四边形面 `0 1 4 3`、`1 2 5 4`、`2 0 3 5`。
+  - pyramid `0–4`：底面 `0 1 2 3` 右手法向指向顶点 4。
+- 拆分：切面、体积、质量与外表面在加载时把单元临时拆成四面体（不落盘）。四边形面对角线取全局最小节点下标所在的对角线（Dompierre 等的最小下标规则），因此相邻单元共享面拆分一致、结果共形；hex 按 64 种面对角线组合查表（实际可达 42 种，每种 5–6 个四面体），wedge 3 个，pyramid 2 个。输入方向整体为负的单元先镜像（tet `0 1 3 2`、hex `0 3 2 1 4 7 6 5`、wedge `0 2 1 3 5 4`、pyramid `0 3 2 1 4`）再拆分；正负混合（扭曲）或节点重复的单元拒绝。区域按单元记录，校验要求同一单元的四面体区域一致，并重算拆分与 `tet_cells` 比对。
+- 资产 v4：纯四面体资产块布局与 v3 完全相同（仅头部版本为 4，目录摘要不变）。混合资产不写 `VolumeTets` 流，改写 `VolumeCells`（流 8，每单元 40 B：u32 VTK 编码、u32 区域、8 × u32 节点，不足补 `u32::MAX`）与 `VolumeCellSummary`（流 9，恰好 1 条 8 B 记录：拆分四面体数，供流式读取预估）。这两个流只允许出现在 v4 头部下，且与 `VolumeTets` 互斥。`.presult` 容器版本仍为 3，结果场单元数按原始单元计。`VolumeAssetChunks::visit_cell_tets` 逐块读取单元、就地拆分并给出所属单元 ID。
 
 ## 生成流程
 

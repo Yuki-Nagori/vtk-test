@@ -2,15 +2,19 @@
 //!
 //! `SurfaceMesh` 坐标保留解析来源单位，工程提交前由导入事务换算到毫米；
 //! `TetMesh` 坐标固定为毫米，四面体局部节点顺序要求正有向体积。
+//! 混合单元网格（task 030）另带原生单元布局，四面体为其确定性共形拆分。
 
 use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 
 mod asset;
+mod cells;
 pub mod chunked;
 mod diagnostics;
 mod field_section;
 mod lod;
+#[cfg(test)]
+mod mixed_tests;
 // 唯一的 unsafe 例外：只读文件映射（task 028，见 standards/rust.md）。
 #[allow(unsafe_code)]
 pub mod mapped;
@@ -25,6 +29,9 @@ pub use asset::{
     encode_result_asset, is_readable_mesh_asset_version, mesh_asset_encoded_len,
     surface_mesh_expanded_bytes, write_surface_asset_streaming, write_volume_asset_streaming,
 };
+pub use cells::{
+    CellLayout, CellType, InvalidCell, VTK_POLYHEDRON, cell_offsets, decompose_cell, mirror_cell,
+};
 pub use diagnostics::{
     DEFAULT_RELATIVE_WELD_TOLERANCE, DiagnosticError, DiagnosticOptions, SurfaceDiagnostics,
     diagnose_surface, diagnose_surface_with_progress,
@@ -35,9 +42,9 @@ pub use progress::{PROGRESS_STRIDE, Progress};
 pub use synthetic::{SyntheticTetBlock, SyntheticTorus};
 pub use volume::{
     POOR_ASPECT_RATIO, POOR_MIN_DIHEDRAL_DEGREES, TetQuality, VolumeError, VolumeStreamError,
-    boundary_faces, boundary_surface, boundary_surface_streaming, section_plane_origin,
-    section_plane_streaming, section_surface, tet_mesh_from_cells, tet_quality,
-    tet_quality_streaming,
+    boundary_faces, boundary_surface, boundary_surface_streaming, cell_volumes,
+    section_plane_origin, section_plane_streaming, section_surface, tet_mesh_from_cells,
+    tet_quality, tet_quality_streaming, volume_mesh_from_cells,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -240,6 +247,47 @@ pub struct TetMesh {
     pub boundary: Vec<SurfaceTriangle>,
     pub region_count: MeshIndex,
     pub boundary_group_count: MeshIndex,
+    /// 原生混合单元布局（task 030）；`None` 表示纯四面体网格，单元 ID 即四面体下标。
+    /// 存在时 `tets` 是布局的确定性共形拆分，`tets[i]` 属于原始单元 `tet_cells[i]`。
+    pub cells: Option<std::sync::Arc<CellLayout>>,
+}
+
+impl TetMesh {
+    /// 原始单元数：混合网格为布局单元数，纯四面体网格为四面体数。
+    pub fn cell_count(&self) -> usize {
+        self.cells
+            .as_ref()
+            .map_or(self.tets.len(), |cells| cells.cell_count())
+    }
+
+    /// 第 `tet` 个（拆分）四面体所属的原始单元下标。
+    pub fn tet_cell(&self, tet: usize) -> usize {
+        self.cells
+            .as_ref()
+            .map_or(tet, |cells| cells.tet_cells[tet] as usize)
+    }
+
+    /// 各类型原始单元数，顺序同 [`CellType::ALL`]。
+    pub fn cell_type_counts(&self) -> [u64; 4] {
+        self.cells
+            .as_ref()
+            .map_or([self.tets.len() as u64, 0, 0, 0], |cells| {
+                cells.type_counts()
+            })
+    }
+
+    /// 原始单元的区域号（取其拆分四面体的区域，校验保证一致）。
+    pub fn cell_region(&self, cell: usize) -> MeshIndex {
+        match &self.cells {
+            None => self.tets[cell].region,
+            Some(cells) => {
+                let first = cells
+                    .tet_cells
+                    .partition_point(|&owner| (owner as usize) < cell);
+                self.tets[first].region
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -433,6 +481,9 @@ pub fn validate_tet_mesh(mesh: &TetMesh) -> MeshValidationReport {
             issues.push(format!("boundary group {index} is not referenced"));
         }
     }
+    if let Some(cells) = &mesh.cells {
+        validate_cell_layout(mesh, cells, &mut issues);
+    }
     if volume_overflow {
         issues.push("mesh has non-finite total volume".to_owned());
         volume_mm3 = 0.0;
@@ -441,6 +492,43 @@ pub fn validate_tet_mesh(mesh: &TetMesh) -> MeshValidationReport {
         volume_mm3 = 0.0;
     }
     MeshValidationReport { issues, volume_mm3 }
+}
+
+/// 混合单元布局与拆分四面体的一致性：offsets 合法、拆分可由布局重算、单元区域一致。
+fn validate_cell_layout(mesh: &TetMesh, cells: &CellLayout, issues: &mut Vec<String>) {
+    if u32::try_from(cells.types.len()).is_err() {
+        issues.push("cell count exceeds the u32 index range".to_owned());
+        return;
+    }
+    match cell_offsets(&cells.types, cells.connectivity.len()) {
+        Ok(offsets) if offsets == cells.offsets => {}
+        _ => {
+            issues.push("cell offsets do not match cell types and connectivity".to_owned());
+            return;
+        }
+    }
+    match cells::decompose_cells(&cells.types, &cells.offsets, &cells.connectivity, |_| 0) {
+        Err(cell) => issues.push(format!(
+            "cell {cell} repeats a node and cannot be decomposed"
+        )),
+        Ok((tets, tet_cells)) => {
+            let same_nodes = tets.len() == mesh.tets.len()
+                && tets
+                    .iter()
+                    .zip(&mesh.tets)
+                    .all(|(expected, actual)| expected.nodes == actual.nodes);
+            if !same_nodes || tet_cells != cells.tet_cells {
+                issues.push("tetrahedra are not the decomposition of the cell layout".to_owned());
+                return;
+            }
+            for (index, window) in cells.tet_cells.windows(2).enumerate() {
+                if window[0] == window[1] && mesh.tets[index].region != mesh.tets[index + 1].region
+                {
+                    issues.push(format!("cell {} mixes regions", window[0]));
+                }
+            }
+        }
+    }
 }
 
 fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -536,6 +624,7 @@ mod tests {
             }],
             region_count: 1,
             boundary_group_count: 1,
+            cells: None,
         };
         let report = validate_tet_mesh(&mesh);
         assert!(
@@ -571,6 +660,7 @@ mod tests {
             }],
             region_count: 1,
             boundary_group_count: 1,
+            cells: None,
         };
         let report = validate_tet_mesh(&mesh);
         assert!(report.is_ok());
@@ -606,6 +696,7 @@ mod tests {
             boundary,
             region_count: 1,
             boundary_group_count: 1,
+            cells: None,
         };
         let report = validate_tet_mesh(&mesh);
         assert!(!report.is_ok());
@@ -638,6 +729,7 @@ mod tests {
             }],
             region_count: 1,
             boundary_group_count: 1,
+            cells: None,
         };
         assert!(validate_tet_mesh(&mesh).is_ok());
         mesh.tets.push(mesh.tets[0]);

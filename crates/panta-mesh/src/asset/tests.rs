@@ -37,6 +37,7 @@ fn tet_mesh() -> TetMesh {
         }],
         region_count: 1,
         boundary_group_count: 1,
+        cells: None,
     }
 }
 
@@ -341,6 +342,7 @@ mod volume_streaming {
                 .collect(),
             region_count: 1,
             boundary_group_count: 6,
+            cells: None,
         };
         Ok((asset, mesh))
     }
@@ -413,6 +415,7 @@ mod volume_streaming {
         let counts = crate::VolumeStreamCounts {
             nodes: 4,
             tets: 1,
+            cells: 1,
             boundary: 0,
             region_count: 1,
             boundary_group_count: 0,
@@ -420,5 +423,77 @@ mod volume_streaming {
         let result =
             write_volume_asset_streaming(std::io::Cursor::new(Vec::new()), counts, &Broken, None);
         assert_eq!(result, Err(crate::MeshAssetError::InvalidMesh));
+    }
+}
+
+mod mixed_cells {
+    use super::{TestResult, read_streaming, tet_mesh};
+    use crate::{
+        MeshAsset, MeshAssetError, VolumeAssetChunks, decode_mesh_asset, encode_mesh_asset,
+        mixed_tests::mixed_mesh,
+    };
+
+    #[test]
+    fn mixed_asset_round_trips_as_v4_with_native_cells() -> TestResult {
+        let mesh = mixed_mesh();
+        let asset = MeshAsset::Volume(mesh.clone());
+        let (bytes, digest) = encode_mesh_asset(&asset)?;
+        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into()?), 4);
+        assert_eq!(decode_mesh_asset(&bytes)?, asset);
+        assert_eq!(read_streaming(&bytes)?, Some((asset, digest)));
+
+        // v4 专属流不能出现在 v3 头部下。
+        let mut v3 = bytes.clone();
+        v3[8..12].copy_from_slice(&3_u32.to_le_bytes());
+        assert!(matches!(
+            decode_mesh_asset(&v3),
+            Err(MeshAssetError::UnsupportedLayout | MeshAssetError::InvalidMesh)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn v3_pure_tet_assets_remain_readable() -> TestResult {
+        let asset = MeshAsset::Volume(tet_mesh());
+        let (mut bytes, _) = encode_mesh_asset(&asset)?;
+        bytes[8..12].copy_from_slice(&3_u32.to_le_bytes());
+        assert_eq!(decode_mesh_asset(&bytes)?, asset);
+        Ok(())
+    }
+
+    #[test]
+    fn chunked_reader_decomposes_cells_and_keeps_cell_ids() -> TestResult {
+        let mesh = mixed_mesh();
+        let (bytes, _) = encode_mesh_asset(&MeshAsset::Volume(mesh.clone()))?;
+        let path =
+            std::env::temp_dir().join(format!("panta-mixed-chunks-{}.pmesh", std::process::id()));
+        std::fs::write(&path, &bytes)?;
+        let result = (|| -> TestResult {
+            let mut chunks = VolumeAssetChunks::open(&path)?;
+            assert!(chunks.is_mixed());
+            assert_eq!(chunks.counts().cells, 4);
+            assert_eq!(chunks.counts().tets, mesh.tets.len());
+            let mut seen = Vec::new();
+            chunks.visit_cell_tets(None, |batch| {
+                seen.extend(batch.iter().flatten().copied());
+                true
+            })?;
+            let expected: Vec<_> = mesh
+                .tets
+                .iter()
+                .enumerate()
+                .map(|(index, tet)| (mesh.tet_cell(index) as u32, *tet))
+                .collect();
+            assert_eq!(seen, expected);
+            let mut plain = Vec::new();
+            chunks.visit_tets(None, |batch| {
+                plain.extend(batch.iter().flatten().copied());
+                true
+            })?;
+            assert_eq!(plain, mesh.tets);
+            Ok(())
+        })();
+        let _ = std::fs::remove_file(&path);
+        result
     }
 }

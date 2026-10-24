@@ -51,6 +51,7 @@ fn mesh(n: usize) -> TetMesh {
             .collect(),
         region_count: 1,
         boundary_group_count: 6,
+        cells: None,
     }
 }
 

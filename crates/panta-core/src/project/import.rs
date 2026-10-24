@@ -300,7 +300,7 @@ pub(super) fn commit_mesh_record(
         let set = panta_mesh::ResultSet {
             mesh_digest: asset_reference.digest.clone(),
             node_count: volume.nodes.len() as u64,
-            cell_count: volume.tets.len() as u64,
+            cell_count: volume.cell_count() as u64,
             fields,
         };
         let (reference, path, created) =

@@ -293,6 +293,7 @@ mod streamed {
                 .collect(),
             region_count: 1,
             boundary_group_count: 6,
+            cells: None,
         };
         let resident = dir.0.join("resident.vtu");
         export_tet_mesh_vtu(&mesh, &resident, &Progress::new())?;

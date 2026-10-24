@@ -60,7 +60,10 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VolumeStreamCounts {
     pub nodes: usize,
+    /// 拆分后的四面体数；纯四面体资产即单元数。
     pub tets: usize,
+    /// 原始单元数（task 030）：单元场长度以此为准。
+    pub cells: usize,
     pub boundary: usize,
     pub region_count: u32,
     pub boundary_group_count: u32,
@@ -73,7 +76,7 @@ pub trait VolumeSource: Sync {
     fn boundary(&self, range: Range<usize>, out: &mut Vec<SurfaceTriangle>);
 }
 
-/// 流式写入 v3 体网格资产（task 025）：节点、四面体、边界三角形按块生成并立即写出。
+/// 流式写入纯四面体体网格资产（task 025；v4 头部，块布局同 v3）：节点、四面体、边界三角形按块生成并立即写出。
 /// 写入端只做逐记录检查（坐标有限、节点下标 / 区域 / 边界组在范围内）；
 /// 方向、重复单元等整体校验在完整读取（`MeshAssetReader`）时执行。
 pub fn write_volume_asset_streaming<W: Write + Seek>(
@@ -84,6 +87,7 @@ pub fn write_volume_asset_streaming<W: Write + Seek>(
 ) -> Result<Option<(u64, String)>, MeshAssetError> {
     if counts.nodes == 0
         || counts.tets == 0
+        || counts.cells != counts.tets
         || u32::try_from(counts.nodes).is_err()
         || counts.region_count == 0
     {
@@ -149,7 +153,11 @@ pub fn write_volume_asset_streaming<W: Write + Seek>(
                     raw.extend_from_slice(&face.group.to_le_bytes());
                 }
             }
-            Stream::SurfaceTriangles | Stream::ResultTable | Stream::ResultValues => {}
+            Stream::SurfaceTriangles
+            | Stream::ResultTable
+            | Stream::ResultValues
+            | Stream::VolumeCells
+            | Stream::VolumeCellSummary => {}
         },
         progress,
     )
@@ -212,7 +220,7 @@ where
     let digest = Sha256::digest(&toc);
     let mut header = [0_u8; HEADER_SIZE];
     header[..8].copy_from_slice(MAGIC);
-    header[8..12].copy_from_slice(&MESH_ASSET_FORMAT_VERSION.to_le_bytes());
+    header[8..12].copy_from_slice(&super::container_version(kind).to_le_bytes());
     header[12] = kind;
     header[13] = MILLIMETERS;
     header[16..24].copy_from_slice(&(cursor - HEADER_SIZE as u64).to_le_bytes());
@@ -237,10 +245,13 @@ pub(super) fn open_layout(path: &Path, kind: u8) -> Result<(File, Layout), MeshA
     if container_encoded_len(&header, kind == RESULT_KIND)? as u64 != file_len {
         return Err(MeshAssetError::InvalidLength);
     }
-    if u32::from_le_bytes([header[8], header[9], header[10], header[11]])
-        != MESH_ASSET_FORMAT_VERSION
-        || header[12] != kind
-    {
+    let version = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
+    let chunked = if kind == RESULT_KIND {
+        version == super::RESULT_CONTAINER_VERSION
+    } else {
+        version == MESH_ASSET_FORMAT_VERSION || version == super::V3
+    };
+    if !chunked || header[12] != kind {
         return Err(MeshAssetError::UnsupportedLayout);
     }
     let mut toc = vec![0; TOC_PREFIX_BYTES];
@@ -365,6 +376,9 @@ impl SurfaceAssetChunks {
     }
 }
 
+/// 带原始单元 ID 的拆分四面体批次访问器。
+type CellTetVisitor<'a> = dyn FnMut(&[Vec<(u32, Tetrahedron)>]) -> bool + 'a;
+
 /// 已打开的 v3 体网格资产（task 025）：头部、目录与计数记录已校验，
 /// 节点 / 四面体 / 边界三角形按流分别按需读取，四面体可逐批遍历而不整体驻留。
 pub struct VolumeAssetChunks {
@@ -384,11 +398,44 @@ impl VolumeAssetChunks {
                 .map(|chunk| chunk.record_count)
                 .sum::<usize>()
         };
-        let (nodes, tets, boundary) = (
+        let (nodes, mut tets, boundary, mixed_cells) = (
             records(Stream::VolumeNodes),
             records(Stream::VolumeTets),
             records(Stream::VolumeBoundary),
+            records(Stream::VolumeCells),
         );
+        if mixed_cells > 0 {
+            // 混合资产（v4）：拆分四面体数取自摘要记录（一次小块读取）。
+            let summary: Vec<ChunkEntry> = layout
+                .chunks
+                .iter()
+                .filter(|chunk| chunk.stream == Stream::VolumeCellSummary)
+                .cloned()
+                .collect();
+            visit_chunks(
+                &mut file,
+                &summary,
+                None,
+                |_, raw| {
+                    Ok(raw
+                        .as_chunks::<8>()
+                        .0
+                        .iter()
+                        .map(|v| u64::from_le_bytes(*v))
+                        .collect())
+                },
+                |decoded| {
+                    if let Some(&value) = decoded.iter().flatten().next() {
+                        tets = usize::try_from(value).unwrap_or(0);
+                    }
+                    true
+                },
+            )?;
+            if tets < mixed_cells || u32::try_from(mixed_cells).is_err() {
+                return Err(MeshAssetError::InvalidMesh);
+            }
+        }
+        let cells = if mixed_cells > 0 { mixed_cells } else { tets };
         if nodes == 0 || tets == 0 || u32::try_from(nodes).is_err() {
             return Err(MeshAssetError::InvalidMesh);
         }
@@ -428,6 +475,7 @@ impl VolumeAssetChunks {
             counts: VolumeStreamCounts {
                 nodes,
                 tets,
+                cells,
                 boundary,
                 region_count,
                 boundary_group_count,
@@ -437,6 +485,14 @@ impl VolumeAssetChunks {
 
     pub fn counts(&self) -> VolumeStreamCounts {
         self.counts
+    }
+
+    /// 是否为原生混合单元资产（task 030）；此时四面体为加载时确定性重算的拆分。
+    pub fn is_mixed(&self) -> bool {
+        self.layout
+            .chunks
+            .iter()
+            .any(|chunk| chunk.stream == Stream::VolumeCells)
     }
 
     pub fn digest(&self) -> &str {
@@ -505,10 +561,29 @@ impl VolumeAssetChunks {
     }
 
     /// 逐批遍历四面体；节点下标与区域号在读取时校验范围。
+    /// 混合资产逐块读取原生单元并就地拆分，批次中的四面体仍按全局拆分顺序排列。
     pub fn visit_tets(
         &mut self,
         progress: Option<(&Progress, f64, f64)>,
         visit: impl FnMut(&[Vec<Tetrahedron>]) -> bool,
+    ) -> Result<bool, MeshAssetError> {
+        let mut visit = visit;
+        if self.is_mixed() {
+            return self.visit_mixed_tets(progress, &mut |batch| {
+                let tets: Vec<Vec<Tetrahedron>> = batch
+                    .iter()
+                    .map(|chunk| chunk.iter().map(|(_, tet)| *tet).collect())
+                    .collect();
+                visit(&tets)
+            });
+        }
+        self.visit_plain_tets(progress, &mut visit)
+    }
+
+    fn visit_plain_tets(
+        &mut self,
+        progress: Option<(&Progress, f64, f64)>,
+        visit: &mut dyn FnMut(&[Vec<Tetrahedron>]) -> bool,
     ) -> Result<bool, MeshAssetError> {
         let chunks = self.stream_chunks(Stream::VolumeTets);
         let counts = self.counts;
@@ -538,6 +613,93 @@ impl VolumeAssetChunks {
             },
             visit,
         )
+    }
+
+    /// 逐批遍历拆分四面体及其原始单元下标（task 030）。纯四面体资产的单元下标即四面体下标。
+    pub fn visit_cell_tets(
+        &mut self,
+        progress: Option<(&Progress, f64, f64)>,
+        mut visit: impl FnMut(&[Vec<(u32, Tetrahedron)>]) -> bool,
+    ) -> Result<bool, MeshAssetError> {
+        if self.is_mixed() {
+            return self.visit_mixed_tets(progress, &mut visit);
+        }
+        let mut next = 0_u32;
+        self.visit_plain_tets(progress, &mut |batch| {
+            let tagged: Vec<Vec<(u32, Tetrahedron)>> = batch
+                .iter()
+                .map(|chunk| {
+                    chunk
+                        .iter()
+                        .map(|tet| {
+                            let cell = next;
+                            next = next.wrapping_add(1);
+                            (cell, *tet)
+                        })
+                        .collect()
+                })
+                .collect();
+            visit(&tagged)
+        })
+    }
+
+    fn visit_mixed_tets(
+        &mut self,
+        progress: Option<(&Progress, f64, f64)>,
+        visit: &mut CellTetVisitor<'_>,
+    ) -> Result<bool, MeshAssetError> {
+        let chunks = self.stream_chunks(Stream::VolumeCells);
+        let firsts: Vec<usize> = chunks
+            .iter()
+            .scan(0_usize, |cursor, chunk| {
+                let first = *cursor;
+                *cursor += chunk.record_count;
+                Some(first)
+            })
+            .collect();
+        let counts = self.counts;
+        let mut emitted = 0_usize;
+        let finished = visit_chunks(
+            &mut self.file,
+            &chunks,
+            progress,
+            |chunk, raw| {
+                let index = chunks
+                    .iter()
+                    .position(|entry| entry.offset == chunk.offset)
+                    .ok_or(MeshAssetError::InvalidMesh)?;
+                let mut out = Vec::with_capacity(chunk.record_count * 4);
+                let mut scratch = Vec::with_capacity(6);
+                for (local, record) in raw.as_chunks::<40>().0.iter().enumerate() {
+                    let (kind, region, nodes) =
+                        super::decode_cell_record(record).ok_or(MeshAssetError::InvalidMesh)?;
+                    let nodes = &nodes[..kind.node_count()];
+                    if region >= counts.region_count
+                        || nodes.iter().any(|&node| node as usize >= counts.nodes)
+                    {
+                        return Err(MeshAssetError::InvalidMesh);
+                    }
+                    scratch.clear();
+                    crate::decompose_cell(kind, nodes, &mut scratch)
+                        .map_err(|crate::InvalidCell| MeshAssetError::InvalidMesh)?;
+                    let cell = (firsts[index] + local) as u32;
+                    out.extend(
+                        scratch
+                            .iter()
+                            .map(|&tet| (cell, Tetrahedron { nodes: tet, region })),
+                    );
+                }
+                Ok(out)
+            },
+            |batch| {
+                emitted += batch.iter().map(Vec::len).sum::<usize>();
+                visit(batch)
+            },
+        )?;
+        if finished && emitted != counts.tets {
+            return Err(MeshAssetError::InvalidMesh);
+        }
+        Ok(finished)
     }
 
     /// 读入全部边界三角形（16 B / 面）；取消返回 `Ok(None)`。

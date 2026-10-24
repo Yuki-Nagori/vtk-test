@@ -5,7 +5,10 @@
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 
-use crate::{MeshIndex, SurfaceMesh, SurfaceTriangle, TetMesh, Tetrahedron, validate_tet_mesh};
+use crate::{
+    CellLayout, CellType, MeshIndex, SurfaceMesh, SurfaceTriangle, TetMesh, Tetrahedron,
+    cell_offsets, decompose_cell, mirror_cell, validate_tet_mesh,
+};
 
 /// 正有向四面体 `[a, b, c, d]` 的四个外法向面（局部节点序）。
 const OUTWARD_FACES: [[usize; 3]; 4] = [[0, 2, 1], [0, 1, 3], [1, 2, 3], [0, 3, 2]];
@@ -52,6 +55,7 @@ pub fn tet_mesh_from_cells(
         boundary,
         region_count: 1,
         boundary_group_count: 1,
+        cells: None,
     };
     let report = validate_tet_mesh(&mesh);
     if !report.is_ok() {
@@ -63,6 +67,130 @@ pub fn tet_mesh_from_cells(
         )));
     }
     Ok(mesh)
+}
+
+/// 由节点与 VTK 风格混合单元（类型 + offsets + 连接表）构建体网格（task 030）。
+///
+/// 全为四面体时等价于 [`tet_mesh_from_cells`]，不携带单元布局。否则每个单元按
+/// 最小全局节点号规则共形拆分；拆分四面体全为负体积的单元改写为镜像节点顺序，
+/// 正负混杂（翻转或严重扭曲）的单元由领域校验拒绝。外表面为拆分后只被一个四面体
+/// 引用的三角面（四边形边界面表现为两个三角形），单区域、单边界组。
+pub fn volume_mesh_from_cells(
+    nodes: Vec<[f64; 3]>,
+    types: Vec<CellType>,
+    offsets: Vec<u64>,
+    mut connectivity: Vec<MeshIndex>,
+) -> Result<TetMesh, VolumeError> {
+    if types.is_empty() {
+        return Err(VolumeError("mesh has no volume elements".to_owned()));
+    }
+    if u32::try_from(types.len()).is_err() {
+        return Err(VolumeError(
+            "cell count exceeds the u32 index range".to_owned(),
+        ));
+    }
+    match cell_offsets(&types, connectivity.len()) {
+        Ok(expected) if expected == offsets => {}
+        _ => {
+            return Err(VolumeError(
+                "cell offsets do not match cell types and connectivity".to_owned(),
+            ));
+        }
+    }
+    if let Some(index) = connectivity
+        .iter()
+        .position(|&node| node as usize >= nodes.len())
+    {
+        return Err(VolumeError(format!(
+            "cell connectivity entry {index} references node outside the node range"
+        )));
+    }
+    if types.iter().all(|&kind| kind == CellType::Tetra) {
+        let cells = connectivity.as_chunks::<4>().0.to_vec();
+        return tet_mesh_from_cells(nodes, cells);
+    }
+    let mut tets = Vec::with_capacity(types.len().saturating_mul(4));
+    let mut tet_cells = Vec::with_capacity(types.len().saturating_mul(4));
+    let mut scratch = Vec::with_capacity(6);
+    for (cell, &kind) in types.iter().enumerate() {
+        let range = offsets[cell] as usize..offsets[cell + 1] as usize;
+        let local = &mut connectivity[range];
+        scratch.clear();
+        decompose_cell(kind, local, &mut scratch).map_err(|crate::InvalidCell| {
+            VolumeError(format!("cell {cell} ({}) repeats a node", kind.name()))
+        })?;
+        if scratch.iter().all(|&tet| signed_volume6(&nodes, tet) < 0.0) {
+            mirror_cell(kind, local);
+            scratch.clear();
+            decompose_cell(kind, local, &mut scratch).map_err(|crate::InvalidCell| {
+                VolumeError(format!("cell {cell} ({}) repeats a node", kind.name()))
+            })?;
+        }
+        for &tet in &scratch {
+            tets.push(Tetrahedron {
+                nodes: tet,
+                region: 0,
+            });
+            tet_cells.push(cell as MeshIndex);
+        }
+    }
+    let boundary = boundary_faces(&tets);
+    let mesh = TetMesh {
+        nodes,
+        tets,
+        boundary,
+        region_count: 1,
+        boundary_group_count: 1,
+        cells: Some(std::sync::Arc::new(CellLayout {
+            types,
+            offsets,
+            connectivity,
+            tet_cells,
+        })),
+    };
+    let report = validate_tet_mesh(&mesh);
+    if !report.is_ok() {
+        let shown: Vec<String> = report
+            .issues
+            .iter()
+            .take(3)
+            .map(|issue| describe_cell_issue(&mesh, issue))
+            .collect();
+        return Err(VolumeError(format!(
+            "invalid mixed-cell mesh ({} issues): {}",
+            report.issues.len(),
+            shown.join("; ")
+        )));
+    }
+    Ok(mesh)
+}
+
+/// 把拆分四面体的问题翻译成原始单元编号，便于定位源文件中的单元。
+fn describe_cell_issue(mesh: &TetMesh, issue: &str) -> String {
+    let parsed = issue
+        .strip_prefix("tetrahedron ")
+        .and_then(|rest| rest.split_once(' '))
+        .and_then(|(index, detail)| index.parse::<usize>().ok().map(|index| (index, detail)));
+    match parsed {
+        Some((tet, detail)) if tet < mesh.tets.len() => {
+            let cell = mesh.tet_cell(tet);
+            let kind = mesh
+                .cells
+                .as_ref()
+                .map_or("tetra", |cells| cells.types[cell].name());
+            format!("cell {cell} ({kind}): decomposed tetrahedron {detail}")
+        }
+        _ => issue.to_owned(),
+    }
+}
+
+/// 各原始单元的体积（mm³），为其拆分四面体体积之和。
+pub fn cell_volumes(mesh: &TetMesh) -> Vec<f64> {
+    let mut volumes = vec![0.0; mesh.cell_count()];
+    for (index, tet) in mesh.tets.iter().enumerate() {
+        volumes[mesh.tet_cell(index)] += signed_volume6(&mesh.nodes, tet.nodes) / 6.0;
+    }
+    volumes
 }
 
 /// 只被一个四面体引用的面即外表面，按首次出现顺序输出、外法向。
