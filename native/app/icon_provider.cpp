@@ -65,7 +65,12 @@ class IconProvider final : public QQuickImageProvider {
 
 const QSet<QString>& monochrome_icon_names() {
     // 限定为视觉上单色的 glyph，彩色语义资源必须保留 SVG 原色加载。
-    static const QSet<QString> names{QStringLiteral("close"), QStringLiteral("caret")};
+    static const QSet<QString> names{
+        QStringLiteral("close"),          QStringLiteral("caret"),
+        QStringLiteral("playback-first"), QStringLiteral("playback-previous"),
+        QStringLiteral("playback-play"),  QStringLiteral("playback-pause"),
+        QStringLiteral("playback-next"),  QStringLiteral("playback-last"),
+        QStringLiteral("playback-loop")};
     return names;
 }
 

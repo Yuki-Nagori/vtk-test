@@ -62,7 +62,7 @@
 
 | 日期 | 环境 / 命令或场景 | 预期 | 实际结果 / 证据 |
 |---|---|---|---|
-| — | 待实施 | 见验收标准 | 未执行 |
+| 2026-10-24 | PR a：本机 `cargo test --locked --workspace`（含 `Qml.ShellModuleLoads` 新用例 `playback_bar_uses_svg_icons_and_shape_coded_loop_state`、`theme_component_test` 白名单图标逐尺寸检查）、`cargo quality`、`cargo lint` | 播放栏 6 个按钮均为白名单 SVG、无文字字形；循环开关有描边 + 无障碍名称 | 通过（70/70） |
 
 ## 风险与回退
 
@@ -71,6 +71,7 @@
 ## 决策与工作记录
 
 - 2026-10-24：按 034 用户决定登记任务。
+- 2026-10-24：PR a 采用 Lucide 1.61.0 的 skip-back / step-back / play / pause / step-forward / skip-forward / repeat，几何未修改，按用途重命名为 `playback-*`；许可全文放 `qml/icons/LICENSE-lucide.txt`，每个 SVG 带来源注释。循环开启时按钮描边与图标改为 `colorFocus`，并通过 `checked` 和无障碍名称（「循环播放：开 / 关」）表达状态，不只靠颜色。objectName 不变。
 
 ## 完成摘要
 
