@@ -8,7 +8,7 @@
 
 Rust 负责工程资产、场景文档、命令、异步操作与序列化，C++ 负责 Qt 桥接以及几何、网格和渲染的 native 实现。完整撤销/重做与插件仅作扩展参考，当前不接入外部求解器。
 
-当前 `native/bridge/src/settings.cpp` 仅向 QML 暴露系统减少动态效果偏好 `reducedMotion`，平台查询由 Qt adapter 负责。中文文案直接声明；不存在语言设置、翻译目录或语言偏好持久化。Theme 仅保存固定 QML 视觉常量，不提供主题配置、切换或偏好存储。
+当前 `native/bridge/src/settings.cpp` 向 QML 暴露系统减少动态效果偏好 `reducedMotion`（平台查询由 Qt adapter 负责）与界面布局（task 036）：左栏宽度 / 折叠、底部面板高度 / 折叠，写入用户配置目录独立的 `workbench-layout.ini`，越界值夹到允许范围，非法值回落默认，不进入工程文件、不影响 dirty。中文文案直接声明；不存在语言设置、翻译目录或语言偏好持久化。Theme 仅保存固定 QML 视觉常量，不提供主题配置、切换或偏好存储。
 
 应用服务将用户命令转换为跨模块操作；Rust 与 C++ 之间优先传递明确所有权的 DTO、句柄和结果。`ProjectService` 通过 [CXX](../standards/cxx.md) 落地最小 `ProjectService`：创建、打开、保存和重命名命令通过 `ProjectSnapshot` 传递，错误使用稳定 `project.*` 代码。字符串编码、缓冲区归属、释放接口、线程约束和错误映射必须明确，异常与 panic 不得未经处理跨越 FFI 边界；大工程操作仍需异步化。
 

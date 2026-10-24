@@ -1,6 +1,6 @@
 # 036 — UI 重制阶段 1：布局骨架
 
-- 状态：planned
+- 状态：in-progress
 - 阶段：UI 重制（[034](034-ui-redesign.md)）
 - 依赖：[035](035-ui-stage0-defect-fixes.md)
 - 优先级：P1
@@ -63,7 +63,7 @@ Shell（`qml/`）与 Bridge `Settings`（若需新增用户设置键）；不新
 
 | 日期 | 环境 / 命令或场景 | 预期 | 实际结果 / 证据 |
 |---|---|---|---|
-| — | 待实施 | 见验收标准 | 未执行 |
+| 2026-10-24 | PR a：`panta_bridge_settings_test`（默认值、夹值、持久化重载、非法值回落） | 全部通过 | 6/6 通过 |
 
 ## 风险与回退
 
@@ -72,6 +72,7 @@ Shell（`qml/`）与 Bridge `Settings`（若需新增用户设置键）；不新
 ## 决策与工作记录
 
 - 2026-10-24：按 034 用户决定登记任务。
+- 2026-10-24：开始实施，拆为三个 PR：a 为 Bridge `Settings` 布局键（左栏宽度 / 折叠、底部面板高度 / 折叠，独立 `workbench-layout.ini`，C++ 夹值与测试）；b 为左栏 `SplitView`、页签上移、播放栏禁用细条（Q6）与设置接线；c 为底部面板、完整状态栏与分组图标工具栏。布局键放在 `Settings` 单例而非 QML `QtCore.Settings`：遵守「QML 不直接读写平台设置」，校验在 C++ 一处完成。
 
 ## 完成摘要
 
