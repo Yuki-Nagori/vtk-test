@@ -9,6 +9,7 @@
 #include <QFileInfo>
 #include <QIODevice>
 #include <QPair>
+#include <QSettings>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QString>
@@ -23,6 +24,7 @@
 #include <functional>
 #include <gtest/gtest.h>
 #include <memory>
+#include <panta/qt_adapter/standard_paths.hpp>
 #include <qtestcase.h>
 #include <system_error>
 #include <thread>
@@ -710,6 +712,67 @@ TEST(ProjectViewModelTest, RemembersRecentProjectsAndClassifiesDrops) {
     EXPECT_TRUE(model.classifyDroppedUrl(QUrl(QStringLiteral("https://e.com/a.stl"))).isEmpty());
     model.clearRecentProjects();
     EXPECT_TRUE(model.recentProjects().isEmpty());
+}
+
+TEST(ProjectViewModelTest, LargeMeshLimitsPersistAndFallBackToDefaults) {
+    const QString directory =
+        panta::qt_adapter::standard_location(panta::qt_adapter::StandardLocation::UserConfig);
+    ASSERT_FALSE(directory.isEmpty());
+    const QString file = QDir(directory).filePath(QStringLiteral("large-mesh.ini"));
+    QFile::remove(file);
+
+    ProjectViewModel model;
+    const double defaultTriangles = model.lodActivationTriangles();
+    const double defaultBudget = model.lodBudgetTriangles();
+    const double defaultCells = model.volumeStreamCells();
+    EXPECT_EQ(defaultTriangles, 20'000'000.0);
+    EXPECT_EQ(defaultBudget, 2'000'000.0);
+    EXPECT_EQ(defaultCells, 10'000'000.0);
+
+    QSignalSpy changed(&model, &ProjectViewModel::largeMeshLimitsChanged);
+    ASSERT_TRUE(model.setLargeMeshLimits(30'000'000.0, 3'000'000.0, 50'000'000.0));
+    EXPECT_EQ(changed.count(), 1);
+    // 预算不低于阈值、非整数与超范围都在 Rust/适配层被拒绝，原设置不变。
+    EXPECT_FALSE(model.setLargeMeshLimits(30'000'000.0, 30'000'000.0, 50'000'000.0));
+    EXPECT_EQ(model.errorCode(), QStringLiteral("project.lod_settings_invalid"));
+    EXPECT_FALSE(model.setLargeMeshLimits(30'000'000.5, 3'000'000.0, 50'000'000.0));
+    EXPECT_FALSE(model.setLargeMeshLimits(30'000'000.0, 3'000'000.0, 1.0));
+    EXPECT_EQ(model.lodActivationTriangles(), 30'000'000.0);
+    EXPECT_EQ(model.volumeStreamCells(), 50'000'000.0);
+
+    {
+        ProjectViewModel restored;
+        EXPECT_EQ(restored.lodActivationTriangles(), 30'000'000.0);
+        EXPECT_EQ(restored.lodBudgetTriangles(), 3'000'000.0);
+        EXPECT_EQ(restored.volumeStreamCells(), 50'000'000.0);
+    }
+
+    {
+        // 手工改坏的持久化值不生效，回退默认值。
+        QSettings settings(file, QSettings::IniFormat);
+        settings.setValue(QStringLiteral("large_mesh/surface_budget"), QStringLiteral("abc"));
+        settings.sync();
+    }
+    {
+        ProjectViewModel broken;
+        EXPECT_EQ(broken.lodActivationTriangles(), defaultTriangles);
+        EXPECT_EQ(broken.lodBudgetTriangles(), defaultBudget);
+    }
+    {
+        QSettings settings(file, QSettings::IniFormat);
+        settings.setValue(QStringLiteral("large_mesh/surface_budget"), 40'000'000ULL);
+        settings.sync();
+    }
+    {
+        ProjectViewModel outOfRange;
+        EXPECT_EQ(outOfRange.lodBudgetTriangles(), defaultBudget);
+        EXPECT_EQ(outOfRange.volumeStreamCells(), defaultCells);
+    }
+
+    model.resetLargeMeshLimits();
+    EXPECT_EQ(model.lodActivationTriangles(), defaultTriangles);
+    ProjectViewModel afterReset;
+    EXPECT_EQ(afterReset.volumeStreamCells(), defaultCells);
 }
 
 TEST(ProjectViewModelTest, DocumentTabsFollowImportAndClose) {

@@ -12,6 +12,7 @@ mod model;
 mod repository;
 mod service;
 mod workspace;
+pub use crate::activation::ActivationLimits;
 pub use error::ProjectError;
 use mesh_cache::SurfaceMeshCache;
 pub use model::{ProjectCommand, ProjectSnapshot};
@@ -554,5 +555,30 @@ mod tests {
             validate_name("name. "),
             Err(ProjectError::InvalidName(_))
         ));
+    }
+
+    #[test]
+    fn activation_limits_are_validated_before_replacing_the_service_setting() {
+        let mut service = ProjectService::new();
+        assert_eq!(
+            service.activation_limits(),
+            super::ActivationLimits::DEFAULT
+        );
+        let custom = super::ActivationLimits {
+            surface_triangles: 50_000_000,
+            surface_budget: 5_000_000,
+            volume_cells: 2_000_000,
+        };
+        assert!(service.set_activation_limits(custom).is_ok());
+        assert_eq!(service.activation_limits(), custom);
+        let invalid = super::ActivationLimits {
+            surface_budget: 60_000_000,
+            ..custom
+        };
+        assert!(matches!(
+            service.set_activation_limits(invalid),
+            Err(ProjectError::LodSettingsInvalid(field)) if field == "surface_budget"
+        ));
+        assert_eq!(service.activation_limits(), custom);
     }
 }

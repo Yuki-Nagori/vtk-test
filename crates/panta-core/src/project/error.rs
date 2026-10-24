@@ -42,6 +42,8 @@ pub enum ProjectError {
     ExportCancelled,
     /// 流式读取完整网格资产失败：资产缺失、摘要与激活时不一致或块校验失败（task 025）。
     StreamedAssetFailed(String),
+    /// 大网格设置超出范围或预算不小于阈值；detail 为字段名（task 026）。
+    LodSettingsInvalid(String),
 }
 
 impl ProjectError {
@@ -78,6 +80,7 @@ impl ProjectError {
             Self::ExportWriteFailed(_) => "project.export_write_failed",
             Self::ExportCancelled => "project.export_cancelled",
             Self::StreamedAssetFailed(_) => "project.streamed_asset_failed",
+            Self::LodSettingsInvalid(_) => "project.lod_settings_invalid",
         }
     }
 
@@ -88,7 +91,8 @@ impl ProjectError {
             | Self::InvalidName(_)
             | Self::LocationEmpty
             | Self::LocationNotAbsolute(_)
-            | Self::CommandInvalid(_) => "validation",
+            | Self::CommandInvalid(_)
+            | Self::LodSettingsInvalid(_) => "validation",
             Self::FileMissing(_) | Self::ImportFileMissing(_) | Self::ImportRecordMissing(_) => {
                 "missing"
             }
@@ -144,6 +148,7 @@ impl ProjectError {
             | Self::ExportSourceUnavailable(name)
             | Self::ExportWriteFailed(name)
             | Self::StreamedAssetFailed(name)
+            | Self::LodSettingsInvalid(name)
             | Self::Io(name) => name.clone(),
             Self::UnsupportedSchema(schema) => schema.to_string(),
         }

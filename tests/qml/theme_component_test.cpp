@@ -221,6 +221,43 @@ class ThemeComponentTest final : public QObject {
 #endif
     }
 
+    void large_mesh_settings_dialog_shows_wan_and_rejects_invalid_budget() {
+#if !defined(PANTA_TEST_WITH_BRIDGE)
+        QSKIP("Large mesh settings require the enabled Bridge module");
+#else
+        panta::bridge::ProjectViewModel model;
+        QQmlEngine engine;
+        panta::install_icon_provider(engine);
+        QQmlComponent component(
+            &engine,
+            QUrl(QStringLiteral("qrc:/qt/qml/Panta/Shell/Dialogs/LargeMeshSettingsDialog.qml")));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QObject owner;
+        auto* dialog = component.createWithInitialProperties(
+            {{QStringLiteral("projectModel"), QVariant::fromValue(&model)}});
+        QVERIFY2(dialog != nullptr, qPrintable(component.errorString()));
+        dialog->setParent(&owner);
+        auto* window = qobject_cast<QQuickWindow*>(dialog);
+        QVERIFY(window != nullptr);
+        QVERIFY(QMetaObject::invokeMethod(dialog, "open"));
+        QVERIFY(window->isVisible());
+        auto* triangles = visual_item(window->contentItem(), QStringLiteral("lodTrianglesField"));
+        auto* budget = visual_item(window->contentItem(), QStringLiteral("lodBudgetField"));
+        QVERIFY(triangles != nullptr);
+        QVERIFY(budget != nullptr);
+        QCOMPARE(triangles->property("text").toString(),
+                 QString::number(model.lodActivationTriangles() / 10000));
+        // 预算不小于阈值时被 Rust 拒绝：对话框保持打开、设置不变，不写持久化文件。
+        const double before = model.lodBudgetTriangles();
+        QVERIFY(budget->setProperty("text", triangles->property("text")));
+        QVERIFY(QMetaObject::invokeMethod(dialog, "submit"));
+        QVERIFY(window->isVisible());
+        QCOMPARE(model.errorCode(), QStringLiteral("project.lod_settings_invalid"));
+        QCOMPARE(model.lodBudgetTriangles(), before);
+        QVERIFY(window->close());
+#endif
+    }
+
     void button_font_size_reaches_its_label() {
         QQmlEngine engine;
         panta::install_icon_provider(engine);

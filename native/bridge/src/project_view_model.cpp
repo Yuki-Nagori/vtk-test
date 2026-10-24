@@ -84,6 +84,7 @@ ProjectViewModel::ProjectViewModel(QObject* parent)
     });
     m_animationPoll.setInterval(10);
     connect(&m_animationPoll, &QTimer::timeout, this, &ProjectViewModel::tick_animation);
+    loadLargeMeshLimits();
     reset_documents();
 }
 

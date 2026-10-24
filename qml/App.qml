@@ -147,6 +147,12 @@ ApplicationWindow {
         projectModel: projectModel
     }
 
+    LargeMeshSettingsDialog {
+        id: largeMeshSettingsDialog
+        ownerWindow: shellWindow
+        projectModel: projectModel
+    }
+
     FileDialog {
         id: openProjectFileDialog
         objectName: "openProjectFileDialog"
@@ -360,6 +366,11 @@ ApplicationWindow {
                 text: "质量诊断"
                 enabled: shellWindow.canDiagnose
                 onTriggered: projectModel.beginDiagnoseActiveMesh()
+            }
+            MenuSeparator {}
+            Action {
+                text: "大网格设置…"
+                onTriggered: largeMeshSettingsDialog.open()
             }
         }
     }
