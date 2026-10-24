@@ -9,6 +9,7 @@ use std::fmt::{Display, Formatter};
 mod asset;
 pub mod chunked;
 mod diagnostics;
+mod field_section;
 mod lod;
 // 唯一的 unsafe 例外：只读文件映射（task 028，见 standards/rust.md）。
 #[allow(unsafe_code)]
@@ -28,6 +29,7 @@ pub use diagnostics::{
     DEFAULT_RELATIVE_WELD_TOLERANCE, DiagnosticError, DiagnosticOptions, SurfaceDiagnostics,
     diagnose_surface, diagnose_surface_with_progress,
 };
+pub use field_section::{FieldComponent, FieldSection, section_surface_field};
 pub use lod::{DEFAULT_LOD_TRIANGLE_BUDGET, SurfaceLod, build_surface_lod, simplify_surface};
 pub use progress::{PROGRESS_STRIDE, Progress};
 pub use synthetic::{SyntheticTetBlock, SyntheticTorus};

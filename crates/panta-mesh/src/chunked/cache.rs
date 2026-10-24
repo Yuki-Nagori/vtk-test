@@ -188,51 +188,66 @@ impl ChunkCache {
 
     /// 合并读 + 并行解压。
     fn load(&self, ids: &[usize]) -> Result<Vec<Arc<ChunkCells>>, ChunkError> {
-        let mut order: Vec<usize> = (0..ids.len()).collect();
-        order.sort_unstable_by_key(|&slot| self.headers[ids[slot]].cells_range().0);
-        // 区段：(起点, 终点, 区段内的槽位)。
-        let mut runs: Vec<(u64, u64, Vec<usize>)> = Vec::new();
-        for slot in order {
-            let (start, end) = self.headers[ids[slot]].cells_range();
-            match runs.last_mut() {
-                Some(run) if start <= run.1 + MERGE_GAP && end - run.0 <= MAX_READ => {
-                    run.1 = run.1.max(end);
-                    run.2.push(slot);
-                }
-                _ => runs.push((start, end, vec![slot])),
-            }
-        }
-        let buffers: Vec<Result<ChunkBytes, ChunkError>> = parallel_map(&runs, |run| {
-            self.source.read_at(run.0, (run.1 - run.0) as usize)
-        });
-        let mut pieces: Vec<(usize, &[u8])> = Vec::with_capacity(ids.len());
-        let buffers: Vec<ChunkBytes> = buffers.into_iter().collect::<Result<_, _>>()?;
-        for (run, buffer) in runs.iter().zip(&buffers) {
-            for &slot in &run.2 {
-                let header = &self.headers[ids[slot]];
-                let start = (header.cells_offset - run.0) as usize;
-                pieces.push((slot, &buffer[start..start + header.cells_len as usize]));
-            }
-        }
-        let decoded = parallel_map(&pieces, |(slot, bytes)| {
-            let header = &self.headers[ids[*slot]];
+        let ranges: Vec<(u64, u64)> = ids
+            .iter()
+            .map(|&id| self.headers[id].cells_range())
+            .collect();
+        read_merged(self.source.as_ref(), &ranges, |slot, bytes| {
+            let header = &self.headers[ids[slot]];
             let cells = decode_cells(&decompress(bytes, header.cells_raw_len as usize)?)?;
             if cells.tets.len() != header.tet_count as usize
                 || cells.nodes.len() != header.node_count as usize
             {
                 return Err(ChunkError::Format("chunk counts mismatch".to_owned()));
             }
-            Ok((*slot, Arc::new(cells)))
-        });
-        let mut out: Vec<Option<Arc<ChunkCells>>> = vec![None; ids.len()];
-        for item in decoded {
-            let (slot, cells) = item?;
-            out[slot] = Some(cells);
-        }
-        out.into_iter()
-            .map(|cells| cells.ok_or_else(|| ChunkError::Format("chunk missing".to_owned())))
-            .collect()
+            Ok(Arc::new(cells))
+        })
     }
+}
+
+/// 按文件偏移排序后把相邻区间（间隙不超过 [`MERGE_GAP`]、单次不超过 [`MAX_READ`]）合并成大块读，
+/// 再对每个区间并行调用 `decode(槽位, 字节)`；结果按输入顺序返回。单元块与场值块共用。
+pub(crate) fn read_merged<R: Send>(
+    source: &dyn ChunkSource,
+    ranges: &[(u64, u64)],
+    decode: impl Fn(usize, &[u8]) -> Result<R, ChunkError> + Sync,
+) -> Result<Vec<R>, ChunkError> {
+    let mut order: Vec<usize> = (0..ranges.len()).collect();
+    order.sort_unstable_by_key(|&slot| ranges[slot].0);
+    // 区段：(起点, 终点, 区段内的槽位)。
+    let mut runs: Vec<(u64, u64, Vec<usize>)> = Vec::new();
+    for slot in order {
+        let (start, end) = ranges[slot];
+        match runs.last_mut() {
+            Some(run) if start <= run.1 + MERGE_GAP && end - run.0 <= MAX_READ => {
+                run.1 = run.1.max(end);
+                run.2.push(slot);
+            }
+            _ => runs.push((start, end, vec![slot])),
+        }
+    }
+    let buffers: Vec<Result<ChunkBytes, ChunkError>> =
+        parallel_map(&runs, |run| source.read_at(run.0, (run.1 - run.0) as usize));
+    let buffers: Vec<ChunkBytes> = buffers.into_iter().collect::<Result<_, _>>()?;
+    let mut pieces: Vec<(usize, &[u8])> = Vec::with_capacity(ranges.len());
+    for (run, buffer) in runs.iter().zip(&buffers) {
+        for &slot in &run.2 {
+            let (start, end) = ranges[slot];
+            let offset = (start - run.0) as usize;
+            pieces.push((slot, &buffer[offset..offset + (end - start) as usize]));
+        }
+    }
+    let decoded = parallel_map(&pieces, |(slot, bytes)| {
+        decode(*slot, bytes).map(|value| (*slot, value))
+    });
+    let mut out: Vec<Option<R>> = (0..ranges.len()).map(|_| None).collect();
+    for item in decoded {
+        let (slot, value) = item?;
+        out[slot] = Some(value);
+    }
+    out.into_iter()
+        .map(|value| value.ok_or_else(|| ChunkError::Format("chunk missing".to_owned())))
+        .collect()
 }
 
 /// 简单的作用域并行 map：原子计数器分发，结果按输入顺序返回。

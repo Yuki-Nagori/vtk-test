@@ -130,7 +130,7 @@ pub fn section_surface(
 }
 
 /// 节点到平面（单位法向）的有符号距离。
-fn plane_distances(nodes: &[[f64; 3]], origin: [f64; 3], normal: [f64; 3]) -> Vec<f64> {
+pub(crate) fn plane_distances(nodes: &[[f64; 3]], origin: [f64; 3], normal: [f64; 3]) -> Vec<f64> {
     nodes
         .iter()
         .map(|&point| dot(sub(point, origin), normal))
@@ -426,34 +426,73 @@ fn signed_volume6(nodes: &[[f64; 3]], cell: [MeshIndex; 4]) -> f64 {
 }
 
 pub(crate) fn clip_triangle(corners: [([f64; 3], f64); 3]) -> Vec<[f64; 3]> {
+    clip_triangle_with(corners.map(|(point, distance)| (point, distance, ())))
+        .into_iter()
+        .map(|(point, ())| point)
+        .collect()
+}
+
+/// [`clip_triangle`] 的带属性版本：交点属性按同一参数 `t` 线性插值，几何逐位一致。
+pub(crate) fn clip_triangle_with<A: Lerp>(corners: [([f64; 3], f64, A); 3]) -> Vec<([f64; 3], A)> {
     let mut output = Vec::with_capacity(4);
     for index in 0..3 {
-        let (point, distance) = corners[index];
-        let (next, next_distance) = corners[(index + 1) % 3];
+        let (point, distance, attribute) = corners[index];
+        let (next, next_distance, next_attribute) = corners[(index + 1) % 3];
         if distance <= 0.0 {
-            output.push(point);
+            output.push((point, attribute));
         }
         if (distance <= 0.0) != (next_distance <= 0.0) {
-            output.push(lerp_on_plane(point, distance, next, next_distance));
+            let t = distance / (distance - next_distance);
+            output.push((
+                lerp_point(point, next, t),
+                attribute.lerp(next_attribute, t),
+            ));
         }
     }
     output
 }
 
+/// 截面插值属性：节点场按边参数线性插值；单元场与无属性为常量。
+pub(crate) trait Lerp: Copy {
+    fn lerp(self, other: Self, t: f64) -> Self;
+}
+
+impl Lerp for () {
+    fn lerp(self, _: Self, _: f64) -> Self {}
+}
+
+impl Lerp for [f64; 3] {
+    fn lerp(self, other: Self, t: f64) -> Self {
+        lerp_point(self, other, t)
+    }
+}
+
 fn lerp_on_plane(a: [f64; 3], da: f64, b: [f64; 3], db: f64) -> [f64; 3] {
-    let t = da / (da - db);
+    lerp_point(a, b, da / (da - db))
+}
+
+fn lerp_point(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
     std::array::from_fn(|axis| a[axis] + (b[axis] - a[axis]) * t)
 }
 
 /// 截面点按绕 `normal` 的逆时针排列，使扇形三角形法向沿 `normal`。
 pub(crate) fn order_around(points: &mut [[f64; 3]], normal: [f64; 3]) {
-    if points.len() < 3 {
+    order_around_by(points, |point| *point, normal);
+}
+
+/// [`order_around`] 的泛型版本：按 `point(item)` 排序任意携带属性的顶点。
+pub(crate) fn order_around_by<T>(
+    items: &mut [T],
+    point: impl Fn(&T) -> [f64; 3],
+    normal: [f64; 3],
+) {
+    if items.len() < 3 {
         return;
     }
-    let count = points.len() as f64;
-    let center = points
+    let count = items.len() as f64;
+    let center = items
         .iter()
-        .fold([0.0; 3], |sum, &point| add(sum, point))
+        .fold([0.0; 3], |sum, item| add(sum, point(item)))
         .map(|value| value / count);
     let helper = if normal[0].abs() < 0.9 {
         [1.0, 0.0, 0.0]
@@ -462,25 +501,38 @@ pub(crate) fn order_around(points: &mut [[f64; 3]], normal: [f64; 3]) {
     };
     let u = cross(normal, helper);
     let v = cross(normal, u);
-    points.sort_by(|&left, &right| {
+    items.sort_by(|left, right| {
         let angle = |point: [f64; 3]| {
             let offset = sub(point, center);
             dot(offset, v).atan2(dot(offset, u))
         };
-        angle(left).total_cmp(&angle(right))
+        angle(point(left)).total_cmp(&angle(point(right)))
     });
-    let first = cross(sub(points[1], points[0]), sub(points[2], points[0]));
+    let first = cross(
+        sub(point(&items[1]), point(&items[0])),
+        sub(point(&items[2]), point(&items[0])),
+    );
     if dot(first, normal) < 0.0 {
-        points.reverse();
+        items.reverse();
     }
 }
 
 pub(crate) fn fan(polygon: &[[f64; 3]], output: &mut Vec<[[f64; 3]; 3]>) {
+    fan_by(polygon, |point| *point, |triangle| output.push(triangle));
+}
+
+/// [`fan`] 的泛型版本：退化（零面积）三角形同样跳过，`emit` 收到三个原始顶点项。
+pub(crate) fn fan_by<T: Copy>(
+    polygon: &[T],
+    point: impl Fn(&T) -> [f64; 3],
+    mut emit: impl FnMut([T; 3]),
+) {
     for index in 1..polygon.len().saturating_sub(1) {
-        let triangle = [polygon[0], polygon[index], polygon[index + 1]];
+        let items = [polygon[0], polygon[index], polygon[index + 1]];
+        let triangle = items.map(|item| point(&item));
         let area = cross(sub(triangle[1], triangle[0]), sub(triangle[2], triangle[0]));
         if dot(area, area) > 0.0 {
-            output.push(triangle);
+            emit(items);
         }
     }
 }

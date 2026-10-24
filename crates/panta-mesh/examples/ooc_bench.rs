@@ -6,6 +6,8 @@
 //! - `--budget-mib N`：块缓存预算，默认 1024。
 //! - `--dir PATH`：资产目录，默认系统临时目录；`--reuse` 复用已有文件；`--keep` 保留文件。
 //! - `--reader auto|mmap|pread`：块读取实现（task 028），默认 auto（映射，失败回退定位读）。
+//! - `--fields`：构建时写入 3 个合成结果场（节点标量、节点矢量、单元标量；task 029），
+//!   并测场着色剖面的延迟与 IO（读调用、读取字节、打开文件数）。
 //!
 //! 只测几何计算延迟与 IO（读调用次数、读取字节数、打开文件数；映射实现另计映射访问次数，
 //! 缺页由 OS 处理不计为读调用），不含渲染；无 GPU 时帧率不测。
@@ -15,9 +17,59 @@
 use std::time::Instant;
 
 use panta_mesh::chunked::{
-    ChunkBuildOptions, ChunkReadMode, ChunkedVolume, IoCounts, Prefetcher, build_chunked_volume,
+    ChunkBuildOptions, ChunkError, ChunkFieldInfo, ChunkReadMode, ChunkedVolume, FieldProvider,
+    IoCounts, NoFields, Prefetcher, build_chunked_volume_with_fields,
 };
-use panta_mesh::{Progress, SyntheticTetBlock};
+use panta_mesh::{FieldAssociation, FieldComponent, Progress, ResultField, SyntheticTetBlock};
+
+/// 按需生成的合成结果场：一次只驻留一个场。
+struct SyntheticFields<'a>(&'a SyntheticTetBlock);
+
+const FIELDS: [(&str, FieldAssociation, u8); 3] = [
+    ("pressure", FieldAssociation::Node, 1),
+    ("velocity", FieldAssociation::Node, 3),
+    ("cell_id", FieldAssociation::Cell, 1),
+];
+
+impl FieldProvider for SyntheticFields<'_> {
+    fn infos(&self) -> Vec<ChunkFieldInfo> {
+        FIELDS
+            .iter()
+            .map(|&(name, association, components)| ChunkFieldInfo {
+                name: name.to_owned(),
+                association,
+                components,
+            })
+            .collect()
+    }
+
+    fn load(&mut self, index: usize) -> Result<ResultField, ChunkError> {
+        let (name, association, components) = FIELDS[index];
+        let block = self.0;
+        let values = match index {
+            0 => (0..block.node_count())
+                .map(|i| {
+                    let p = block.node(i);
+                    p[0] + 2.0 * p[1] - p[2]
+                })
+                .collect(),
+            1 => (0..block.node_count())
+                .flat_map(|i| {
+                    let p = block.node(i);
+                    [p[1], -p[0], 0.5 * p[2]]
+                })
+                .collect(),
+            _ => (0..block.tet_count()).map(|i| i as f64).collect(),
+        };
+        Ok(ResultField {
+            name: name.to_owned(),
+            association,
+            components,
+            units: String::new(),
+            values,
+        })
+    }
+}
 
 fn parse_count(text: &str) -> Result<usize, String> {
     let (digits, factor) = match text.chars().last() {
@@ -103,7 +155,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut chunk = 1 << 18;
     let mut budget_mib = 1024usize;
     let mut dir = std::env::temp_dir();
-    let (mut reuse, mut keep) = (false, false);
+    let (mut reuse, mut keep, mut with_fields) = (false, false, false);
     let mut reader = ChunkReadMode::Auto;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -114,6 +166,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--dir" => dir = args.next().ok_or("--dir 缺少值")?.into(),
             "--reuse" => reuse = true,
             "--keep" => keep = true,
+            "--fields" => with_fields = true,
             "--reader" => {
                 reader = match args.next().ok_or("--reader 缺少值")?.as_str() {
                     "auto" => ChunkReadMode::Auto,
@@ -126,7 +179,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let block = SyntheticTetBlock::new(cells);
-    let path = dir.join(format!("synthetic-tet-{}.pchunk", block.tet_count()));
+    let suffix = if with_fields { "-fields" } else { "" };
+    let path = dir.join(format!(
+        "synthetic-tet-{}{suffix}.pchunk",
+        block.tet_count()
+    ));
     println!(
         "合成四面体 {} / 节点 {}，块上限 {chunk}，缓存预算 {budget_mib} MiB，线程 {}",
         block.tet_count(),
@@ -144,8 +201,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             max_chunk_cells: chunk,
             ..ChunkBuildOptions::default()
         };
-        let summary =
-            build_chunked_volume(&block, options, &file, &Progress::new())?.ok_or("构建被取消")?;
+        let summary = if with_fields {
+            build_chunked_volume_with_fields(
+                &block,
+                &mut SyntheticFields(&block),
+                options,
+                &file,
+                &Progress::new(),
+            )
+        } else {
+            build_chunked_volume_with_fields(
+                &block,
+                &mut NoFields,
+                options,
+                &file,
+                &Progress::new(),
+            )
+        }?
+        .ok_or("构建被取消")?;
         file.sync_all()?;
         drop(file);
         std::fs::rename(&partial, &path)?;
@@ -201,6 +274,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let started = Instant::now();
         volume.fine_section(&plane, &|| false)?.ok_or("取消")?;
         let repeat_ms = ms(started);
+        io.delta();
+        if !volume.fields().is_empty() {
+            // 场着色：首次选场（读外表面值 + 命中块场值）、同场换分量、换场。
+            let mut runs = Vec::new();
+            for (field, component, what) in [
+                (1, FieldComponent::Magnitude, "选场 velocity"),
+                (1, FieldComponent::Component(0), "换分量"),
+                (0, FieldComponent::Magnitude, "换场 pressure"),
+                (2, FieldComponent::Magnitude, "换场 cell_id"),
+            ] {
+                let started = Instant::now();
+                let section = volume
+                    .fine_section_field(&plane, field, component, &|| false)?
+                    .ok_or("取消")?;
+                let took = ms(started);
+                let (reads, mib, mapped) = io.delta();
+                println!(
+                    "[{label}] 场剖面 {what}：{took:.1} ms，{} 三角形，读调用 {reads}，映射访问 {mapped}，读 {mib:.1} MiB",
+                    section.surface.triangles.len()
+                );
+                runs.push(format!(
+                    "{{\"ms\":{took:.1},\"reads\":{reads},\"read_mib\":{mib:.1}}}"
+                ));
+            }
+            json.push(format!("\"{label}_field\":[{}]", runs.join(",")));
+        }
 
         // 拖动：0.30 → 0.70，每步 1%，每步出粗级别，同时预取下一位置的命中块。
         volume.cache().clear();

@@ -5,12 +5,14 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use super::ChunkError;
-use super::cache::{ChunkCache, parallel_map};
+use super::cache::{ChunkCache, parallel_map, read_merged};
 use super::format::{
-    ChunkHeader, ChunkReadMode, ChunkSource, ChunkSurface, IoCounts, VOXELS_PER_AXIS,
-    open_chunk_source, read_index,
+    ChunkFieldInfo, ChunkHeader, ChunkReadMode, ChunkSource, ChunkSurface, IoCounts,
+    VOXELS_PER_AXIS, boundary_tuple_count, decode_f64s, decompress, open_chunk_source, read_index,
 };
+use crate::field_section::{FieldOutput, clip_with, section_polygon_with, tuple};
 use crate::volume::{clip_triangle, dot, fan, order_around, section_polygon, single_quality, sub};
+use crate::{FieldAssociation, FieldComponent, FieldSection};
 use crate::{POOR_ASPECT_RATIO, POOR_MIN_DIHEDRAL_DEGREES, SurfaceMesh, TetQuality};
 
 type Triangle = [[f64; 3]; 3];
@@ -81,6 +83,9 @@ struct ResultCache {
 /// 切面结果缓存上限（按 FIFO 淘汰）。
 const RESULT_BUDGET: usize = 256 << 20;
 
+/// 单个场按块解码的外表面值（只常驻一个场）。
+type BoundaryValues = Arc<Vec<Vec<f64>>>;
+
 /// 打开的分块体网格：块表与表面常驻，单元经 [`ChunkCache`] 按需读取。
 pub struct ChunkedVolume {
     source: Arc<dyn ChunkSource>,
@@ -91,6 +96,9 @@ pub struct ChunkedVolume {
     cache: Arc<ChunkCache>,
     results: Mutex<ResultCache>,
     quality: Mutex<Vec<Option<ChunkQuality>>>,
+    fields: Vec<ChunkFieldInfo>,
+    /// 最近选中场的各块外表面值（只留一个场，切换场时整段重读一次）。
+    boundary_values: Mutex<Option<(usize, BoundaryValues)>>,
 }
 
 impl std::fmt::Debug for ChunkedVolume {
@@ -136,6 +144,8 @@ impl ChunkedVolume {
             cache,
             results: Mutex::new(ResultCache::default()),
             quality: Mutex::new(vec![None; chunk_count]),
+            fields: table.fields,
+            boundary_values: Mutex::new(None),
         })
     }
 
@@ -145,6 +155,18 @@ impl ChunkedVolume {
 
     pub fn node_count(&self) -> u64 {
         self.node_count
+    }
+
+    /// 文件级结果场表（task 029），与 `ChunkHeader::field_ranges` 同序。
+    pub fn fields(&self) -> &[ChunkFieldInfo] {
+        &self.fields
+    }
+
+    /// 按名称与关联查找场下标。
+    pub fn field_index(&self, name: &str, association: FieldAssociation) -> Option<usize> {
+        self.fields
+            .iter()
+            .position(|field| field.name == name && field.association == association)
     }
 
     pub fn headers(&self) -> &[ChunkHeader] {
@@ -339,6 +361,146 @@ impl ChunkedVolume {
         Ok(Some(SurfaceMesh {
             triangles: parts.into_iter().flatten().collect(),
         }))
+    }
+
+    /// 带结果场值的精细切面（task 029）：几何与 [`Self::fine_section`] 逐位一致、三角形顺序相同。
+    /// 选中场的外表面值整段一次读入并常驻（只留最近一个场）；命中块的块内值与单元一样合并读取，
+    /// 不进块缓存（只在本次切面中使用）。取消返回 `Ok(None)`。
+    pub fn fine_section_field(
+        &self,
+        plane: &SectionPlane,
+        field: usize,
+        component: FieldComponent,
+        cancelled: &(dyn Fn() -> bool + Sync),
+    ) -> Result<Option<FieldSection>, ChunkError> {
+        let info = self
+            .fields
+            .get(field)
+            .ok_or_else(|| ChunkError::Invalid(format!("field {field} out of range")))?
+            .clone();
+        component
+            .validate(info.components)
+            .map_err(ChunkError::Invalid)?;
+        let components = usize::from(info.components);
+        let boundary = self.boundary_values(field)?;
+        if cancelled() {
+            return Ok(None);
+        }
+        let kept = self.kept_chunks(plane);
+        let parts = parallel_map(&kept, |&id| {
+            let mut out = FieldOutput::default();
+            let surface = &self.surfaces[id];
+            let values = &boundary[id];
+            for (index, triangle) in surface.boundary.iter().enumerate() {
+                let corner = |slot: usize| match info.association {
+                    FieldAssociation::Node => tuple(values, components, index * 3 + slot),
+                    FieldAssociation::Cell => tuple(values, components, index),
+                };
+                clip_with(
+                    std::array::from_fn(|slot| {
+                        let point = triangle[slot];
+                        (point, plane.distance(point), corner(slot))
+                    }),
+                    &mut out,
+                );
+            }
+            out
+        });
+        let mut output = FieldOutput::default();
+        for part in parts {
+            output.append(part);
+        }
+        let hits = self.hit_chunks(plane);
+        for batch in self.budget_batches(&hits) {
+            let cells = self.cache.get_many(batch)?;
+            if cancelled() {
+                return Ok(None);
+            }
+            let values = self.read_field_values(batch, field)?;
+            if cancelled() {
+                return Ok(None);
+            }
+            let jobs: Vec<usize> = (0..batch.len()).collect();
+            let computed = parallel_map(&jobs, |&slot| {
+                let (cells, values) = (&cells[slot], &values[slot]);
+                let distance: Vec<f64> = cells.nodes.iter().map(|&p| plane.distance(p)).collect();
+                let mut out = FieldOutput::default();
+                for (index, tet) in cells.tets.iter().enumerate() {
+                    match info.association {
+                        FieldAssociation::Node => section_polygon_with(
+                            &cells.nodes,
+                            &distance,
+                            tet.nodes,
+                            plane.normal,
+                            |node| tuple(values, components, node as usize),
+                            &mut out,
+                        ),
+                        FieldAssociation::Cell => {
+                            let value = tuple(values, components, index);
+                            section_polygon_with(
+                                &cells.nodes,
+                                &distance,
+                                tet.nodes,
+                                plane.normal,
+                                |_| value,
+                                &mut out,
+                            );
+                        }
+                    }
+                }
+                out
+            });
+            for part in computed {
+                output.append(part);
+            }
+        }
+        Ok(Some(output.finish(info.components, component)))
+    }
+
+    /// 选中场的各块外表面值：所有块的外表面值区段在文件中连续，一次读入后并行解压。
+    fn boundary_values(&self, field: usize) -> Result<BoundaryValues, ChunkError> {
+        let mut slot = self
+            .boundary_values
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((cached, values)) = slot.as_ref()
+            && *cached == field
+        {
+            return Ok(values.clone());
+        }
+        let info = &self.fields[field];
+        let ranges: Vec<(u64, u64)> = self
+            .headers
+            .iter()
+            .map(|header| header.field_blocks[field].boundary_range())
+            .collect();
+        let values = read_merged(self.source.as_ref(), &ranges, |id, bytes| {
+            let block = &self.headers[id].field_blocks[field];
+            let values = decode_f64s(&decompress(bytes, block.boundary_raw_len as usize)?)?;
+            let expected = boundary_tuple_count(self.surfaces[id].boundary.len(), info.association)
+                * usize::from(info.components);
+            if values.len() != expected {
+                return Err(ChunkError::Format(
+                    "field boundary count mismatch".to_owned(),
+                ));
+            }
+            Ok(values)
+        })?;
+        let values = Arc::new(values);
+        *slot = Some((field, values.clone()));
+        Ok(values)
+    }
+
+    /// 读取若干块某个场的块内值（合并读）。
+    fn read_field_values(&self, ids: &[usize], field: usize) -> Result<Vec<Vec<f64>>, ChunkError> {
+        let ranges: Vec<(u64, u64)> = ids
+            .iter()
+            .map(|&id| self.headers[id].field_blocks[field].values_range())
+            .collect();
+        read_merged(self.source.as_ref(), &ranges, |slot, bytes| {
+            let block = &self.headers[ids[slot]].field_blocks[field];
+            decode_f64s(&decompress(bytes, block.values_raw_len as usize)?)
+        })
     }
 
     /// 把块号切成若干批，每批解压后大小（按 `cells_raw_len` 估计）不超过缓存预算的一半；单块超限时独占一批。
