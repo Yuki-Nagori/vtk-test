@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace panta::visualization {
@@ -34,6 +35,11 @@ struct SurfaceMeshSnapshot {
     std::vector<float> scalars;
     double scalar_min = 0.0;
     double scalar_max = 1.0;
+    /// 视口色标（task 038）：UTF-8 场名、单位与区间口径（如“全部时间步”）；
+    /// 场名为空时不显示色标，单位与口径为空时省略对应部分。
+    std::string scalar_title;
+    std::string scalar_units;
+    std::string scalar_range_label;
 };
 
 class MeshSource : public QObject {

@@ -6,7 +6,7 @@
 
 UI 使用 QML，3D 视口使用 C++ native Qt Quick component。VTK 是 V1 渲染后端，但不成为应用公共 API。原生视口集中处理图形上下文、窗口尺寸、设备像素比、渲染线程及资源销毁。
 
-VTK 采用 WebGPU render window；macOS 使用 `vtkCocoaHardwareWindow`/`vtkCocoaHardwareView` 暴露的原生 Cocoa view 与 Metal layer，再由原生视口桥接到 Qt Quick 窗口；Windows 使用 Qt Quick 原生 HWND 创建 VTK child window；Wayland 使用 Qt Quick 的 `wl_display`/`wl_compositor` 创建 `wl_subsurface`，再把该子 surface 交给 VTK。三端的 render window 均只绑定 `CaeViewport` 的原生区域，不把整个 Qt 顶层 surface 交给 VTK。三种嵌入（Cocoa 子视图、Win32 子 HWND、Wayland subsurface）都使原生渲染层位于 Qt Quick 内容之上：QML 元素无法叠放在视口区域上方，色标、工具栏等 overlay 必须避开视口矩形或另择承载方式；叠加与输入协调验证以此为前提。Qt Quick 不承载 VTK 的 OpenGL scenegraph 集成，`QQuickVTKItem` 不属于目标架构。第一里程碑的代码路径已落地，仍需在目标平台验证叠加、尺寸/高 DPI 同步和输入事件协调。
+VTK 采用 WebGPU render window；macOS 使用 `vtkCocoaHardwareWindow`/`vtkCocoaHardwareView` 暴露的原生 Cocoa view 与 Metal layer，再由原生视口桥接到 Qt Quick 窗口；Windows 使用 Qt Quick 原生 HWND 创建 VTK child window；Wayland 使用 Qt Quick 的 `wl_display`/`wl_compositor` 创建 `wl_subsurface`，再把该子 surface 交给 VTK。三端的 render window 均只绑定 `CaeViewport` 的原生区域，不把整个 Qt 顶层 surface 交给 VTK。三种嵌入（Cocoa 子视图、Win32 子 HWND、Wayland subsurface）都使原生渲染层位于 Qt Quick 内容之上：QML 元素无法叠放在视口区域上方，色标、工具栏等 overlay 必须避开视口矩形或另择承载方式（视口色标由 VTK `vtkScalarBarActor` 在 render window 内绘制，task 038）；无打开文档时 `CaeViewport` 隐藏、原生表面随之隐藏，同一矩形显示 QML 空状态引导（task 038，三端须在目标平台验证）；叠加与输入协调验证以此为前提。Qt Quick 不承载 VTK 的 OpenGL scenegraph 集成，`QQuickVTKItem` 不属于目标架构。第一里程碑的代码路径已落地，仍需在目标平台验证叠加、尺寸/高 DPI 同步和输入事件协调。
 
 默认视口为空场景，不创建品牌字样、固定欢迎文案或默认文档页签。只有真实资产加载成功后才建立对应显示对象；关闭最后一个文档释放其 Mesh 快照并恢复空视口。窗口、相机和输入生命周期由 VTK adapter 管理。
 

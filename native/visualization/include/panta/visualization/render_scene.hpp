@@ -19,8 +19,9 @@ using SceneRevision = std::uint64_t;
 struct RenderScene {
     /// 状态版本：后端已应用的修订低于此值时必须重新应用。
     SceneRevision revision = 0;
-    /// 视口背景基色（演示阶段的可恢复状态之一；VTK 以轻微渐变呈现）。
-    QColor background{248, 249, 250};
+    /// 视口背景渐变（task 038，深色画布）：`background` 为底部色，`background_top` 为顶部色。
+    QColor background{0x11, 0x16, 0x1d};
+    QColor background_top{0x2b, 0x34, 0x42};
     /// 模型可见性；没有有效网格时后端不创建模型几何。
     bool primitive_visible = true;
     /// Rust 工程服务已校验的表面网格快照；为空时视口保持空白。

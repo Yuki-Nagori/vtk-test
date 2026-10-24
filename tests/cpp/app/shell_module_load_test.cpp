@@ -96,7 +96,7 @@ class ShellModuleLoadTest final : public QObject {
 #endif
     }
 #ifdef PANTA_ENABLE_BRIDGE_MODULE
-    void workspace_keeps_sidebar_bounded_and_viewport_visible() {
+    void workspace_keeps_sidebar_bounded_and_viewport_area_sized() {
         QQmlApplicationEngine engine;
         panta::install_icon_provider(engine);
         engine.loadFromModule(QStringLiteral("Panta.Shell"), QStringLiteral("App"));
@@ -107,7 +107,8 @@ class ShellModuleLoadTest final : public QObject {
         auto* pane = window->findChild<QQuickItem*>(QStringLiteral("viewportPane"));
         auto* viewport = window->findChild<QQuickItem*>(QStringLiteral("caeViewport"));
         auto* tabs = window->findChild<QQuickItem*>(QStringLiteral("documentTabBar"));
-        QVERIFY(sidebar && pane && viewport && tabs);
+        auto* emptyState = window->findChild<QQuickItem*>(QStringLiteral("viewportEmptyState"));
+        QVERIFY(sidebar && pane && viewport && tabs && emptyState);
         for (const QSize size : {QSize(1280, 800), QSize(1600, 1000)}) {
             window->resize(size);
             QTRY_COMPARE(sidebar->width(), 300.0);
@@ -117,7 +118,11 @@ class ShellModuleLoadTest final : public QObject {
             QTRY_VERIFY(viewport->height() > pane->height() - 50.0);
             QTRY_COMPARE(tabs->width(), pane->width());
             QVERIFY(tabs->height() > 0.0);
-            QVERIFY(viewport->isVisible());
+            // task 038：无文档时原生视口隐藏，同一矩形显示空状态引导。
+            QVERIFY(!viewport->isVisible());
+            QVERIFY(emptyState->isVisible());
+            QCOMPARE(emptyState->width(), viewport->width());
+            QCOMPARE(emptyState->height(), viewport->height());
             QVERIFY(tabs->isVisible());
             // task 036：页签在视口上方，两者纵向不重叠。
             QVERIFY(tabs->mapToScene(QPointF(0, tabs->height())).y() <=
@@ -125,6 +130,11 @@ class ShellModuleLoadTest final : public QObject {
             const auto sidebarRight = sidebar->mapToScene(QPointF(sidebar->width(), 0)).x();
             QVERIFY(pane->mapToScene(QPointF()).x() >= sidebarRight);
             QVERIFY(pane->mapToScene(QPointF(pane->width(), 0)).x() <= window->width());
+        }
+        if (const auto dir = qEnvironmentVariable("PANTA_SHELL_SCREENSHOT_DIR"); !dir.isEmpty()) {
+            QTest::qWait(50);
+            QVERIFY(window->grabWindow().save(
+                QDir(dir).filePath(QStringLiteral("viewport-empty-state.png"))));
         }
     }
     void playback_bar_uses_svg_icons_and_shape_coded_loop_state() {
@@ -437,6 +447,9 @@ class ShellModuleLoadTest final : public QObject {
         QVERIFY(!project->dirty());
         project->openImportRecord(ids.at(1));
         QTRY_COMPARE(project->activeDocumentId(), ids.at(1));
+        // task 038：有文档时原生视口可见，空状态引导隐藏。
+        QTRY_VERIFY(viewport->isVisible());
+        QVERIFY(!window->findChild<QQuickItem*>(QStringLiteral("viewportEmptyState"))->isVisible());
 
         window->requestActivate();
         QVERIFY(QTest::qWaitForWindowExposed(window));

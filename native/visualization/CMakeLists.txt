@@ -60,7 +60,8 @@ if(UNIX AND NOT APPLE)
 endif()
 # WebGPU/hardware-window 路径不依赖 Qt VTK GUI 或 OpenGL scenegraph；
 # 字形、法线和面内文本几何所需的 RenderingFreeType/FiltersCore/FiltersGeneral 与
-# FiltersSources 显式列出；Dawn 由 RenderingWebGPU 的接口依赖提供。公共头只有
+# FiltersSources 显式列出；视口色标 vtkScalarBarActor 来自 RenderingAnnotation
+# （task 038，SDK 由 task 041 开启）；Dawn 由 RenderingWebGPU 的接口依赖提供。公共头只有
 # Qt 类型，VTK/Dawn 仅为模块内部消费——PRIVATE 链接避免第三方 include
 # 路径泄漏给消费方（静态库符号仍经 LINK_ONLY 传播给最终链接者）；
 # Qt6::Quick 对应公共头的 QQuickItem 基类，保持 PUBLIC。
@@ -69,6 +70,7 @@ target_link_libraries(
   PRIVATE VTK::RenderingWebGPU
           VTK::RenderingUI
           VTK::RenderingCore
+          VTK::RenderingAnnotation
           VTK::RenderingFreeType
           VTK::FiltersCore
           VTK::FiltersGeneral
@@ -86,6 +88,7 @@ vtk_module_autoinit(
   VTK::RenderingWebGPU
   VTK::RenderingUI
   VTK::RenderingCore
+  VTK::RenderingAnnotation
   VTK::RenderingFreeType
   VTK::FiltersCore
   VTK::FiltersGeneral
@@ -98,7 +101,8 @@ if(BUILD_TESTING)
     target_include_directories(panta_${_test} PRIVATE src/vtk)
     target_link_libraries(panta_${_test} PRIVATE panta_visualization Qt6::Test VTK::CommonDataModel)
   endforeach()
-  target_link_libraries(panta_primitive_scene_test PRIVATE VTK::RenderingCore VTK::RenderingWebGPU)
+  target_link_libraries(panta_primitive_scene_test PRIVATE VTK::RenderingCore VTK::RenderingWebGPU
+                                                          VTK::RenderingAnnotation)
   panta_add_qml_test(Visualization.PrimitiveScene panta_primitive_scene_test visualization)
   panta_add_qml_test(Visualization.ViewportNavigation panta_viewport_navigation_test visualization)
   if(APPLE)

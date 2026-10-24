@@ -21,6 +21,7 @@ set(PANTA_SHELL_QML_FILES
     Components/Composites/DialogTitleBar.qml
     Components/Composites/DialogWindow.qml
     Components/Composites/DocumentTabBar.qml
+    Components/Composites/ViewportEmptyState.qml
     Dialogs/GenerateVolumeDialog.qml
     Dialogs/ImportDialog.qml
     Dialogs/LargeMeshSettingsDialog.qml

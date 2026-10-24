@@ -7,6 +7,7 @@
 #include <cmath>
 #include <memory>
 #include <panta/visualization/mesh_source.hpp>
+#include <string>
 #include <vtkActor.h>
 #include <vtkCamera.h>
 #include <vtkColorTransferFunction.h>
@@ -17,6 +18,9 @@
 #include <vtkPolyData.h>
 #include <vtkPolyDataMapper.h>
 #include <vtkProperty.h>
+#include <vtkScalarBarActor.h>
+#include <vtkScalarsToColors.h>
+#include <vtkTextProperty.h>
 #include <vtkType.h>
 #include <vtkWeakPointer.h>
 #include <vtkWebGPURenderer.h>
@@ -88,6 +92,65 @@ class PrimitiveSceneTest final : public QObject {
         panta::visualization::replace_primitive_geometry(actor, nullptr, mesh);
         mapper = vtkPolyDataMapper::SafeDownCast(actor->GetMapper());
         QVERIFY(mapper != nullptr && !mapper->GetScalarVisibility());
+    }
+    void scalar_bar_tracks_field_lookup_table_and_title() {
+        using panta::visualization::scalar_bar_title;
+        panta::visualization::SurfaceMeshSnapshot plain;
+        QVERIFY(scalar_bar_title(plain).empty());
+        plain.scalar_title = "温度";
+        QCOMPARE(scalar_bar_title(plain), std::string("温度"));
+        plain.scalar_units = "K";
+        plain.scalar_range_label = "全部时间步";
+        QCOMPARE(scalar_bar_title(plain), std::string("温度 (K)\n全部时间步"));
+
+        vtkNew<vtkScalarBarActor> bar;
+        panta::visualization::style_scalar_bar(bar);
+        QVERIFY(!bar->GetVisibility());
+        QCOMPARE(bar->GetNumberOfLabels(), 5);
+        const std::string font = panta::visualization::scalar_bar_font_file();
+        if (!font.empty()) {
+            QCOMPARE(bar->GetTitleTextProperty()->GetFontFamily(), VTK_FONT_FILE);
+            QCOMPARE(std::string(bar->GetLabelTextProperty()->GetFontFile()), font);
+        }
+
+        vtkNew<vtkActor> actor;
+        const auto mesh = std::make_shared<panta::visualization::SurfaceMeshSnapshot>();
+        mesh->vertices = {{{0, 0, 0}}, {{1, 0, 0}}, {{0, 1, 0}}};
+        mesh->scalars = {2.0F, 4.0F, 6.0F};
+        mesh->scalar_min = 2.0;
+        mesh->scalar_max = 6.0;
+        mesh->scalar_title = "压力";
+        mesh->scalar_units = "Pa";
+        mesh->scalar_range_label = "当前步";
+        panta::visualization::replace_primitive_geometry(actor, nullptr, mesh);
+        panta::visualization::sync_scalar_bar(bar, actor, mesh.get());
+        QVERIFY(bar->GetVisibility());
+        QVERIFY(bar->GetLookupTable() == actor->GetMapper()->GetLookupTable());
+        QCOMPARE(bar->GetLookupTable()->GetRange()[0], 2.0);
+        QCOMPARE(bar->GetLookupTable()->GetRange()[1], 6.0);
+        QCOMPARE(std::string(bar->GetTitle()), std::string("压力 (Pa)\n当前步"));
+        QVERIFY(!bar->GetDrawNanAnnotation());
+
+        mesh->scalars[1] = std::nanf("");
+        panta::visualization::sync_scalar_bar(bar, actor, mesh.get());
+        QVERIFY(bar->GetDrawNanAnnotation());
+
+        // 无场名、无标量或无网格时隐藏并释放查找表引用。
+        auto untitled = std::make_shared<panta::visualization::SurfaceMeshSnapshot>(*mesh);
+        untitled->scalar_title.clear();
+        panta::visualization::replace_primitive_geometry(actor, nullptr, untitled);
+        panta::visualization::sync_scalar_bar(bar, actor, untitled.get());
+        QVERIFY(!bar->GetVisibility());
+        QVERIFY(bar->GetLookupTable() == nullptr);
+        auto geometry_only = std::make_shared<panta::visualization::SurfaceMeshSnapshot>();
+        geometry_only->vertices = mesh->vertices;
+        geometry_only->scalar_title = "压力";
+        panta::visualization::replace_primitive_geometry(actor, nullptr, geometry_only);
+        panta::visualization::sync_scalar_bar(bar, actor, geometry_only.get());
+        QVERIFY(!bar->GetVisibility());
+        panta::visualization::replace_primitive_geometry(actor, nullptr, {});
+        panta::visualization::sync_scalar_bar(bar, actor, nullptr);
+        QVERIFY(!bar->GetVisibility());
     }
     void empty_snapshot_has_no_geometry_or_camera_reset() {
         vtkNew<vtkActor> actor;
