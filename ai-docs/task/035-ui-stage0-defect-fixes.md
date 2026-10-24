@@ -1,6 +1,6 @@
 # 035 — UI 重制阶段 0：现状缺陷修复（不改布局）
 
-- 状态：in-progress
+- 状态：implemented
 - 阶段：UI 重制（[034](034-ui-redesign.md)）
 - 依赖：[034](034-ui-redesign.md)
 - 优先级：P1
@@ -52,11 +52,11 @@
 
 ## 验收标准
 
-- [ ] 1280×720 和 1600×900，DPR 1.0 / 1.25 / 1.5 / 2.0 下，侧栏、对话框、播放栏没有任何控件被裁切（QML 测试断言关键控件 `x + width ≤ parent.width`，并附截图记录）。
-- [ ] 播放栏 6 个按钮都是 SVG 图标，在没有 `⏮⏭⏸` 字形的环境（当前 Xvfb）中可辨认；循环状态可在不依赖颜色的情况下识别。
-- [ ] 新建工程名称非法时，错误只出现一次。
-- [ ] `cargo format`、`cargo quality`、`cargo lint`、`cargo test --locked --workspace` 全绿；现有 objectName 不变或同步更新测试。
-- [ ] 改动 C++/QML 的 PR 在分支上跑 nightly 并通过；每个 commit 的代码、测试、文档和 task 自洽，索引状态一致。
+- [x] 1280×720 和 1600×900，DPR 1.0 / 1.25 / 1.5 / 2.0 下，侧栏、对话框、播放栏没有任何控件被裁切（QML 测试断言关键控件 `x + width ≤ parent.width`，并附截图记录）。
+- [x] 播放栏 6 个按钮都是 SVG 图标，在没有 `⏮⏭⏸` 字形的环境（当前 Xvfb）中可辨认；循环状态可在不依赖颜色的情况下识别。
+- [x] 新建工程名称非法时，错误只出现一次。
+- [x] `cargo format`、`cargo quality`、`cargo lint`、`cargo test --locked --workspace` 全绿；现有 objectName 不变或同步更新测试。
+- [x] 改动 C++/QML 的 PR 在分支上跑 nightly 并通过；每个 commit 的代码、测试、文档和 task 自洽，索引状态一致。
 
 ## 验证计划与结果
 
@@ -64,6 +64,7 @@
 |---|---|---|---|
 | 2026-10-24 | PR a：本机 `cargo test --locked --workspace`（含 `Qml.ShellModuleLoads` 新用例 `playback_bar_uses_svg_icons_and_shape_coded_loop_state`、`theme_component_test` 白名单图标逐尺寸检查）、`cargo quality`、`cargo lint` | 播放栏 6 个按钮均为白名单 SVG、无文字字形；循环开关有描边 + 无障碍名称 | 通过（70/70） |
 | 2026-10-24 | PR b：offscreen 用例 `sidebar_controls_stay_within_sidebar_bounds`（导入 `tests/fixtures/mesh/pvd/flow.pvd`、开切面 + 字段 T + 质量诊断，1280×720 / 1600×900），CTest 另以 `QT_SCALE_FACTOR=1.25 / 1.5 / 2` 重跑（`Qml.ShellSidebarBounds.Dpr*`）；`PANTA_SHELL_SCREENSHOT_DIR` 保存离屏截图 | 侧栏全部可见控件右缘 ≤ 侧栏右缘；侧栏直接子项在窗口内，详情区可滚到最后一项 | 修复前侧栏内部被撑到 385px（右缘 393 > 248.5）；修复后 4 个 DPR 全部通过。截图：`/workspace/shots/035b/sidebar-{1280x720,1600x900}-dpr{1,1.25,1.5,2}.png`（盒子本地，视口在 offscreen 下为空白） |
+| 2026-10-24 | PR c：offscreen 用例 `dialogs_show_errors_once_and_prefer_native_file_pickers`；本机 `cargo quality`、`cargo lint`、`cargo test --locked --workspace`；`cmake --install … --component Runtime` 到临时前缀 | 占位文字为 `#8c959f`；名称为空提交后错误只在弹窗内出现、状态栏不重复，弹窗关闭后状态栏恢复；导入单位来源随 CFD / 普通网格切换；确定按钮完整落在按内容收紧的导入窗口内；全部 7 个 File/FolderDialog 的 `options` 为 0 | 通过（73/73）；安装产物含 `plugins/platformthemes/libqgtk3.so`、`libqxdgdesktopportal.so`。截图：`/workspace/shots/035c/{import-dialog,new-project-error}.png`（盒子本地）。真实系统原生对话框需在目标平台复核 |
 
 ## 风险与回退
 
@@ -74,7 +75,8 @@
 - 2026-10-24：按 034 用户决定登记任务。
 - 2026-10-24：PR a 采用 Lucide 1.61.0 的 skip-back / step-back / play / pause / step-forward / skip-forward / repeat，几何未修改，按用途重命名为 `playback-*`；许可全文放 `qml/icons/LICENSE-lucide.txt`，每个 SVG 带来源注释。循环开启时按钮描边与图标改为 `colorFocus`，并通过 `checked` 和无障碍名称（「循环播放：开 / 关」）表达状态，不只靠颜色。objectName 不变。
 - 2026-10-24：PR b 定位侧栏裁切根因：Basic 样式 Button 背景自带 100px 隐式宽度，切面行「切面 + X/Y/Z」三个按钮的最小宽度把整列 `ColumnLayout` 撑到 385px，所有 `fillWidth` 子项随之越界。修复：切面预设与视图预设按钮按文字计算隐式宽度；法向三个 SpinBox 改为每分量一行；质量面板标签换行；色标范围行填满宽度。另发现内容全部展开时总高约 1250px，超出 720 / 900 窗口、视图预设无法触达，因此把资产列表以下的详情放进可滚动区（滚动条在内容超出时常显）。这属于验收标准「没有任何控件被裁切」的直接修复，不改布局骨架（036 会重排）。
+- 2026-10-24：PR c 新增 `Theme.colorTextPlaceholder`（#8c959f，替换原 `importDialogHeight`，常量总数仍为 59），`ThemedTextField` 默认占位色改用它。状态栏在新建工程、导入、生成体网格、大网格设置任一弹窗可见时不显示 `projectModel.error`（弹窗内已紧贴字段显示）。导入窗口高度改为跟随 `DialogFrame` 隐式高度，行距收紧；单位旁显示「来源：默认 / CFD 结果按 SI 米制 / 用户选择」，由 CFD 换成普通网格时单位回到默认值（此前会沿用自动设置的米制）。文件选择器核实为 `options` 0（原生优先，无平台主题时回退 Qt Quick 实现），安装产物已部署 GTK3 与 xdg-desktop-portal 平台主题插件，未改代码，仅补测试与说明（[组件与固定界面样式](../modules/qml-components-and-theme.md)）。
 
 ## 完成摘要
 
-未完成。
+阶段 0 三个 PR（#52 播放栏 SVG 图标、#53 侧栏裁切、PR c 对话框与文件选择器）已实现，offscreen 测试覆盖 1280×720 / 1600×900 与 DPR 1.0–2.0。真实 GPU 窗口、各平台原生文件对话框和实际 DPR 屏幕的复核待目标平台完成后改为 done。

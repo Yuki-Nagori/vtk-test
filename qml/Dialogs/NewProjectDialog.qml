@@ -162,6 +162,7 @@ DialogWindow {
             }
 
             ThemedLabel {
+                objectName: "newProjectError"
                 Layout.fillWidth: true
                 visible: dialog.projectModel.error.length > 0
                 text: dialog.errorMessage()

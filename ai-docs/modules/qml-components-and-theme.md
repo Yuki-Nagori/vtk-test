@@ -30,9 +30,11 @@
 
 `DialogWindow` 管理模态与居中，`DialogFrame` 装配标题和内容，`DialogTitleBar` 仅发移动/关闭意图。具体弹窗拥有草稿、打开条件和关闭守卫，Rust 裁决提交、取消及过期上下文。主窗口是否关闭不等于后台写入已取消。
 
+弹窗内校验或提交失败时，错误紧贴出错字段显示；该弹窗打开期间状态栏不重复同一错误，关闭后状态栏恢复显示。可变内容的弹窗（如导入）按 `DialogFrame` 的隐式高度收紧窗口高度，警告或错误出现时自动增高，不以固定高度留白或裁切按钮。导入单位旁注明来源（默认 / CFD 结果按 SI 米制 / 用户选择）。文件与文件夹选择器保持 `options` 为 0：平台有原生实现（Windows / macOS 系统对话框，Linux 经 xdg-desktop-portal 或 GTK3 平台主题）时使用原生对话框，否则由 Qt Quick 回退实现；安装产物随 `plugins/platformthemes` 部署两个 Linux 平台主题插件（task 035）。
+
 ## 文案与图标
 
-界面文案直接使用中文，不调用 `qsTr()` / `qsTranslate()` 或加载翻译字典。错误按稳定代码适配中文摘要；用户文件名、资产名和底层原始诊断保持原值。自定义 Controls 使用应用固定的 Basic 样式。
+占位文字使用 `Theme.colorTextPlaceholder`，与已填写内容（`colorText`）及说明文字（`colorTextMuted`）区分。界面文案直接使用中文，不调用 `qsTr()` / `qsTranslate()` 或加载翻译字典。错误按稳定代码适配中文摘要；用户文件名、资产名和底层原始诊断保持原值。自定义 Controls 使用应用固定的 Basic 样式。
 
 保留图标位于 `qml/icons/`，由 CMake 注册到 `/qt/qml/Panta/Shell/icons/`。彩色资源可直接加载，单色工具图标通过 `panta-icons` provider 着色；图标的来源与格式见[图标规范](../standards/icons.md)。图标清单以现存资源为准，不与已移除的原型 symbol 对照。
 

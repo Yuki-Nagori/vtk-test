@@ -8,6 +8,9 @@ Rectangle {
     property bool closeEnabled: true
     default property alias content: body.data
     anchors.fill: parent
+    // 供窗口按内容收紧高度（task 035）。
+    implicitHeight: body.implicitHeight
+    implicitWidth: body.implicitWidth
     color: Theme.colorPanel
     ColumnLayout {
         id: body

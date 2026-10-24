@@ -6,7 +6,7 @@ TextField {
     id: field
 
     property color fieldColor: Theme.colorText
-    property color placeholderColor: Theme.colorTextMuted
+    property color placeholderColor: Theme.colorTextPlaceholder
     property color fieldBorderColor: Theme.colorPanelLine
     property color focusBorderColor: Theme.colorIcon
     property bool invalid: false
