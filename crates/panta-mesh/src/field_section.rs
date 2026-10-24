@@ -252,7 +252,7 @@ pub fn section_surface_field(
     check_field(
         field,
         mesh.nodes.len() as u64,
-        mesh.tets.len() as u64,
+        mesh.cell_count() as u64,
         component,
     )
     .map_err(VolumeError)?;
@@ -282,7 +282,7 @@ pub fn section_surface_field(
                 let value = if owner == u32::MAX {
                     [f64::NAN; 3]
                 } else {
-                    tuple(values, components, owner as usize)
+                    tuple(values, components, mesh.tet_cell(owner as usize))
                 };
                 clip_with(
                     face.nodes
@@ -310,7 +310,7 @@ pub fn section_surface_field(
                 &mut output,
             ),
             FieldAssociation::Cell => {
-                let value = tuple(values, components, index);
+                let value = tuple(values, components, mesh.tet_cell(index));
                 section_polygon_with(
                     &mesh.nodes,
                     &distance,

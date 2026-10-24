@@ -136,3 +136,81 @@ fn tampered_layouts_fail_validation() {
     wrong_tets.tets.swap(0, 1);
     assert!(!validate_tet_mesh(&wrong_tets).is_ok());
 }
+
+#[test]
+fn quality_is_reported_per_original_cell_type_resident_and_streamed() -> TestResult {
+    let mesh = mixed_mesh();
+    let resident = crate::tet_quality(&mesh, &crate::Progress::new()).ok_or("cancelled")?;
+    // 二面角/纵横比只统计原生四面体，拆分出的四面体不计入。
+    assert_eq!(resident.tet_count, 1);
+    let counts: Vec<usize> = resident.by_type.iter().map(|kind| kind.count).collect();
+    assert_eq!(counts, vec![1, 1, 1, 1]);
+    let hex = resident.by_type[CellType::Hexahedron.ordinal()];
+    assert!((hex.min_scaled_jacobian - 1.0).abs() < 1e-12);
+    for summary in &resident.by_type {
+        assert!(summary.min_scaled_jacobian > 0.0 && summary.min_scaled_jacobian <= 1.0);
+    }
+    let directory =
+        std::env::temp_dir().join(format!("panta-mixed-quality-{}", std::process::id()));
+    std::fs::create_dir_all(&directory)?;
+    let path = directory.join("mixed.pmesh");
+    let (bytes, _) = crate::encode_mesh_asset(&crate::MeshAsset::Volume(mesh))?;
+    std::fs::write(&path, bytes)?;
+    let mut chunks = crate::VolumeAssetChunks::open(&path)?;
+    let streamed = crate::tet_quality_streaming(&mut chunks, &crate::Progress::new())?;
+    std::fs::remove_dir_all(&directory)?;
+    assert_eq!(streamed, Some(resident));
+    Ok(())
+}
+
+#[test]
+fn cell_field_sections_and_diagnostics_use_original_cell_ids() -> TestResult {
+    let mesh = mixed_mesh();
+    let field = crate::ResultField {
+        name: "id".to_owned(),
+        association: crate::FieldAssociation::Cell,
+        components: 1,
+        units: String::new(),
+        values: vec![10.0, 20.0, 30.0, 40.0],
+    };
+    // z = 0.5 只切过六面体（单元 0）与三棱柱（单元 2）。
+    let section = crate::section_surface_field(
+        &mesh,
+        &field,
+        crate::FieldComponent::Component(0),
+        [0.0, 0.0, 0.5],
+        [0.0, 0.0, 1.0],
+        &crate::Progress::new(),
+    )?
+    .ok_or("cancelled")?;
+    let mut seen: Vec<u64> = section.values.iter().map(|value| value[0] as u64).collect();
+    seen.sort_unstable();
+    seen.dedup();
+    assert_eq!(seen, vec![10, 30]);
+    let mut short = field.clone();
+    short.values.push(50.0);
+    assert!(
+        crate::section_surface_field(
+            &mesh,
+            &short,
+            crate::FieldComponent::Component(0),
+            [0.0, 0.0, 0.5],
+            [0.0, 0.0, 1.0],
+            &crate::Progress::new(),
+        )
+        .is_err()
+    );
+    // 锥顶压进六面体：问题按原始单元（金字塔，单元 1）报告。
+    let mut inverted = mesh;
+    inverted.nodes[8][2] = 0.5;
+    let report = validate_tet_mesh(&inverted);
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.starts_with("cell 1 (pyramid) sub-tetrahedron")),
+        "{:?}",
+        report.issues
+    );
+    Ok(())
+}

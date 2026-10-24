@@ -20,6 +20,8 @@ pub(super) fn project_service_volume_summary(
             result.available = true;
             result.node_count = volume.nodes.len() as u64;
             result.tet_count = volume.tets.len() as u64;
+            result.cell_count = volume.cell_count() as u64;
+            result.cell_type_summary = cell_type_summary(volume.cell_type_counts());
         }
         // 单元未驻留的体网格（task 025）：计数来自资产，命令按需流式读取。
         (None, Some(counts)) => {
@@ -27,6 +29,7 @@ pub(super) fn project_service_volume_summary(
             result.streamed = true;
             result.node_count = counts.nodes as u64;
             result.tet_count = counts.tets as u64;
+            result.cell_count = counts.cells as u64;
         }
         (None, None) => {
             result.error =
@@ -34,6 +37,47 @@ pub(super) fn project_service_volume_summary(
         }
     }
     result
+}
+
+/// 中文单元类型名（task 030），顺序同 [`panta_mesh::CellType::ALL`]。
+pub(crate) fn cell_type_label(kind: panta_mesh::CellType) -> &'static str {
+    match kind {
+        panta_mesh::CellType::Tetra => "四面体",
+        panta_mesh::CellType::Hexahedron => "六面体",
+        panta_mesh::CellType::Wedge => "三棱柱",
+        panta_mesh::CellType::Pyramid => "四棱锥",
+    }
+}
+
+/// “六面体 8 · 四面体 4”形式的类型计数，跳过 0。
+pub(crate) fn cell_type_summary(counts: [u64; 4]) -> String {
+    panta_mesh::CellType::ALL
+        .iter()
+        .zip(counts)
+        .filter(|(_, count)| *count > 0)
+        .map(|(&kind, count)| format!("{} {count}", cell_type_label(kind)))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// 每类一行：“三棱柱 12：缩放雅可比 最小 0.83 / 平均 0.97，劣质 0”。
+pub(crate) fn cell_quality_summary(quality: &panta_mesh::TetQuality) -> String {
+    panta_mesh::CellType::ALL
+        .iter()
+        .zip(&quality.by_type)
+        .filter(|(_, summary)| summary.count > 0)
+        .map(|(&kind, summary)| {
+            format!(
+                "{} {}：缩放雅可比 最小 {:.3} / 平均 {:.3}，劣质 {}",
+                cell_type_label(kind),
+                summary.count,
+                summary.min_scaled_jacobian,
+                summary.mean_scaled_jacobian,
+                summary.poor_count
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// 结果场摘要（task 029）：GUI 线程同步调用，只读 sidecar 头部与字段表（KiB 级）。

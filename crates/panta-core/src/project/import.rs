@@ -371,8 +371,8 @@ fn volume_from_prepared(
         other => map_import_error(other),
     })?;
     let factor = options.factor_mm();
-    let mut points = grid.points;
-    for point in &mut points {
+    let mut grid = grid;
+    for point in &mut grid.points {
         *point = point.map(|value| value * factor);
         if point.iter().any(|value| !value.is_finite()) {
             return Err(ProjectError::ImportParseFailed(
@@ -380,7 +380,8 @@ fn volume_from_prepared(
             ));
         }
     }
-    let mesh = panta_mesh::tet_mesh_from_cells(points, grid.tets)
+    let mesh = grid
+        .take_mesh()
         .map_err(|error| ProjectError::ImportVolumeUnsupported(error.to_string()))?;
     Ok(Some(ImportedVolume {
         mesh,

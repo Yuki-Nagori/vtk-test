@@ -274,7 +274,7 @@ fn read_attribute(
             let (kind, expected) = if keyword == "POINT_DATA" {
                 (FieldAssociation::Node, grid.points.len())
             } else {
-                (FieldAssociation::Cell, grid.tets.len())
+                (FieldAssociation::Cell, grid.cell_count())
             };
             if reader.count()? != expected {
                 return Err(FormatError::new(format!(
@@ -392,7 +392,7 @@ fn tuple_values(
 ) -> FormatResult<usize> {
     let tuples = match association {
         panta_mesh::FieldAssociation::Node => grid.points.len(),
-        panta_mesh::FieldAssociation::Cell => grid.tets.len(),
+        panta_mesh::FieldAssociation::Cell => grid.cell_count(),
     };
     tuples
         .checked_mul(components)
@@ -510,7 +510,7 @@ mod tests {
         let mut bytes = TET_GRID.as_bytes().to_vec();
         bytes.extend_from_slice(b"POINT_DATA 3\n");
         let grid = super::parse_vtk_legacy_grid(&bytes)?;
-        assert_eq!(grid.tets.len(), 1);
+        assert_eq!(grid.cell_count(), 1);
         assert_eq!(grid.skipped_fields.len(), 1);
         Ok(())
     }

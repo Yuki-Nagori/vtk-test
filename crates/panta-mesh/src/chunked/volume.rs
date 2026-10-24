@@ -11,9 +11,9 @@ use super::format::{
     VOXELS_PER_AXIS, boundary_tuple_count, decode_f64s, decompress, open_chunk_source, read_index,
 };
 use crate::field_section::{FieldOutput, clip_with, section_polygon_with, tuple};
-use crate::volume::{clip_triangle, dot, fan, order_around, section_polygon, single_quality, sub};
+use crate::volume::{QualityPartial, clip_triangle, dot, fan, order_around, section_polygon, sub};
+use crate::{CellType, SurfaceMesh, TetQuality};
 use crate::{FieldAssociation, FieldComponent, FieldSection};
-use crate::{POOR_ASPECT_RATIO, POOR_MIN_DIHEDRAL_DEGREES, SurfaceMesh, TetQuality};
 
 type Triangle = [[f64; 3]; 3];
 
@@ -64,15 +64,6 @@ impl SectionPlane {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct ChunkQuality {
-    count: usize,
-    min_dihedral: f64,
-    max_aspect: f64,
-    aspect_sum: f64,
-    poor: usize,
-}
-
 #[derive(Default)]
 struct ResultCache {
     entries: HashMap<(usize, [u64; 6]), Arc<Vec<Triangle>>>,
@@ -95,7 +86,7 @@ pub struct ChunkedVolume {
     node_count: u64,
     cache: Arc<ChunkCache>,
     results: Mutex<ResultCache>,
-    quality: Mutex<Vec<Option<ChunkQuality>>>,
+    quality: Mutex<Vec<Option<QualityPartial>>>,
     fields: Vec<ChunkFieldInfo>,
     /// 最近选中场的各块外表面值（只留一个场，切换场时整段重读一次）。
     boundary_values: Mutex<Option<(usize, BoundaryValues)>>,
@@ -540,23 +531,11 @@ impl ChunkedVolume {
                 return Ok(None);
             }
             let cells = self.cache.get_many(ids)?;
+            // .pchunk v2 只承载纯四面体网格（混合单元在 task 030 PR 3 前不建派生文件）。
             let computed = parallel_map(&cells, |cells| {
-                let mut quality = ChunkQuality {
-                    count: cells.tets.len(),
-                    min_dihedral: f64::INFINITY,
-                    max_aspect: 0.0,
-                    aspect_sum: 0.0,
-                    poor: 0,
-                };
+                let mut quality = QualityPartial::default();
                 for tet in &cells.tets {
-                    let (dihedral, aspect) =
-                        single_quality(tet.nodes.map(|node| cells.nodes[node as usize]));
-                    quality.min_dihedral = quality.min_dihedral.min(dihedral);
-                    quality.max_aspect = quality.max_aspect.max(aspect);
-                    quality.aspect_sum += aspect;
-                    if dihedral < POOR_MIN_DIHEDRAL_DEGREES || aspect > POOR_ASPECT_RATIO {
-                        quality.poor += 1;
-                    }
+                    quality.add_cell(CellType::Tetra, &tet.nodes, &cells.nodes);
                 }
                 quality
             });
@@ -572,27 +551,11 @@ impl ChunkedVolume {
             .quality
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut total = TetQuality {
-            tet_count: 0,
-            min_dihedral_degrees: f64::INFINITY,
-            max_aspect_ratio: 0.0,
-            mean_aspect_ratio: 0.0,
-            poor_count: 0,
-        };
-        let mut sum = 0.0;
+        let mut total = QualityPartial::default();
         for quality in done.iter().flatten() {
-            total.tet_count += quality.count;
-            total.min_dihedral_degrees = total.min_dihedral_degrees.min(quality.min_dihedral);
-            total.max_aspect_ratio = total.max_aspect_ratio.max(quality.max_aspect);
-            total.poor_count += quality.poor;
-            sum += quality.aspect_sum;
+            total.merge(quality);
         }
-        if total.tet_count == 0 {
-            total.min_dihedral_degrees = 0.0;
-        } else {
-            total.mean_aspect_ratio = sum / total.tet_count as f64;
-        }
-        Ok(Some(total))
+        Ok(Some(total.finish()))
     }
 }
 

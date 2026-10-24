@@ -152,13 +152,16 @@ fn tet_volume_round_trips_through_vtu_and_rejects_other_cells()
     let grid = parse_vtu_grid(&bytes)?;
     assert_eq!(grid.points, mesh.nodes);
     assert_eq!(
-        grid.tets,
-        mesh.tets.iter().map(|tet| tet.nodes).collect::<Vec<_>>()
+        grid.connectivity,
+        mesh.tets
+            .iter()
+            .flat_map(|tet| tet.nodes)
+            .collect::<Vec<_>>()
     );
     let legacy = "# vtk DataFile Version 4.2\nt\nASCII\nDATASET UNSTRUCTURED_GRID\nPOINTS 4 double\n0 0 0 1 0 0 0 1 0 0 0 1\nCELLS 1 5\n4 0 1 2 3\nCELL_TYPES 1\n10\n";
     assert_eq!(
-        parse_vtk_legacy_grid(legacy.as_bytes())?.tets,
-        vec![[0, 1, 2, 3]]
+        parse_vtk_legacy_grid(legacy.as_bytes())?.connectivity,
+        vec![0, 1, 2, 3]
     );
     let quadratic = legacy.replace("CELL_TYPES 1\n10", "CELL_TYPES 1\n12");
     assert!(parse_vtk_legacy_grid(quadratic.as_bytes()).is_err());
@@ -168,7 +171,7 @@ fn tet_volume_round_trips_through_vtu_and_rejects_other_cells()
     let target = directory.join("ok.vtu");
     export_tet_mesh_vtu(&mesh, &target, &done)?;
     assert_eq!(done.fraction(), 1.0);
-    assert_eq!(parse_vtu_grid(&std::fs::read(&target)?)?.tets.len(), 2);
+    assert_eq!(parse_vtu_grid(&std::fs::read(&target)?)?.cell_count(), 2);
     let cancelled = Progress::new();
     cancelled.cancel();
     let target = directory.join("cancelled.vtu");
@@ -302,5 +305,95 @@ mod streamed {
         export_volume_asset_vtu(&mut chunks, &streamed, &Progress::new())?;
         assert_eq!(std::fs::read(&streamed)?, std::fs::read(&resident)?);
         Ok(())
+    }
+}
+
+/// 原生混合单元（task 030）：体素 + 金字塔 + 三棱柱 + 四面体经旧版 VTK 导入、VTU 导出、
+/// 流式资产导出往返，单元类型、节点与单元场逐原始单元对应。
+mod mixed_cells {
+    use crate::export::{export_volume_asset_vtu, write_tet_mesh_vtu};
+    use crate::import::formats::{parse_vtk_legacy_grid, parse_vtu_grid};
+    use panta_mesh::{CellType, MeshAsset, Progress, VolumeAssetChunks, encode_mesh_asset};
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    const LEGACY: &str = "# vtk DataFile Version 4.2\nmixed\nASCII\nDATASET UNSTRUCTURED_GRID\n\
+POINTS 12 double\n0 0 0 1 0 0 1 1 0 0 1 0 0 0 1 1 0 1 1 1 1 0 1 1 0.5 0.5 1.5 2 0 0.5 2 1 0.5 1.5 0.5 1.5\n\
+CELLS 4 27\n8 0 1 3 2 4 5 7 6\n5 4 5 6 7 8\n6 1 9 5 2 10 6\n4 5 6 8 11\n\
+CELL_TYPES 4\n11\n14\n13\n10\n\
+CELL_DATA 4\nSCALARS id double 1\nLOOKUP_TABLE default\n0 1 2 3\n";
+
+    #[test]
+    fn legacy_mixed_cells_round_trip_through_vtu_and_streamed_asset() -> TestResult {
+        let mut grid = parse_vtk_legacy_grid(LEGACY.as_bytes())?;
+        assert_eq!(
+            grid.types,
+            vec![
+                CellType::Hexahedron,
+                CellType::Pyramid,
+                CellType::Wedge,
+                CellType::Tetra
+            ]
+        );
+        // 体素按 VTK_VOXEL → VTK_HEXAHEDRON 的局部顺序改写。
+        assert_eq!(&grid.connectivity[..8], &[0, 1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(grid.cell_count(), 4);
+        let field = grid
+            .fields
+            .iter()
+            .find(|field| field.name == "id")
+            .ok_or("cell field kept")?;
+        assert_eq!(field.values, vec![0.0, 1.0, 2.0, 3.0]);
+        let mesh = grid.take_mesh()?;
+        assert_eq!(mesh.cell_count(), 4);
+        assert_eq!(mesh.cell_type_counts(), [1, 1, 1, 1]);
+        assert!(panta_mesh::validate_tet_mesh(&mesh).is_ok());
+        let layout = mesh.cells.as_ref().ok_or("mixed layout")?;
+
+        let mut bytes = Vec::new();
+        write_tet_mesh_vtu(&mesh, &mut bytes)?;
+        let reread = parse_vtu_grid(&bytes)?;
+        assert_eq!(reread.types, layout.types);
+        assert_eq!(reread.connectivity, layout.connectivity);
+        assert_eq!(reread.points, mesh.nodes);
+
+        let directory =
+            std::env::temp_dir().join(format!("panta-mixed-export-{}", std::process::id()));
+        std::fs::create_dir_all(&directory)?;
+        let asset = directory.join("mixed.pmesh");
+        let (encoded, _) = encode_mesh_asset(&MeshAsset::Volume(mesh.clone()))?;
+        std::fs::write(&asset, encoded)?;
+        let mut chunks = VolumeAssetChunks::open(&asset)?;
+        assert!(chunks.is_mixed());
+        let streamed = directory.join("streamed.vtu");
+        export_volume_asset_vtu(&mut chunks, &streamed, &Progress::new())?;
+        let streamed_bytes = std::fs::read(&streamed)?;
+        std::fs::remove_dir_all(&directory)?;
+        assert_eq!(streamed_bytes, bytes);
+        Ok(())
+    }
+
+    #[test]
+    fn polyhedra_and_unknown_cells_are_rejected_with_clear_errors() {
+        let polyhedron = LEGACY.replace(
+            "CELL_TYPES 4\n11\n14\n13\n10",
+            "CELL_TYPES 4\n11\n14\n13\n42",
+        );
+        let error = parse_vtk_legacy_grid(polyhedron.as_bytes())
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(error.contains("42"), "{error}");
+        let quadratic = LEGACY.replace(
+            "CELL_TYPES 4\n11\n14\n13\n10",
+            "CELL_TYPES 4\n11\n14\n13\n24",
+        );
+        assert!(parse_vtk_legacy_grid(quadratic.as_bytes()).is_err());
+        // 节点数与类型不符（四面体写成金字塔）。
+        let mismatched = LEGACY.replace(
+            "CELL_TYPES 4\n11\n14\n13\n10",
+            "CELL_TYPES 4\n11\n14\n13\n14",
+        );
+        assert!(parse_vtk_legacy_grid(mismatched.as_bytes()).is_err());
     }
 }

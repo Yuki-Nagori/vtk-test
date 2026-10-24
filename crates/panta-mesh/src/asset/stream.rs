@@ -376,6 +376,9 @@ impl SurfaceAssetChunks {
     }
 }
 
+/// 原始单元记录：类型、区域、节点（不足 8 个以 `u32::MAX` 补齐）。
+pub type CellRecord = (crate::CellType, u32, [u32; 8]);
+
 /// 带原始单元 ID 的拆分四面体批次访问器。
 type CellTetVisitor<'a> = dyn FnMut(&[Vec<(u32, Tetrahedron)>]) -> bool + 'a;
 
@@ -700,6 +703,57 @@ impl VolumeAssetChunks {
             return Err(MeshAssetError::InvalidMesh);
         }
         Ok(finished)
+    }
+
+    /// 逐批遍历原始单元记录（task 030）：`(类型, 区域, 节点)`，节点不足 8 个时以
+    /// `u32::MAX` 补齐。纯四面体资产把每个四面体报告为 `Tetra`。供原生单元导出使用。
+    pub fn visit_cells(
+        &mut self,
+        progress: Option<(&Progress, f64, f64)>,
+        mut visit: impl FnMut(&[Vec<CellRecord>]) -> bool,
+    ) -> Result<bool, MeshAssetError> {
+        if !self.is_mixed() {
+            return self.visit_plain_tets(progress, &mut |batch| {
+                let cells: Vec<Vec<CellRecord>> = batch
+                    .iter()
+                    .map(|chunk| {
+                        chunk
+                            .iter()
+                            .map(|tet| {
+                                let [a, b, c, d] = tet.nodes;
+                                let nodes = [a, b, c, d, u32::MAX, u32::MAX, u32::MAX, u32::MAX];
+                                (crate::CellType::Tetra, tet.region, nodes)
+                            })
+                            .collect()
+                    })
+                    .collect();
+                visit(&cells)
+            });
+        }
+        let chunks = self.stream_chunks(Stream::VolumeCells);
+        let counts = self.counts;
+        visit_chunks(
+            &mut self.file,
+            &chunks,
+            progress,
+            |chunk, raw| {
+                let mut out = Vec::with_capacity(chunk.record_count);
+                for record in raw.as_chunks::<40>().0 {
+                    let cell =
+                        super::decode_cell_record(record).ok_or(MeshAssetError::InvalidMesh)?;
+                    if cell.1 >= counts.region_count
+                        || cell.2[..cell.0.node_count()]
+                            .iter()
+                            .any(|&node| node as usize >= counts.nodes)
+                    {
+                        return Err(MeshAssetError::InvalidMesh);
+                    }
+                    out.push(cell);
+                }
+                Ok(out)
+            },
+            visit,
+        )
     }
 
     /// 读入全部边界三角形（16 B / 面）；取消返回 `Ok(None)`。

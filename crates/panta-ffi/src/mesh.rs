@@ -97,6 +97,7 @@ pub(super) fn mesh_tet_quality(data: bridge::TetMeshData) -> bridge::VolumeInfoR
     result.max_aspect_ratio = quality.max_aspect_ratio;
     result.mean_aspect_ratio = quality.mean_aspect_ratio;
     result.poor_count = quality.poor_count as u64;
+    result.cell_count = mesh.cell_count() as u64;
     result
 }
 

@@ -266,6 +266,10 @@ pub mod bridge {
         pub max_aspect_ratio: f64,
         pub mean_aspect_ratio: f64,
         pub poor_count: u64,
+        /// 原始单元数（task 030）；四面体统计只含原生四面体。
+        pub cell_count: u64,
+        /// 按单元类型的缩放雅可比摘要（中文，一类一行）。
+        pub cell_quality_summary: String,
     }
 
     /// 网格质量诊断结果；失败 value 不可消费。
@@ -295,6 +299,10 @@ pub mod bridge {
         pub max_aspect_ratio: f64,
         pub mean_aspect_ratio: f64,
         pub poor_count: u64,
+        /// 原始单元数（task 030）。
+        pub cell_count: u64,
+        /// 驻留网格的单元类型计数摘要（中文，如“六面体 8 · 四面体 4”）；流式网格为空。
+        pub cell_type_summary: String,
         pub error: ProjectDiagnostic,
     }
 

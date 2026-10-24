@@ -230,6 +230,8 @@ pub(super) fn diagnose_mesh_display(
             value.max_aspect_ratio = quality.max_aspect_ratio;
             value.mean_aspect_ratio = quality.mean_aspect_ratio;
             value.poor_count = quality.poor_count as u64;
+            value.cell_count = quality.by_type.iter().map(|kind| kind.count as u64).sum();
+            value.cell_quality_summary = crate::volume::cell_quality_summary(&quality);
             value.clean = value.clean && quality.poor_count == 0;
         }
         Ok(value)

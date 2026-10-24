@@ -370,7 +370,7 @@ pub fn project_error_message(code: &str) -> &'static str {
         "project.import_source_changed" => "预览后网格文件已更改，请重新选择。",
         "project.import_parse_failed" => "无法读取所选网格文件。",
         "project.import_volume_unsupported" => {
-            "体网格首期仅支持线性四面体；文件含其他单元类型或四面体校验失败。"
+            "体网格仅支持线性四面体、六面体（含体素）、三棱柱和金字塔；文件含其他单元类型（如多面体、二次单元）或单元校验失败。"
         }
         "project.volume_unavailable" => "当前网格不是体网格。",
         "project.volume_generation_failed" => {

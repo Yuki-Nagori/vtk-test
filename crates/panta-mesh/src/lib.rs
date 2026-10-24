@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 
 mod asset;
+mod cell_quality;
 mod cells;
 pub mod chunked;
 mod diagnostics;
@@ -22,13 +23,15 @@ mod progress;
 mod synthetic;
 mod volume;
 pub use asset::{
-    FieldAssociation, FieldSummary, MESH_ASSET_FORMAT_VERSION, MeshAsset, MeshAssetError,
-    MeshAssetReader, MeshAssetRef, RESULT_ASSET_FORMAT_VERSION, ResultAssetReader, ResultField,
-    ResultSet, SurfaceAssetChunks, Triangle, VolumeAssetChunks, VolumeSource, VolumeStreamCounts,
-    decode_mesh_asset, decode_mesh_asset_with_digest, encode_mesh_asset, encode_mesh_asset_ref,
-    encode_result_asset, is_readable_mesh_asset_version, mesh_asset_encoded_len,
-    surface_mesh_expanded_bytes, write_surface_asset_streaming, write_volume_asset_streaming,
+    CellRecord, FieldAssociation, FieldSummary, MESH_ASSET_FORMAT_VERSION, MeshAsset,
+    MeshAssetError, MeshAssetReader, MeshAssetRef, RESULT_ASSET_FORMAT_VERSION, ResultAssetReader,
+    ResultField, ResultSet, SurfaceAssetChunks, Triangle, VolumeAssetChunks, VolumeSource,
+    VolumeStreamCounts, decode_mesh_asset, decode_mesh_asset_with_digest, encode_mesh_asset,
+    encode_mesh_asset_ref, encode_result_asset, is_readable_mesh_asset_version,
+    mesh_asset_encoded_len, surface_mesh_expanded_bytes, write_surface_asset_streaming,
+    write_volume_asset_streaming,
 };
+pub use cell_quality::{CellTypeQuality, POOR_SCALED_JACOBIAN, scaled_jacobian};
 pub use cells::{
     CellLayout, CellType, InvalidCell, VTK_POLYHEDRON, cell_offsets, decompose_cell, mirror_cell,
 };
@@ -306,6 +309,18 @@ impl MeshValidationReport {
 /// 领域校验：输入源自后端转换后、自有 Mesh IR 提交前。
 pub fn validate_tet_mesh(mesh: &TetMesh) -> MeshValidationReport {
     let mut issues = Vec::new();
+    // 混合单元网格（task 030）的问题按原始单元报告，附带拆分四面体下标。
+    let element = |index: usize| match &mesh.cells {
+        None => format!("tetrahedron {index}"),
+        Some(cells) => {
+            let cell = cells
+                .tet_cells
+                .get(index)
+                .map_or(usize::MAX, |&cell| cell as usize);
+            let kind = cells.types.get(cell).map_or("unknown", |kind| kind.name());
+            format!("cell {cell} ({kind}) sub-tetrahedron {index}")
+        }
+    };
     let mut unique_tets = HashSet::with_capacity(mesh.tets.len());
     let mut tet_faces = HashSet::with_capacity(mesh.tets.len().saturating_mul(4));
     let mut unique_boundary = HashSet::with_capacity(mesh.boundary.len());
@@ -337,7 +352,8 @@ pub fn validate_tet_mesh(mesh: &TetMesh) -> MeshValidationReport {
             .all(|&node| (node as usize) < mesh.nodes.len());
         if !in_range {
             issues.push(format!(
-                "tetrahedron {index} references node outside the node range"
+                "{} references node outside the node range",
+                element(index)
             ));
         }
         let unique = tet
@@ -346,15 +362,13 @@ pub fn validate_tet_mesh(mesh: &TetMesh) -> MeshValidationReport {
             .enumerate()
             .all(|(i, node)| !tet.nodes[..i].contains(node));
         if !unique {
-            issues.push(format!("tetrahedron {index} repeats a node"));
+            issues.push(format!("{} repeats a node", element(index)));
         }
         if unique {
             let mut key = tet.nodes;
             key.sort_unstable();
             if !unique_tets.insert(key) {
-                issues.push(format!(
-                    "tetrahedron {index} duplicates another tetrahedron"
-                ));
+                issues.push(format!("{} duplicates another tetrahedron", element(index)));
             }
             if in_range {
                 for omitted in 0..4 {
@@ -387,11 +401,9 @@ pub fn validate_tet_mesh(mesh: &TetMesh) -> MeshValidationReport {
                 + (u[2] * v[0] - u[0] * v[2]) * w[1]
                 + (u[0] * v[1] - u[1] * v[0]) * w[2];
             if !volume6.is_finite() {
-                issues.push(format!("tetrahedron {index} has non-finite signed volume"));
+                issues.push(format!("{} has non-finite signed volume", element(index)));
             } else if volume6 <= 0.0 {
-                issues.push(format!(
-                    "tetrahedron {index} has non-positive signed volume"
-                ));
+                issues.push(format!("{} has non-positive signed volume", element(index)));
             } else if !volume_overflow {
                 let next = volume_mm3 + volume6 / 6.0;
                 if next.is_finite() {
@@ -405,7 +417,8 @@ pub fn validate_tet_mesh(mesh: &TetMesh) -> MeshValidationReport {
             *used = true;
         } else if tet.region >= mesh.region_count {
             issues.push(format!(
-                "tetrahedron {index} references region outside the declared count"
+                "{} references region outside the declared count",
+                element(index)
             ));
         }
     }

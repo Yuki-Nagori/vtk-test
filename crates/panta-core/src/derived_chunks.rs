@@ -85,7 +85,7 @@ fn open_results(
     (reader.digest() == source.digest
         && reader.mesh_digest() == digest
         && reader.node_count() == counts.nodes as u64
-        && reader.cell_count() == counts.tets as u64
+        && reader.cell_count() == counts.cells as u64
         && !reader.summaries().is_empty())
     .then_some(reader)
 }
@@ -102,6 +102,11 @@ pub(crate) fn open_or_build(
     let Some(directory) = options.environment.derived_dir.as_deref() else {
         return Ok(None);
     };
+    // 混合单元资产（task 030）的 .pchunk 需要记录原单元号，留待 PR 3 的新版本格式；
+    // 此前一律走顺序扫描 v4 资产的回退路径（结果正确，只是每次重新读取）。
+    if counts.cells != counts.tets {
+        return Ok(None);
+    }
     let results = results
         .and_then(|source| open_results(&source, digest, counts).map(|reader| (source, reader)));
     let Some(name) = file_name(digest, results.as_ref().map(|(source, _)| source.digest)) else {

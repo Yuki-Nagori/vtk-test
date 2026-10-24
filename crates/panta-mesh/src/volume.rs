@@ -367,8 +367,9 @@ pub fn boundary_surface_streaming(
     }))
 }
 
-/// 流式四面体质量统计（task 025）：节点整体读入（24 B / 节点），四面体逐批读取并按块并行统计。
+/// 流式体网格质量统计（task 025/030）：节点整体读入（24 B / 节点），单元逐批读取并按块并行统计。
 /// 结果与 [`tet_quality`] 一致（平均值求和顺序不同，可能有末位舍入差）。取消返回 `Ok(None)`。
+/// 混合单元资产逐原始单元统计（不拆分），纯四面体资产沿用四面体流。
 pub fn tet_quality_streaming(
     chunks: &mut crate::VolumeAssetChunks,
     progress: &crate::Progress,
@@ -376,60 +377,59 @@ pub fn tet_quality_streaming(
     let Some(nodes) = chunks.read_nodes(Some((progress, 0.0, 0.2)))? else {
         return Ok(None);
     };
-    let mut quality = TetQuality {
-        tet_count: 0,
-        min_dihedral_degrees: f64::INFINITY,
-        max_aspect_ratio: 0.0,
-        mean_aspect_ratio: 0.0,
-        poor_count: 0,
+    let mut total = QualityPartial::default();
+    let finished = if chunks.is_mixed() {
+        chunks.visit_cells(Some((progress, 0.2, 0.99)), |batch| {
+            for partial in parallel_partials(batch, |partial, cells| {
+                for (kind, _, cell) in cells {
+                    partial.add_cell(*kind, &cell[..kind.node_count()], &nodes);
+                }
+            }) {
+                total.merge(&partial);
+            }
+            !progress.is_cancelled()
+        })?
+    } else {
+        chunks.visit_tets(Some((progress, 0.2, 0.99)), |batch| {
+            for partial in parallel_partials(batch, |partial, tets| {
+                for tet in tets {
+                    partial.add_cell(CellType::Tetra, &tet.nodes, &nodes);
+                }
+            }) {
+                total.merge(&partial);
+            }
+            !progress.is_cancelled()
+        })?
     };
-    let mut sum = 0.0;
-    let finished = chunks.visit_tets(Some((progress, 0.2, 0.99)), |batch| {
-        let partials: Vec<(f64, f64, f64, usize)> = std::thread::scope(|scope| {
-            let handles: Vec<_> = batch
-                .iter()
-                .map(|tets| {
-                    let nodes = &nodes;
-                    scope.spawn(move || {
-                        let mut partial = (f64::INFINITY, 0.0_f64, 0.0, 0_usize);
-                        for tet in tets {
-                            let (dihedral, aspect) =
-                                single_quality(tet.nodes.map(|node| nodes[node as usize]));
-                            partial.0 = partial.0.min(dihedral);
-                            partial.1 = partial.1.max(aspect);
-                            partial.2 += aspect;
-                            if dihedral < POOR_MIN_DIHEDRAL_DEGREES || aspect > POOR_ASPECT_RATIO {
-                                partial.3 += 1;
-                            }
-                        }
-                        partial
-                    })
-                })
-                .collect();
-            handles
-                .into_iter()
-                .map(|handle| handle.join().unwrap_or((0.0, f64::INFINITY, f64::NAN, 0)))
-                .collect()
-        });
-        for ((dihedral, aspect, partial_sum, poor), tets) in partials.into_iter().zip(batch) {
-            quality.tet_count += tets.len();
-            quality.min_dihedral_degrees = quality.min_dihedral_degrees.min(dihedral);
-            quality.max_aspect_ratio = quality.max_aspect_ratio.max(aspect);
-            quality.poor_count += poor;
-            sum += partial_sum;
-        }
-        !progress.is_cancelled()
-    })?;
     if !finished {
         return Ok(None);
     }
-    if quality.tet_count == 0 {
-        quality.min_dihedral_degrees = 0.0;
-    } else {
-        quality.mean_aspect_ratio = sum / quality.tet_count as f64;
-    }
     progress.set_fraction(1.0);
-    Ok(Some(quality))
+    Ok(Some(total.finish()))
+}
+
+/// 每个子块一个线程统计部分结果（线程 panic 时该块记为空）。
+fn parallel_partials<T: Sync>(
+    batch: &[Vec<T>],
+    work: impl Fn(&mut QualityPartial, &[T]) + Sync,
+) -> Vec<QualityPartial> {
+    std::thread::scope(|scope| {
+        let work = &work;
+        let handles: Vec<_> = batch
+            .iter()
+            .map(|items| {
+                scope.spawn(move || {
+                    let mut partial = QualityPartial::default();
+                    work(&mut partial, items);
+                    partial
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap_or_default())
+            .collect()
+    })
 }
 
 /// 流式任意平面切面（task 025）：语义同 [`section_surface`] 与 [`section_plane_origin`]。
@@ -473,49 +473,117 @@ pub fn section_plane_streaming(
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TetQuality {
+    /// 参与二面角/纵横比统计的原生四面体数（混合网格中不含其他类型，也不含拆分四面体）。
     pub tet_count: usize,
     /// 全网格最小二面角（度）。
     pub min_dihedral_degrees: f64,
     /// 纵横比 = 外接球半径 / (3 × 内切球半径)，正四面体为 1。
     pub max_aspect_ratio: f64,
     pub mean_aspect_ratio: f64,
-    /// 最小二面角低于 [`POOR_MIN_DIHEDRAL_DEGREES`] 或纵横比高于 [`POOR_ASPECT_RATIO`] 的单元数。
+    /// 劣质原始单元数：四面体按最小二面角低于 [`POOR_MIN_DIHEDRAL_DEGREES`] 或纵横比高于
+    /// [`POOR_ASPECT_RATIO`]，其余类型按缩放雅可比低于 [`crate::POOR_SCALED_JACOBIAN`]。
     pub poor_count: usize,
+    /// 各类型的缩放雅可比汇总（task 030），顺序同 [`CellType::ALL`]，四面体也包含在内。
+    pub by_type: [crate::CellTypeQuality; 4],
 }
 
 /// 体网格质量统计；每 [`crate::PROGRESS_STRIDE`] 个单元报告进度并查询取消，取消返回 `None`。
+/// 混合单元网格按原始单元统计（task 030）：二面角与纵横比只统计原生四面体，
+/// 全部类型另有缩放雅可比（见 [`crate::CellTypeQuality`]）。
 pub fn tet_quality(mesh: &TetMesh, progress: &crate::Progress) -> Option<TetQuality> {
-    let mut quality = TetQuality {
-        tet_count: mesh.tets.len(),
-        min_dihedral_degrees: f64::INFINITY,
-        max_aspect_ratio: 0.0,
-        mean_aspect_ratio: 0.0,
-        poor_count: 0,
-    };
-    let mut sum = 0.0;
-    let total = mesh.tets.len() as u64;
-    for (index, tet) in mesh.tets.iter().enumerate() {
+    let mut partial = QualityPartial::default();
+    let total = mesh.cell_count() as u64;
+    for index in 0..mesh.cell_count() {
         if index.is_multiple_of(crate::PROGRESS_STRIDE) {
             if progress.is_cancelled() {
                 return None;
             }
             progress.report(0.0, 1.0, index as u64, total);
         }
-        let (dihedral, aspect) = single_quality(tet.nodes.map(|node| mesh.nodes[node as usize]));
-        quality.min_dihedral_degrees = quality.min_dihedral_degrees.min(dihedral);
-        quality.max_aspect_ratio = quality.max_aspect_ratio.max(aspect);
-        sum += aspect;
-        if dihedral < POOR_MIN_DIHEDRAL_DEGREES || aspect > POOR_ASPECT_RATIO {
-            quality.poor_count += 1;
+        match &mesh.cells {
+            None => partial.add_cell(CellType::Tetra, &mesh.tets[index].nodes, &mesh.nodes),
+            Some(cells) => {
+                partial.add_cell(cells.types[index], cells.cell_nodes(index), &mesh.nodes)
+            }
         }
     }
-    if mesh.tets.is_empty() {
-        quality.min_dihedral_degrees = 0.0;
-    } else {
-        quality.mean_aspect_ratio = sum / mesh.tets.len() as f64;
-    }
     progress.set_fraction(1.0);
-    Some(quality)
+    Some(partial.finish())
+}
+
+/// 质量统计的可合并部分和。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct QualityPartial {
+    tets: usize,
+    min_dihedral: f64,
+    max_aspect: f64,
+    aspect_sum: f64,
+    poor: usize,
+    types: crate::cell_quality::TypeAccumulator,
+}
+
+impl Default for QualityPartial {
+    fn default() -> Self {
+        Self {
+            tets: 0,
+            min_dihedral: f64::INFINITY,
+            max_aspect: 0.0,
+            aspect_sum: 0.0,
+            poor: 0,
+            types: Default::default(),
+        }
+    }
+}
+
+impl QualityPartial {
+    /// 计入一个原始单元；`cell` 为其全局节点号（VTK 局部顺序）。
+    pub(crate) fn add_cell(&mut self, kind: CellType, cell: &[MeshIndex], nodes: &[[f64; 3]]) {
+        let mut points = [[0.0; 3]; 8];
+        for (point, &node) in points.iter_mut().zip(cell) {
+            *point = nodes[node as usize];
+        }
+        let jacobian = self.types.add(kind, &points[..cell.len()]);
+        if kind == CellType::Tetra {
+            let (dihedral, aspect) = single_quality([points[0], points[1], points[2], points[3]]);
+            self.tets += 1;
+            self.min_dihedral = self.min_dihedral.min(dihedral);
+            self.max_aspect = self.max_aspect.max(aspect);
+            self.aspect_sum += aspect;
+            if dihedral < POOR_MIN_DIHEDRAL_DEGREES || aspect > POOR_ASPECT_RATIO {
+                self.poor += 1;
+            }
+        } else if jacobian.is_nan() || jacobian < crate::POOR_SCALED_JACOBIAN {
+            self.poor += 1;
+        }
+    }
+
+    pub(crate) fn merge(&mut self, other: &Self) {
+        self.tets += other.tets;
+        self.min_dihedral = self.min_dihedral.min(other.min_dihedral);
+        self.max_aspect = self.max_aspect.max(other.max_aspect);
+        self.aspect_sum += other.aspect_sum;
+        self.poor += other.poor;
+        self.types.merge(&other.types);
+    }
+
+    pub(crate) fn finish(&self) -> TetQuality {
+        TetQuality {
+            tet_count: self.tets,
+            min_dihedral_degrees: if self.tets == 0 {
+                0.0
+            } else {
+                self.min_dihedral
+            },
+            max_aspect_ratio: self.max_aspect,
+            mean_aspect_ratio: if self.tets == 0 {
+                0.0
+            } else {
+                self.aspect_sum / self.tets as f64
+            },
+            poor_count: self.poor,
+            by_type: self.types.finish(),
+        }
+    }
 }
 
 /// 返回（最小二面角°，纵横比）；退化单元为（0，∞）。

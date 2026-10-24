@@ -1,7 +1,7 @@
 # 030 — 原生混合单元：类型 / offset 布局、拆分、资产 v4、导入导出与质量
 
 - 状态：in-progress
-- 阶段：PR 1（Mesh IR、拆分、资产 v4）实施中；PR 2（VTU / 旧版 VTK 导入导出、单元场、诊断与质量）、PR 3（`.pchunk` v3、流式路径、混合基准）待开始
+- 阶段：PR 1（Mesh IR、拆分、资产 v4，#37）已合并；PR 2（VTU / 旧版 VTK 导入导出、单元场、诊断与质量）实施中；PR 3（`.pchunk` v3、流式路径、混合基准）待开始
 - 依赖：[029](029-result-fields.md)、[028](028-out-of-core-rollout.md)、[021](021-volume-mesh.md)
 - 优先级：P1
 - 负责人：Grok Bot
@@ -33,7 +33,8 @@
 ## 前置条件与待决策
 
 - 已决定：拆分不落盘、加载时确定性重算；混合资产用固定 40 B 记录（便于分块与流式），polyhedron 将来用独立流；`.presult` 容器保持版本 3，已有结果 sidecar 不失效；v3 资产继续可读，新写一律 v4。
-- 待决定（PR 2 / 3）：质量指标集合（拟：全部类型给 scaled Jacobian，四面体保留最小二面角与长宽比）；`.pchunk` v3 中单元 ID 的存储方式。
+- 已决定（PR 2）：全部类型给 Verdict 风格缩放雅可比（劣质阈值 0.2，取 Verdict 各类型可接受下限中最宽松者），四面体保留最小二面角与长宽比且只统计原生四面体；体素导入转为六面体；PR 3 前混合资产不建 `.pchunk`。
+- 待决定（PR 3）：`.pchunk` v3 中单元 ID 的存储方式。
 
 ## 实施步骤
 
@@ -43,6 +44,7 @@
 
 ## 预计改动
 
+- PR 2：新增 `crates/panta-mesh/src/cell_quality.rs`；修改 `panta-io` 导入（`RawGrid` 改为类型 + 连接数组）、VTU 导出（驻留 / 流式）、`panta-mesh` 质量与场剖面、校验消息、分块质量累加器、`panta-core` 派生分块跳过混合资产、FFI `VolumeInfoResult` / `MeshQualityReport` 新字段、`project_view_model.cpp`、`App.qml`。
 - PR 1：新增 `crates/panta-mesh/src/cells.rs`、`mixed_tests.rs`；修改 `lib.rs`、`volume.rs`、`asset/{mod,stream,tests}.rs`、`synthetic.rs`；`panta-core` 结果场单元计数；所有 `TetMesh` 字面量增加 `cells: None`。
 - 持久化：Mesh 资产头部版本 3 → 4；纯四面体资产目录与摘要不变。
 
@@ -56,7 +58,7 @@
 - [x] PR 1：hex 全部 40320 种节点标号、wedge / pyramid 全部标号拆分为正向四面体且体积正确；镜像输入自动修正；节点重复、polyhedron、offset 不符被拒绝。
 - [x] PR 1：混合网格（hex + pyramid + wedge + tet）构建、校验、按单元体积、外表面正确；篡改区域或拆分顺序时校验失败。
 - [x] PR 1：v4 混合资产完整读与流式读往返；混合流在 v3 头部下被拒绝；v3 纯四面体资产仍可读；`VolumeAssetChunks` 给出与驻留一致的拆分四面体与单元 ID。
-- [ ] PR 2：VTU / 旧版 VTK 混合导入导出往返，单元场长度按原单元，诊断按类型统计。
+- [x] PR 2：VTU / 旧版 VTK 混合导入导出往返（含体素、42 与类型 / 节点数不符拒绝），驻留与流式导出逐字节一致；单元场长度、场剖面单元值、校验消息按原单元；按类型缩放雅可比（理想单元 = 1，反转 < 0），驻留与流式质量一致；FFI / QML 显示原始单元数、类型构成与按类型质量。
 - [ ] PR 3：`.pchunk` v3、混合基准（棱柱边界层 + 核心）与 Windows nightly。
 - [ ] GUI / GPU 实机验收（混合网格切面显示与类型统计）待人工。
 
@@ -68,6 +70,8 @@
 | 2026-10-24 | `cargo quality`（fmt + clippy + qmllint） | 通过 | 通过 |
 | 2026-10-24 | `cargo test --locked --workspace`（Ninja，含 CTest） | 全部通过 | 全部通过，CTest 69/69 |
 | 2026-10-24 | `QT_QPA_PLATFORM=offscreen timeout 8 target/native/debug/app/panta` | 启动后被 timeout 结束（124） | 124 |
+| 2026-10-24 | PR 2：`cargo quality`；`cargo test --locked --workspace` | 通过 | 通过；新增混合导入导出 2 项、按类型质量 / 单元对应 2 项、缩放雅可比 2 项；体素夹具由“拒绝”改为“按六面体导入”；CTest 69/69 |
+| 2026-10-24 | PR 2：offscreen 启动 | 124 | 124（GUI 中类型统计与诊断面板显示待实机确认） |
 
 ## 风险与回退
 
@@ -77,6 +81,7 @@
 ## 决策与工作记录
 
 - 2026-10-24：创建任务（用户 15:00 UTC+8 确认方案 A）。PR 1 实现 IR、拆分表（脚本生成后内嵌常量，单元测试穷举验证）、资产 v4 与流式单元读取；`VolumeStreamCounts` 新增 `cells`，`tets` 为拆分四面体数。导入器尚未产生混合网格，导出 / 质量 / `.pchunk` 留给 PR 2 / 3。
+- 2026-10-24：PR 2。导入接受 10–14（体素改写为六面体）；VTU 原生单元导出；单元场与诊断按原单元；`TetQuality` 增加 `by_type`（缩放雅可比），`tet_count` 语义改为原生四面体数（纯四面体网格不变）。为避免 `.pchunk` v2 把拆分四面体当单元（单元场错位），PR 3 前混合资产不建派生分块文件，回退逐次顺序扫描——保守选择，代价是大混合网格每次诊断 / 切面都完整读资产。流式质量对混合资产逐原始单元统计（40 B 记录），纯四面体资产仍走四面体流。
 
 ## 完成摘要
 

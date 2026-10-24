@@ -25,7 +25,7 @@ pub use result::{
     ResultSet, encode_result_asset,
 };
 pub use stream::{
-    SurfaceAssetChunks, Triangle, VolumeAssetChunks, VolumeSource, VolumeStreamCounts,
+    CellRecord, SurfaceAssetChunks, Triangle, VolumeAssetChunks, VolumeSource, VolumeStreamCounts,
     write_surface_asset_streaming, write_volume_asset_streaming,
 };
 
