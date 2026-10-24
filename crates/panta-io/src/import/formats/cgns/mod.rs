@@ -156,6 +156,29 @@ impl Node {
             .to_owned())
     }
 
+    /// 定长 32 字符名称数组（`FlowSolutionPointers` 等，C1 `[N][32]`），去掉尾部空白 / NUL。
+    fn names(&self) -> FormatResult<Vec<String>> {
+        if self.data_type() != "C1" {
+            return Err(invalid(format!("{}: expected character data", self.name)));
+        }
+        let dataset = h5(&self.name, self.group.dataset(" data"))?;
+        let bytes = h5(&self.name, dataset.read_u8())?;
+        if bytes.len() % 32 != 0 {
+            return Err(invalid(format!(
+                "{}: name array is not a multiple of 32 characters",
+                self.name
+            )));
+        }
+        Ok(bytes
+            .chunks(32)
+            .map(|name| {
+                String::from_utf8_lossy(name)
+                    .trim_end_matches(['\0', ' '])
+                    .to_owned()
+            })
+            .collect())
+    }
+
     /// `GridLocation` 子节点（缺省为 Vertex）。
     fn location(&self) -> FormatResult<String> {
         match self.child("GridLocation") {
@@ -664,14 +687,19 @@ fn combine_vectors(arrays: Vec<(String, Vec<f64>)>) -> Vec<(String, usize, Vec<f
     result
 }
 
+/// `only` 为时间步引用的解名（task 033）；`None` 时读全部解。
 fn zone_fields(
     zone: &Node,
     mesh: &ZoneMesh,
     prefix: bool,
+    only: Option<&[String]>,
     notes: &mut Vec<String>,
 ) -> FormatResult<ZoneFields> {
     let mut fields = ZoneFields::new();
     for solution in zone.children_labelled("FlowSolution_t")? {
+        if only.is_some_and(|names| !names.contains(&solution.name)) {
+            continue;
+        }
         let label = |array: &str| format!("{}/{}/{array}", mesh.name, solution.name);
         let location = solution.location()?;
         let (order, tuples) = match location.as_str() {
@@ -735,12 +763,87 @@ fn needs_prefix(zones: &[Node]) -> FormatResult<bool> {
     Ok(false)
 }
 
+/// 时间步（task 033）：`BaseIterativeData_t/TimeValues` 给出各步时间，各 Zone
+/// `ZoneIterativeData_t` 下的 `FlowSolution*Pointers` 给出每步使用的解名。
+struct StepPlan {
+    times: Vec<f64>,
+    /// 下标依次为 Zone（与 Zone 列表同序）、时间步；值为该步引用的解名。
+    solutions: Vec<Vec<Vec<String>>>,
+}
+
+/// 读取时间步声明；声明不完整（缺 TimeValues、某 Zone 无指针或长度不符）时记录说明并退回
+/// 032 的「全部解按前缀区分」行为，不猜测对应关系。
+fn iterative_steps(
+    base: &Node,
+    zones: &[Node],
+    notes: &mut Vec<String>,
+) -> FormatResult<Option<StepPlan>> {
+    let Some(data) = base
+        .children_labelled("BaseIterativeData_t")?
+        .into_iter()
+        .next()
+    else {
+        return Ok(None);
+    };
+    let mut fallback = |reason: String| {
+        notes.push(format!(
+            "time steps: {reason}; solutions are imported as separate fields"
+        ));
+        Ok(None)
+    };
+    let times = match data.child("TimeValues") {
+        Some(node) => node.reals()?,
+        None => return fallback(format!("{} has no TimeValues", data.name)),
+    };
+    if times.is_empty() || times.iter().any(|time| !time.is_finite()) {
+        return fallback("TimeValues is empty or not finite".to_owned());
+    }
+    let mut solutions = Vec::with_capacity(zones.len());
+    for zone in zones {
+        let mut per_step = vec![Vec::new(); times.len()];
+        let mut found = false;
+        for iterative in zone.children_labelled("ZoneIterativeData_t")? {
+            for pointers in iterative.children_labelled("DataArray_t")? {
+                if !(pointers.name.starts_with("FlowSolution")
+                    && pointers.name.ends_with("Pointers"))
+                {
+                    continue;
+                }
+                let names = pointers.names()?;
+                if names.len() != times.len() {
+                    return fallback(format!(
+                        "zone '{}' {} has {} entries for {} steps",
+                        zone.name,
+                        pointers.name,
+                        names.len(),
+                        times.len()
+                    ));
+                }
+                found = true;
+                for (step, name) in per_step.iter_mut().zip(names) {
+                    if !name.is_empty() && name != "Null" && !step.contains(&name) {
+                        step.push(name);
+                    }
+                }
+            }
+        }
+        if !found {
+            return fallback(format!("zone '{}' has no FlowSolutionPointers", zone.name));
+        }
+        solutions.push(per_step);
+    }
+    Ok(Some(StepPlan { times, solutions }))
+}
+
 /// 边界组：组名与各面的零基节点表。
 type BoundaryGroups = Vec<(String, Vec<Vec<u32>>)>;
-type ZoneRecord = (ZoneMesh, BoundaryGroups, ZoneFields);
+/// Zone 网格、边界组与逐时间步的结果场（无时间步声明时只有一项）。
+type ZoneRecord = (ZoneMesh, BoundaryGroups, Vec<ZoneFields>);
 
 struct Document {
     zones: Vec<ZoneRecord>,
+    /// 时间步的 (时间, 标签)；无时间步声明时为单个占位步。
+    steps: Vec<(f64, String)>,
     notes: Vec<String>,
 }
 
@@ -766,20 +869,51 @@ fn read_document(snapshot: &[u8], with_fields: bool) -> FormatResult<Document> {
     if zones.is_empty() {
         return Err(invalid("CGNS base has no unstructured zones"));
     }
-    let prefix = with_fields && needs_prefix(&zones)?;
+    let plan = if with_fields {
+        iterative_steps(&base, &zones, &mut notes)?
+    } else {
+        None
+    };
+    let prefix = with_fields && plan.is_none() && needs_prefix(&zones)?;
     let mut parsed = Vec::with_capacity(zones.len());
-    for zone in &zones {
+    for (index, zone) in zones.iter().enumerate() {
         let mesh = read_zone(zone)?;
         let boundary = zone_boundary(zone, &mesh, &mut notes)?;
-        let fields = if with_fields {
-            zone_fields(zone, &mesh, prefix, &mut notes)?
-        } else {
-            ZoneFields::new()
+        let fields = match (&plan, with_fields) {
+            (_, false) => vec![ZoneFields::new()],
+            (None, true) => vec![zone_fields(zone, &mesh, prefix, None, &mut notes)?],
+            (Some(plan), true) => {
+                let steps = &plan.solutions[index];
+                for solution in zone.children_labelled("FlowSolution_t")? {
+                    if !steps.iter().any(|names| names.contains(&solution.name)) {
+                        notes.push(format!(
+                            "{}/{}: not referenced by FlowSolutionPointers, ignored",
+                            zone.name, solution.name
+                        ));
+                    }
+                }
+                steps
+                    .iter()
+                    .map(|names| zone_fields(zone, &mesh, false, Some(names), &mut notes))
+                    .collect::<FormatResult<_>>()?
+            }
         };
         parsed.push((mesh, boundary, fields));
     }
+    let steps = match plan {
+        Some(plan) => plan
+            .times
+            .into_iter()
+            .map(|time| (time, format!("{time}")))
+            .collect(),
+        None => vec![(0.0, String::new())],
+    };
+    // 同一解被多步引用时，各步读取产生的说明相同，只保留一条。
+    let mut seen = std::collections::HashSet::new();
+    notes.retain(|note| seen.insert(note.clone()));
     Ok(Document {
         zones: parsed,
+        steps,
         notes,
     })
 }
@@ -853,7 +987,9 @@ pub fn parse_cgns_grid(snapshot: &[u8]) -> FormatResult<RawGrid> {
     }
     grid.boundary = Some(boundary);
     grid.skipped_fields = document.notes;
-    merge_fields(&mut grid, &document.zones, &node_offsets, &cell_offsets);
+    grid.collect_time_steps(&document.steps, |grid, step| {
+        merge_fields(grid, &document.zones, step, &node_offsets, &cell_offsets);
+    });
     Ok(grid)
 }
 
@@ -861,12 +997,13 @@ pub fn parse_cgns_grid(snapshot: &[u8]) -> FormatResult<RawGrid> {
 fn merge_fields(
     grid: &mut RawGrid,
     zones: &[ZoneRecord],
+    step: usize,
     node_offsets: &[usize],
     cell_offsets: &[usize],
 ) {
     let mut keys: Vec<&(FieldOrder, String)> = zones
         .iter()
-        .flat_map(|(.., fields)| fields.keys())
+        .flat_map(|(.., fields)| fields[step].keys())
         .collect();
     keys.sort_unstable();
     keys.dedup();
@@ -879,7 +1016,7 @@ fn merge_fields(
         let mut merged: Option<(usize, Vec<f64>)> = None;
         let mut conflict = false;
         for (index, (.., fields)) in zones.iter().enumerate() {
-            let Some((components, values)) = fields.get(key) else {
+            let Some((components, values)) = fields[step].get(key) else {
                 continue;
             };
             let target =

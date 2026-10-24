@@ -50,7 +50,30 @@ pub struct RawGrid {
     /// 按来源面邻接（owner / neighbour）计算的面质量（checkMesh 口径，task 032 PR 2）；
     /// 只有带面邻接的来源（OpenFOAM）填写。
     pub face_quality: Option<panta_mesh::FaceQuality>,
+    /// 多时间步结果场（task 033）：`fields` 始终是最新一步；这里记录最新步的时间与更早的各步。
+    /// 只有来源声明了两个及以上时间步时为 `Some`。
+    pub time_series: Option<TimeSeries>,
 }
+
+/// 时间序列结果场（task 033）：所有步共享同一网格，字段集合可以逐步不同。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TimeSeries {
+    /// 最新步之前的各步，时间升序。
+    pub earlier: Vec<TimeStepFields>,
+    pub latest_time: f64,
+    pub latest_label: String,
+}
+
+/// 一个时间步：物理时间、来源标签（OpenFOAM 时间目录名 / CGNS 解名）与该步的结果场。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TimeStepFields {
+    pub time: f64,
+    pub label: String,
+    pub fields: Vec<panta_mesh::ResultField>,
+}
+
+/// 更早时间步的场值总量上限（f64 个数，2^28 = 2 GiB）；超出时只保留最新步（task 033 保守决策）。
+pub const MAX_TIME_STEP_VALUES: usize = 1 << 28;
 
 /// 来源边界面：扁平节点表 + 结束偏移，每面一个组下标。
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -305,6 +328,57 @@ impl RawGrid {
             components: components as u8,
             units: String::new(),
             values,
+        });
+    }
+
+    /// 逐步收集结果场（task 033）：`read_step` 向 `self.fields` 提交一步的字段（经
+    /// [`RawGrid::offer_field`] 校验）。`steps` 为时间升序的 (时间, 标签)；更早步的跳过说明加
+    /// `[标签]` 前缀。结束后 `fields` 为最新步，两步及以上时填写 `time_series`。
+    pub(crate) fn collect_time_steps(
+        &mut self,
+        steps: &[(f64, String)],
+        mut read_step: impl FnMut(&mut Self, usize),
+    ) {
+        let mut earlier = Vec::new();
+        for (index, (time, label)) in steps.iter().enumerate() {
+            self.fields.clear();
+            let skipped = self.skipped_fields.len();
+            read_step(self, index);
+            if index + 1 == steps.len() {
+                break;
+            }
+            for note in &mut self.skipped_fields[skipped..] {
+                *note = format!("[{label}] {note}");
+            }
+            earlier.push(TimeStepFields {
+                time: *time,
+                label: label.clone(),
+                fields: std::mem::take(&mut self.fields),
+            });
+        }
+        let Some((latest_time, latest_label)) = steps.last().cloned() else {
+            return;
+        };
+        if earlier.is_empty() {
+            return;
+        }
+        let values: usize = earlier
+            .iter()
+            .flat_map(|step| &step.fields)
+            .map(|field| field.values.len())
+            .sum();
+        if values > MAX_TIME_STEP_VALUES {
+            self.skipped_fields.push(format!(
+                "time steps: {} earlier steps hold {values} values (limit {MAX_TIME_STEP_VALUES}); \
+                 only the latest step {latest_label} was imported",
+                earlier.len()
+            ));
+            return;
+        }
+        self.time_series = Some(TimeSeries {
+            earlier,
+            latest_time,
+            latest_label,
         });
     }
 }

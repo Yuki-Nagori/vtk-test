@@ -316,3 +316,143 @@ fn face_quality_matches_check_mesh() -> TestResult {
     }
     Ok(())
 }
+
+/// 多时间步（task 033）：0 / 0.005 / 0.01 / 0.015 四个时间目录依时间升序成步，`fields` 为最新步。
+#[test]
+fn transient_case_imports_every_time_directory() -> TestResult {
+    let grid = parse_openfoam_grid(&snapshot(&fixture("transient", "transient.foam"))?)?;
+    let series = grid.time_series.as_ref().ok_or("time series missing")?;
+    let labels: Vec<&str> = series
+        .earlier
+        .iter()
+        .map(|step| step.label.as_str())
+        .collect();
+    assert_eq!(labels, ["0", "0.005", "0.01"]);
+    let times: Vec<f64> = series.earlier.iter().map(|step| step.time).collect();
+    assert_eq!(times, [0.0, 0.005, 0.01]);
+    assert_eq!(
+        (series.latest_time, series.latest_label.as_str()),
+        (0.015, "0.015")
+    );
+    assert!(grid.skipped_fields.is_empty(), "{:?}", grid.skipped_fields);
+    for step in &series.earlier {
+        let mut names: Vec<&str> = step
+            .fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, ["U", "p"], "step {}", step.label);
+        assert!(
+            step.fields
+                .iter()
+                .all(|field| field.values.len() == 12 * usize::from(field.components))
+        );
+    }
+    // 0 时刻 U 为 uniform (0 0 0)；之后各步互不相同。
+    let velocity = |fields: &[panta_mesh::ResultField]| -> Vec<f64> {
+        fields
+            .iter()
+            .find(|field| field.name == "U")
+            .map(|field| field.values.clone())
+            .unwrap_or_default()
+    };
+    assert!(
+        velocity(&series.earlier[0].fields)
+            .iter()
+            .all(|value| *value == 0.0)
+    );
+    assert_ne!(
+        velocity(&series.earlier[1].fields),
+        velocity(&series.earlier[2].fields)
+    );
+    assert_ne!(velocity(&series.earlier[2].fields), velocity(&grid.fields));
+    // 与只保留 0.01 结果的 ascii 夹具同一时刻一致（同一求解，ASCII 8 位有效数字）。
+    let ascii = parse_openfoam_grid(&snapshot(&fixture("ascii", "ascii.foam"))?)?;
+    for (a, b) in velocity(&ascii.fields)
+        .iter()
+        .zip(velocity(&series.earlier[2].fields))
+    {
+        assert!((a - b).abs() <= 1.0e-7 * a.abs().max(1.0));
+    }
+    assert_eq!(grid.points, ascii.points);
+    assert_eq!(grid.connectivity, ascii.connectivity);
+    Ok(())
+}
+
+/// 单个时间目录不产生时间序列，与 032 行为一致。
+#[test]
+fn single_time_directory_has_no_time_series() -> TestResult {
+    for case in ["binary", "poly", "skew"] {
+        let grid = parse_openfoam_grid(&snapshot(&fixture(case, &format!("{case}.foam")))?)?;
+        assert!(grid.time_series.is_none(), "{case}");
+    }
+    Ok(())
+}
+
+/// 字段集合逐步不同：更早步缺失的场只出现在最新步，更早步的跳过说明带时间标签前缀；
+/// 只有 uniform/ 等非体场内容的时间目录不成步。
+#[test]
+fn per_step_field_sets_and_notes_are_kept_apart() -> TestResult {
+    let case = ScratchCase::new("steps")?;
+    let source = fixture("ascii", "0/U");
+    std::fs::create_dir_all(case.0.join("0"))?;
+    std::fs::copy(&source, case.0.join("0/U"))?;
+    // 0 时刻的 T 内部场长度不符，只在该步跳过。
+    std::fs::write(
+        case.0.join("0/T"),
+        "FoamFile { format ascii; class volScalarField; object T; }\n\
+         dimensions [0 0 0 1 0 0 0];\ninternalField nonuniform List<scalar> 2(1 2);\nboundaryField {}\n",
+    )?;
+    std::fs::create_dir_all(case.0.join("0.02/uniform"))?;
+    std::fs::write(case.0.join("0.02/uniform/time"), "FoamFile {}\n")?;
+    let grid = parse_openfoam_grid(&snapshot(&case.marker())?)?;
+    let series = grid.time_series.as_ref().ok_or("time series missing")?;
+    assert_eq!(series.latest_label, "0.01");
+    assert_eq!(series.earlier.len(), 1);
+    let names: Vec<&str> = series.earlier[0]
+        .fields
+        .iter()
+        .map(|field| field.name.as_str())
+        .collect();
+    assert_eq!(names, ["U"]);
+    let latest: Vec<&str> = grid
+        .fields
+        .iter()
+        .map(|field| field.name.as_str())
+        .collect();
+    assert_eq!(latest, ["p"]);
+    assert_eq!(grid.skipped_fields.len(), 1, "{:?}", grid.skipped_fields);
+    assert!(
+        grid.skipped_fields[0].starts_with("[0] T"),
+        "{:?}",
+        grid.skipped_fields
+    );
+    Ok(())
+}
+
+/// 更早时间步的场文件超过字节上限时只收最新步，并在快照中留下说明条目。
+#[test]
+fn earlier_steps_over_budget_keep_only_the_latest_time() -> TestResult {
+    let mut plan = bundle::plan_case(&fixture("transient", "transient.foam"))?;
+    assert_eq!(plan.times, ["0", "0.005", "0.01", "0.015"]);
+    bundle::limit_time_steps(&mut plan, 0);
+    assert_eq!(plan.times, ["0.015"]);
+    assert!(
+        plan.files
+            .iter()
+            .all(|file| file.relative.starts_with("constant/")
+                || file.relative.starts_with("0.015/"))
+    );
+    let (relative, note) = plan.skipped.last().ok_or("note missing")?;
+    assert_eq!(relative, bundle::TIME_STEP_NOTE);
+    assert!(note.contains("only the latest time 0.015"), "{note}");
+    // 说明条目原样成为跳过说明。
+    let mut bytes = bundle::MAGIC.to_vec();
+    bytes.extend(1u32.to_le_bytes());
+    bundle::push_entry_header(&mut bytes, relative, note.len() as u64)?;
+    bytes.extend_from_slice(note.as_bytes());
+    let entries = bundle::decode(&bytes)?;
+    assert_eq!(entries.len(), 1);
+    Ok(())
+}

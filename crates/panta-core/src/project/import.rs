@@ -232,15 +232,15 @@ fn commit_import(
     ensure_import_running(phase)?;
     progress.set_fraction(0.5);
     let mut record = prepared.record(import_number, options);
-    let (volume, fields) = match volume_from_prepared(&prepared, options)? {
+    let (volume, fields, time_series) = match volume_from_prepared(&prepared, options)? {
         Some(imported) => {
             record.skipped_result_fields = imported.skipped_fields;
             record.region_names = imported.region_names;
             record.boundary_group_names = imported.boundary_group_names;
             record.face_quality = imported.face_quality;
-            (Some(imported.mesh), imported.fields)
+            (Some(imported.mesh), imported.fields, imported.time_series)
         }
-        None => (None, Vec::new()),
+        None => (None, Vec::new(), None),
     };
     drop(std::mem::take(&mut prepared.bytes));
     match &volume {
@@ -252,7 +252,11 @@ fn commit_import(
         candidate,
         record,
         prepared.mesh,
-        MeshPayload { volume, fields },
+        MeshPayload {
+            volume,
+            fields,
+            time_series,
+        },
         phase,
         progress,
         0.6,
@@ -263,6 +267,8 @@ fn commit_import(
 pub(super) struct MeshPayload {
     pub(super) volume: Option<panta_mesh::TetMesh>,
     pub(super) fields: Vec<panta_mesh::ResultField>,
+    /// 多时间步（task 033）：`fields` 为最新步，这里是最新步时间与更早各步。
+    pub(super) time_series: Option<panta_io::import::formats::TimeSeries>,
 }
 
 /// 写出 Mesh 资产并原子提交清单；导入与生成体网格（task 023）共用同一提交闸门。
@@ -276,7 +282,11 @@ pub(super) fn commit_mesh_record(
     progress: &Progress,
     asset_start: f64,
 ) -> Result<ImportCommit, ProjectError> {
-    let MeshPayload { volume, fields } = payload;
+    let MeshPayload {
+        volume,
+        fields,
+        time_series,
+    } = payload;
     let lease = super::repository::WriteLease::acquire(candidate)?;
     let project_root = candidate
         .path
@@ -297,23 +307,50 @@ pub(super) fn commit_mesh_record(
         created,
         committed: false,
     };
-    let mut result_asset = None;
+    // 结果 sidecar（最新步与更早各步）；清单提交前失败时由 Drop 删除本次新建的文件。
+    let mut result_assets = Vec::new();
     if let Some(volume) = volume.as_ref().filter(|_| !fields.is_empty()) {
-        ensure_import_running(phase)?;
-        let set = panta_mesh::ResultSet {
+        let result_set = |fields| panta_mesh::ResultSet {
             mesh_digest: asset_reference.digest.clone(),
             node_count: volume.source_node_count() as u64,
             cell_count: volume.cell_count() as u64,
             fields,
         };
-        let (reference, path, created) =
-            write_import_result_asset(project_root, &asset_reference.id, &set)?;
-        asset_reference.results = Some(reference);
-        result_asset = Some(ImportAsset {
+        ensure_import_running(phase)?;
+        let stem = format!("{}-r1", asset_reference.id);
+        let (latest, path, created) =
+            write_import_result_asset(project_root, &stem, &result_set(fields))?;
+        result_assets.push(ImportAsset {
             path,
             created,
             committed: false,
         });
+        let mut steps = Vec::new();
+        if let Some(series) = time_series {
+            for (index, step) in series.earlier.into_iter().enumerate() {
+                ensure_import_running(phase)?;
+                let stem = format!("{}-r1-s{index:05}", asset_reference.id);
+                let (reference, path, created) =
+                    write_import_result_asset(project_root, &stem, &result_set(step.fields))?;
+                result_assets.push(ImportAsset {
+                    path,
+                    created,
+                    committed: false,
+                });
+                steps.push(super::model::ResultStepRef {
+                    time: step.time,
+                    label: step.label,
+                    results: reference,
+                });
+            }
+            steps.push(super::model::ResultStepRef {
+                time: series.latest_time,
+                label: series.latest_label,
+                results: latest.clone(),
+            });
+        }
+        asset_reference.results = Some(latest);
+        asset_reference.result_steps = steps;
     }
     progress.set_fraction(0.9);
     candidate
@@ -333,7 +370,7 @@ pub(super) fn commit_mesh_record(
     });
     commit_result?;
     asset.committed = true;
-    if let Some(result_asset) = &mut result_asset {
+    for result_asset in &mut result_assets {
         result_asset.committed = true;
     }
     phase.store(IMPORT_COMMITTED, Ordering::Release);
@@ -351,6 +388,66 @@ struct ImportedVolume {
     region_names: Vec<String>,
     boundary_group_names: Vec<String>,
     face_quality: Option<panta_io::import::FaceQualityRecord>,
+    time_series: Option<panta_io::import::formats::TimeSeries>,
+}
+
+/// 时间步的保守整理（task 033）：去掉没有可导入字段的更早步，时间非有限或递减、
+/// 步数超限或最新步无字段时整体退回只导入最新步；重复标签加序号区分。均记入跳过说明。
+fn sanitize_time_series(
+    series: Option<panta_io::import::formats::TimeSeries>,
+    latest_fields: usize,
+    notes: &mut Vec<String>,
+) -> Option<panta_io::import::formats::TimeSeries> {
+    let mut series = series?;
+    series.earlier.retain(|step| {
+        let keep = !step.fields.is_empty();
+        if !keep {
+            notes.push(format!(
+                "[{}] time step has no importable fields, omitted",
+                step.label
+            ));
+        }
+        keep
+    });
+    let mut times: Vec<f64> = series.earlier.iter().map(|step| step.time).collect();
+    times.push(series.latest_time);
+    let reason = if series.earlier.is_empty() {
+        None
+    } else if latest_fields == 0 {
+        Some("the latest step has no importable fields".to_owned())
+    } else if times.iter().any(|time| !time.is_finite())
+        || times.windows(2).any(|pair| pair[0] > pair[1])
+    {
+        Some("time values are not finite and non-decreasing".to_owned())
+    } else if times.len() > super::service::MAX_RESULT_STEPS {
+        Some(format!(
+            "{} steps exceed the limit {}",
+            times.len(),
+            super::service::MAX_RESULT_STEPS
+        ))
+    } else {
+        let mut seen = std::collections::BTreeSet::new();
+        let count = times.len();
+        let labels = series
+            .earlier
+            .iter_mut()
+            .map(|step| &mut step.label)
+            .chain(std::iter::once(&mut series.latest_label));
+        for (index, label) in labels.enumerate() {
+            if label.is_empty() || label.len() > 64 || !seen.insert(label.clone()) {
+                *label = format!("#{}", index + 1);
+                seen.insert(label.clone());
+            }
+        }
+        debug_assert_eq!(seen.len(), count);
+        return Some(series);
+    };
+    if let Some(reason) = reason {
+        notes.push(format!(
+            "time steps: {reason}; only the latest step was imported"
+        ));
+    }
+    None
 }
 
 fn volume_from_prepared(
@@ -392,10 +489,14 @@ fn volume_from_prepared(
     let mesh = grid
         .take_mesh()
         .map_err(|error| ProjectError::ImportVolumeUnsupported(error.to_string()))?;
+    let mut skipped_fields = grid.skipped_fields;
+    let time_series =
+        sanitize_time_series(grid.time_series, grid.fields.len(), &mut skipped_fields);
     Ok(Some(ImportedVolume {
         mesh,
         fields: grid.fields,
-        skipped_fields: grid.skipped_fields,
+        time_series,
+        skipped_fields,
         region_names: grid.region_names,
         boundary_group_names: grid.boundary_group_names,
         face_quality: grid.face_quality.as_ref().map(Into::into),
@@ -465,18 +566,18 @@ fn write_import_mesh_asset(
     ))
 }
 
-/// 结果场 sidecar 写在 `assets/results/`，文件名跟随 Mesh 资产 ID；
-/// 同路径已有不同内容（崩溃遗留）时换恢复路径，不覆盖不可变文件。
+/// 结果场 sidecar 写在 `assets/results/`，文件名跟随 Mesh 资产 ID（`<id>-r1`，时间步为
+/// `<id>-r1-s<NNNNN>`，task 033）；同路径已有不同内容（崩溃遗留）时换恢复路径，不覆盖不可变文件。
 fn write_import_result_asset(
     project_root: &Path,
-    asset_id: &str,
+    stem: &str,
     set: &panta_mesh::ResultSet,
 ) -> Result<(super::model::ResultAssetRef, std::path::PathBuf, bool), ProjectError> {
     for attempt in 0..32 {
         let relative_path = if attempt == 0 {
-            format!("assets/results/{asset_id}-r1.presult")
+            format!("assets/results/{stem}.presult")
         } else {
-            format!("assets/results/{asset_id}-r1-recovery-{attempt}.presult")
+            format!("assets/results/{stem}-recovery-{attempt}.presult")
         };
         let path = super::service::resolve_asset_path(project_root, &relative_path)
             .map_err(|error| ProjectError::ImportAssetWriteFailed(error.to_string()))?;
@@ -603,6 +704,7 @@ fn new_surface_asset_ref(record: &ImportRecord, units: &str) -> MeshAssetRef {
         units: units.to_owned(),
         source_revision: record.source_digest.clone(),
         results: None,
+        result_steps: Vec::new(),
     }
 }
 
@@ -626,11 +728,13 @@ pub(super) fn map_import_error(error: ImportError) -> ProjectError {
 mod tests {
     use super::{
         IMPORT_CANCELLED, IMPORT_COMMITTING, IMPORT_RUNNING, PendingImport, map_import_error,
+        sanitize_time_series,
     };
     use crate::execution::Executor;
     use crate::project::ProjectService;
     use crate::project::temp_directory;
     use panta_io::import::ImportError;
+    use panta_io::import::formats::{TimeSeries, TimeStepFields};
     use panta_mesh::StlError;
     use std::fs;
     use std::sync::{Arc, atomic::Ordering, mpsc};
@@ -991,6 +1095,70 @@ mod tests {
         finish_import(&mut service, request)?;
         executor.close_and_wait();
         assert_eq!(service.imports()?.len(), 1);
+        Ok(())
+    }
+
+    fn step(time: f64, label: &str, fields: usize) -> TimeStepFields {
+        let field = panta_mesh::ResultField {
+            name: "p".into(),
+            association: panta_mesh::FieldAssociation::Cell,
+            components: 1,
+            units: String::new(),
+            values: vec![0.0],
+        };
+        TimeStepFields {
+            time,
+            label: label.into(),
+            fields: vec![field; fields],
+        }
+    }
+
+    /// 时间步清洗（task 033）：空步省略、标签去重；时间倒序或最新步无场时只保留最新步。
+    #[test]
+    fn time_series_sanitizing_drops_empty_steps_and_falls_back()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let series = |earlier: Vec<TimeStepFields>, latest_time: f64| TimeSeries {
+            earlier,
+            latest_time,
+            latest_label: "1".into(),
+        };
+        let mut notes = Vec::new();
+        let kept = sanitize_time_series(
+            Some(series(
+                vec![step(0.0, "0", 0), step(0.5, "1", 1), step(0.7, "", 1)],
+                1.0,
+            )),
+            1,
+            &mut notes,
+        )
+        .ok_or("two steps remain")?;
+        let labels: Vec<_> = kept
+            .earlier
+            .iter()
+            .map(|step| step.label.as_str())
+            .collect();
+        assert_eq!(labels, ["1", "#2"]);
+        assert_eq!(kept.latest_label, "#3");
+        assert_eq!(notes, ["[0] time step has no importable fields, omitted"]);
+
+        let mut notes = Vec::new();
+        assert!(
+            sanitize_time_series(Some(series(vec![step(2.0, "2", 1)], 1.0)), 1, &mut notes)
+                .is_none()
+        );
+        assert!(notes[0].contains("non-decreasing"));
+        let mut notes = Vec::new();
+        assert!(
+            sanitize_time_series(Some(series(vec![step(0.0, "0", 1)], 1.0)), 0, &mut notes)
+                .is_none()
+        );
+        assert!(notes[0].contains("latest step has no importable fields"));
+        let mut notes = Vec::new();
+        assert!(
+            sanitize_time_series(Some(series(vec![step(0.0, "0", 0)], 1.0)), 1, &mut notes)
+                .is_none()
+        );
+        assert_eq!(notes.len(), 1);
         Ok(())
     }
 }

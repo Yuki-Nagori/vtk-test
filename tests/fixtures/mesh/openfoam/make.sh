@@ -53,3 +53,7 @@ sed -i 's/^vertices .*/vertices ((0 0 0) (1 0 0) (1.2 1 0) (0.3 1 0) (0.1 0 0.4)
 (cd skew && blockMesh >log.bm && python3 ../perturb.py constant/polyMesh/points 0.006 && checkMesh >log.check)
 rm -rf skewdual && cp -r skew skewdual && mv skewdual/skew.foam skewdual/skewdual.foam
 (cd skewdual && polyDualMesh 80 -overwrite >log.dual && checkMesh >log.check)
+# 多时间步（033 PR 1）：沿用 ascii 网格，endTime 0.015，保留 0 / 0.005 / 0.01 / 0.015 四个时间目录
+rm -rf transient && cp -r ascii transient && mv transient/ascii.foam transient/transient.foam
+(cd transient && foamDictionary -entry endTime -set 0.015 system/controlDict >/dev/null && icoFoam >log.ico)
+rm -rf transient/*/uniform transient/*/phi

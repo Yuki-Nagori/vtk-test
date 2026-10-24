@@ -12,3 +12,4 @@ libhdf5 删除 `ElementStartOffset` 链接以模拟 CGNS 3.3 及更早的 MIXED 
 | `tetpyr.cgns` | `gen tetpyr`：单 Zone `cube`，单位立方体拆成 3 个共顶点 PYRA_5，另有 x ∈ [2, 3] 的 TETRA_4；面 section `cubeBottom` / `cubeTop`，Vertex PointList BC `top`（节点 5–8）；CellCenter `Rank` = 10 / 20 / 30 / 40、`MomentumX` | 3 pyramid + 1 tetra，体积 7/6；组 `top` / `cubeBottom` / `unassigned` 三角形 2 / 2 / 12 |
 | `ngon.cgns` | `gen ngon`：两个单位立方体，NGON_n 11 个面（第 5、9 面反向存储）+ NFACE_n（反向面以负号引用）；FaceCenter PointList BC `inlet`（面 1） | 2 个多面体，体积 2；组 `inlet` / `unassigned` 三角形 2 / 18 |
 | `adf.cgns` | `cgnsconvert -a tetpyr.cgns`（ADF 后端） | 拒绝并提示先转换为 HDF5 |
+| `transient.cgns` | `gen transient`（任务 033）：Zone `a`、`b` 各一个 TETRA_4；`BaseIterativeData` 3 步，TimeValues 0 / 0.5 / 1；`ZoneIterativeData` 的 `FlowSolutionPointers`（CellCenter `T` = 100·步 + Zone 序号）与 `FlowSolutionVertexPointers`（Vertex `P` = 步 + x）；Zone `a` 另有未被引用的解 `Initial`，Zone `b` 第 2 步为 `Null` | 3 个时间步；0.5 步 Zone `b` 的值为 NaN；`Initial` 记一条忽略说明 |

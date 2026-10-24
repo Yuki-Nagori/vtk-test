@@ -588,14 +588,11 @@ pub(super) fn validate_schema_four_mesh_assets(
             || !is_sha256_digest(&asset.digest)
             || asset.units != "millimeters"
             || !matches!(asset.kind.as_str(), "surface" | "volume")
-            || asset.results.as_ref().is_some_and(|results| {
-                asset.kind != "volume"
-                    || results.format_version != panta_mesh::RESULT_ASSET_FORMAT_VERSION
-                    || results.field_count == 0
-                    || !is_sha256_digest(&results.digest)
-                    || !results.relative_path.starts_with("assets/results/")
-                    || !results.relative_path.ends_with(".presult")
-            })
+            || asset
+                .results
+                .as_ref()
+                .is_some_and(|results| asset.kind != "volume" || !is_valid_result_ref(results))
+            || !are_valid_result_steps(asset)
         {
             return Err(ProjectError::ManifestInvalid(
                 "schema 4 mesh asset index contains an invalid entry".to_owned(),
@@ -604,6 +601,38 @@ pub(super) fn validate_schema_four_mesh_assets(
     }
     Ok(())
 }
+
+fn is_valid_result_ref(results: &super::model::ResultAssetRef) -> bool {
+    results.format_version == panta_mesh::RESULT_ASSET_FORMAT_VERSION
+        && results.field_count > 0
+        && is_sha256_digest(&results.digest)
+        && results.relative_path.starts_with("assets/results/")
+        && results.relative_path.ends_with(".presult")
+}
+
+/// 时间步（task 033）：为空，或两步及以上、时间有限且不减、标签非空且不重复、
+/// 每步引用合法、最后一步与 `results` 相同。
+fn are_valid_result_steps(asset: &MeshAssetRef) -> bool {
+    let steps = &asset.result_steps;
+    if steps.is_empty() {
+        return true;
+    }
+    let mut labels = std::collections::BTreeSet::new();
+    steps.len() >= 2
+        && steps.len() <= MAX_RESULT_STEPS
+        && steps.last().map(|step| &step.results) == asset.results.as_ref()
+        && steps.iter().all(|step| {
+            step.time.is_finite()
+                && !step.label.is_empty()
+                && step.label.len() <= 128
+                && labels.insert(step.label.as_str())
+                && is_valid_result_ref(&step.results)
+        })
+        && steps.windows(2).all(|pair| pair[0].time <= pair[1].time)
+}
+
+/// 单个网格的时间步上限；超过视为损坏清单。
+pub(super) const MAX_RESULT_STEPS: usize = 100_000;
 
 fn is_sha256_digest(value: &str) -> bool {
     value

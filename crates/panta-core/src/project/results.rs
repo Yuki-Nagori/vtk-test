@@ -43,10 +43,46 @@ impl ProjectService {
 
     /// 结果 sidecar 的只读句柄（不做文件 IO）：显示适配在后台线程打开、核对并读字段。
     /// 句柄共享服务的单字段缓存，拖动切面时同一字段不重复整字段读取。
+    /// 多时间步导入时为最新一步（与 [`ProjectService::result_time_steps`] 的最后一项相同）。
     pub fn result_field_source(
         &self,
         import_id: &str,
     ) -> Result<Option<ResultFieldSource>, ProjectError> {
+        self.result_source_with(import_id, |asset| asset.results.as_ref())
+    }
+
+    /// 导入记录的结果场时间步（task 033），时间不减；单步或无结果场时为空。
+    pub fn result_time_steps(&self, import_id: &str) -> Result<Vec<ResultTimeStep>, ProjectError> {
+        let (_, asset) = self.import_asset(import_id)?;
+        Ok(asset
+            .result_steps
+            .iter()
+            .map(|step| ResultTimeStep {
+                time: step.time,
+                label: step.label.clone(),
+                field_count: step.results.field_count as usize,
+            })
+            .collect())
+    }
+
+    /// 第 `step` 个时间步（[`ProjectService::result_time_steps`] 的下标）的结果 sidecar 句柄。
+    pub fn result_field_source_at(
+        &self,
+        import_id: &str,
+        step: usize,
+    ) -> Result<ResultFieldSource, ProjectError> {
+        self.result_source_with(import_id, |asset| {
+            asset.result_steps.get(step).map(|step| &step.results)
+        })?
+        .ok_or_else(|| {
+            ProjectError::CommandInvalid(format!("result time step {step} does not exist"))
+        })
+    }
+
+    fn import_asset(
+        &self,
+        import_id: &str,
+    ) -> Result<(&super::ProjectState, &super::model::MeshAssetRef), ProjectError> {
         let state = self.current.as_ref().ok_or(ProjectError::NoProject)?;
         let record = state
             .imports
@@ -59,7 +95,16 @@ impl ProjectService {
             .ok_or_else(|| {
                 ProjectError::ManifestInvalid("mesh asset index entry is missing".to_owned())
             })?;
-        let Some(results) = &asset.results else {
+        Ok((state, asset))
+    }
+
+    fn result_source_with(
+        &self,
+        import_id: &str,
+        select: impl FnOnce(&super::model::MeshAssetRef) -> Option<&super::model::ResultAssetRef>,
+    ) -> Result<Option<ResultFieldSource>, ProjectError> {
+        let (state, asset) = self.import_asset(import_id)?;
+        let Some(results) = select(asset) else {
             return Ok(None);
         };
         let root = state
@@ -86,6 +131,14 @@ impl ProjectService {
             cache: self.result_field_cache.clone(),
         }))
     }
+}
+
+/// 一个结果场时间步的摘要（task 033）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResultTimeStep {
+    pub time: f64,
+    pub label: String,
+    pub field_count: usize,
 }
 
 /// 服务级单字段缓存：键为（结果摘要、字段名、关联）。
@@ -394,6 +447,200 @@ mod tests {
         let mut reopened = ProjectService::new();
         reopened.open(&project.path)?;
         assert_eq!(reopened.imports()?, vec![record]);
+        Ok(())
+    }
+
+    /// 多时间步 OpenFOAM 算例（task 033）：每步一个 sidecar，最新步与 `results` 共用；
+    /// 重开后时间步保留，单个时间步文件损坏只影响该步。
+    #[test]
+    fn transient_openfoam_case_keeps_every_time_step() -> Result<(), Box<dyn std::error::Error>> {
+        let fixture_dir = temp_directory::Fixture::new()?;
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/mesh/openfoam/transient/transient.foam");
+        let mut service = ProjectService::new();
+        let project = service.create(&fixture_dir.root, "Transient")?;
+        let record = service.import_stl(&source, "solid-3d", "meters", false)?;
+        assert!(
+            record.skipped_result_fields.is_empty(),
+            "{:?}",
+            record.skipped_result_fields
+        );
+        let steps = service.result_time_steps(&record.id)?;
+        let labels: Vec<(f64, &str, usize)> = steps
+            .iter()
+            .map(|step| (step.time, step.label.as_str(), step.field_count))
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                (0.0, "0", 2),
+                (0.005, "0.005", 2),
+                (0.01, "0.01", 2),
+                (0.015, "0.015", 2)
+            ]
+        );
+        let first = service.result_field_source_at(&record.id, 0)?;
+        let velocity = first.read_field("U", FieldAssociation::Cell)?;
+        assert!(velocity.values.iter().all(|value| *value == 0.0));
+        let latest = service
+            .result_field_source(&record.id)?
+            .ok_or("latest source")?
+            .read_field("U", FieldAssociation::Cell)?;
+        let last = service
+            .result_field_source_at(&record.id, 3)?
+            .read_field("U", FieldAssociation::Cell)?;
+        assert_eq!(latest.values, last.values);
+        assert!(service.result_field_source_at(&record.id, 4).is_err());
+        let root = project.path.parent().ok_or("project root")?;
+        let asset = service
+            .current
+            .as_ref()
+            .and_then(|state| state.mesh_assets.get(&record.mesh_asset_id))
+            .cloned()
+            .ok_or("asset")?;
+        let paths: Vec<&str> = asset
+            .result_steps
+            .iter()
+            .map(|step| step.results.relative_path.as_str())
+            .collect();
+        let id = &record.mesh_asset_id;
+        assert_eq!(
+            paths,
+            [
+                format!("assets/results/{id}-r1-s00000.presult"),
+                format!("assets/results/{id}-r1-s00001.presult"),
+                format!("assets/results/{id}-r1-s00002.presult"),
+                format!("assets/results/{id}-r1.presult"),
+            ]
+        );
+
+        let mut reopened = ProjectService::new();
+        reopened.open(&project.path)?;
+        assert_eq!(reopened.result_time_steps(&record.id)?, steps);
+        let middle = reopened
+            .result_field_source_at(&record.id, 1)?
+            .read_field("p", FieldAssociation::Cell)?;
+        assert!(middle.values.iter().any(|value| *value != 0.0));
+
+        // 第 2 步 sidecar 被改写：该步无法打开，其余步不受影响。
+        let tampered = root.join(paths[1]);
+        let reader = panta_mesh::ResultAssetReader::open(&tampered)?;
+        let index = reader
+            .summaries()
+            .iter()
+            .position(|field| field.name == "U")
+            .ok_or("U summary")?;
+        let range = reader.field_byte_range(index).ok_or("U byte range")?;
+        drop(reader);
+        let mut bytes = std::fs::read(&tampered)?;
+        bytes[usize::try_from(range.start)?] ^= 0xff;
+        std::fs::write(&tampered, bytes)?;
+        assert!(
+            reopened
+                .result_field_source_at(&record.id, 1)?
+                .read_field("U", FieldAssociation::Cell)
+                .is_err()
+        );
+        reopened
+            .result_field_source_at(&record.id, 2)?
+            .read_field("U", FieldAssociation::Cell)?;
+        Ok(())
+    }
+
+    type StepEdit = Box<dyn Fn(&mut serde_json::Value)>;
+
+    /// 清单中的时间步必须时间不减、最后一步与 `results` 一致；否则整个清单被拒绝。
+    #[test]
+    fn invalid_result_steps_reject_the_manifest() -> Result<(), Box<dyn std::error::Error>> {
+        let fixture_dir = temp_directory::Fixture::new()?;
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/mesh/openfoam/transient/transient.foam");
+        let mut service = ProjectService::new();
+        let project = service.create(&fixture_dir.root, "Steps")?;
+        let record = service.import_stl(&source, "solid-3d", "meters", false)?;
+        let original = std::fs::read(&project.path)?;
+        let manifest: serde_json::Value = serde_json::from_slice(&original)?;
+        let id = record.mesh_asset_id.clone();
+        let edits: [(&str, StepEdit); 4] = [
+            (
+                "decreasing time",
+                Box::new(|steps| steps[0]["time"] = serde_json::Value::from(1.0)),
+            ),
+            (
+                "last step differs from results",
+                Box::new(|steps| {
+                    let first = steps[0]["results"].clone();
+                    steps[3]["results"] = first;
+                }),
+            ),
+            (
+                "duplicate label",
+                Box::new(|steps| steps[1]["label"] = steps[0]["label"].clone()),
+            ),
+            (
+                "single step",
+                Box::new(|steps| {
+                    let last = steps[3].clone();
+                    *steps = serde_json::Value::Array(vec![last]);
+                }),
+            ),
+        ];
+        for (name, edit) in edits {
+            let mut changed = manifest.clone();
+            edit(&mut changed["mesh_assets"][&id]["result_steps"]);
+            std::fs::write(&project.path, serde_json::to_vec_pretty(&changed)?)?;
+            let mut reopened = ProjectService::new();
+            assert!(
+                matches!(
+                    reopened.open(&project.path),
+                    Err(ProjectError::ManifestInvalid(_))
+                ),
+                "{name}"
+            );
+        }
+        std::fs::write(&project.path, &original)?;
+        ProjectService::new().open(&project.path)?;
+        Ok(())
+    }
+
+    /// 单个时间目录的算例不写 `result_steps`，清单与 032 相同。
+    #[test]
+    fn single_step_imports_omit_result_steps() -> Result<(), Box<dyn std::error::Error>> {
+        let fixture_dir = temp_directory::Fixture::new()?;
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/mesh/openfoam/multi/multi.foam");
+        let mut service = ProjectService::new();
+        let project = service.create(&fixture_dir.root, "Single")?;
+        let record = service.import_stl(&source, "solid-3d", "meters", false)?;
+        assert!(service.result_time_steps(&record.id)?.is_empty());
+        assert!(service.result_field_source_at(&record.id, 0).is_err());
+        let manifest = std::fs::read_to_string(&project.path)?;
+        assert!(!manifest.contains("result_steps"));
+        let results =
+            std::fs::read_dir(project.path.parent().ok_or("root")?.join("assets/results"))?
+                .filter_map(Result::ok)
+                .count();
+        assert_eq!(results, 1);
+        Ok(())
+    }
+
+    /// CGNS 时间步（task 033）经导入后成为 3 个 sidecar；缺解 Zone 的值保留为 NaN。
+    #[test]
+    fn transient_cgns_import_keeps_time_steps() -> Result<(), Box<dyn std::error::Error>> {
+        let fixture_dir = temp_directory::Fixture::new()?;
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/mesh/cgns/transient.cgns");
+        let mut service = ProjectService::new();
+        service.create(&fixture_dir.root, "Cgns")?;
+        let record = service.import_stl(&source, "solid-3d", "meters", false)?;
+        let steps = service.result_time_steps(&record.id)?;
+        let times: Vec<f64> = steps.iter().map(|step| step.time).collect();
+        assert_eq!(times, [0.0, 0.5, 1.0]);
+        let middle = service
+            .result_field_source_at(&record.id, 1)?
+            .read_field("T", FieldAssociation::Cell)?;
+        assert_eq!(middle.values[0], 100.0);
+        assert!(middle.values[1].is_nan());
         Ok(())
     }
 }
