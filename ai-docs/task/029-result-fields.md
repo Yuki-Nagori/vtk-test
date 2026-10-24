@@ -1,7 +1,7 @@
 # 029 — 结果场：导入、存储、分块携带、切面插值与视口上色
 
 - 状态：in-progress
-- 阶段：PR 1/3（领域模型、`.presult` sidecar、VTU / 旧版 VTK 解析、工程存储）实施中
+- 阶段：PR 1 已合并（#33）；PR 2a/4（`.pchunk` v2 携带结果场、驻留与分块场剖面）实施中
 - 依赖：[028](028-out-of-core-rollout.md)、[021](021-volume-mesh.md)
 - 优先级：P1
 - 负责人：Grok Bot
@@ -11,11 +11,12 @@
 
 体网格目前只有几何。来源 VTU / 旧版 VTK 常带节点 / 单元数组（温度、速度、材料号），导入时被丢弃。本任务让「实体 3D」导入保留这些数组作为结果场，持久化到工程，随后接入 out-of-core 分块、切面插值和视口上色。用户安排的候选顺序（2026-10-24 12:29 UTC+8）：结果场 → 混合单元 → OpenFOAM/CGNS → 时间序列 → 超大文件流式导入 → 结构网格 → Netgen 加密。
 
-分三个 PR：
+原计划三个 PR，PR 2 体量过大，2026-10-24 拆为四个（仍在已批准的本任务范围内）：
 
-1. **领域模型与存储**：`panta_mesh` 结果场模型与 `.presult` sidecar；`panta-io` 解析 VTU PointData / CellData 与旧版 VTK 属性段；`panta-core` 导入写 sidecar、清单引用、只读访问。
-2. **分块与计算**：`.pchunk` 每块携带结果场值（全局 ID 对齐），切面按节点场线性插值、单元场取单元值，字段统计诊断。
-3. **显示**：FFI / VTK 上色、QML 字段选择、色标（放在视口矩形之外，不遮挡模型）。需要 GUI / GPU 实机验收。
+1. **领域模型与存储**（#33 已合并）：`panta_mesh` 结果场模型与 `.presult` sidecar；`panta-io` 解析 VTU PointData / CellData 与旧版 VTK 属性段；`panta-core` 导入写 sidecar、清单引用、只读访问。
+2. **2a 分块与计算（panta-mesh）**：`.pchunk` v2 每块携带结果场值与块级范围，驻留与分块两条场剖面路径（节点场线性插值、单元场取单元值），IO 基准。
+3. **2b 应用接入（panta-core）**：派生分块按「资产摘要 + 结果摘要」命名并带场构建，工程场剖面 API（驻留 / 分块），字段统计诊断；流式回退（无派生缓存）不支持场剖面，明确报 CommandInvalid。
+4. **3 显示**：FFI / VTK 上色、QML 字段选择、色标（放在视口矩形之外，不遮挡模型）。需要 GUI / GPU 实机验收。
 
 ## 必读
 
@@ -67,7 +68,8 @@
 - [x] 四个 tet_ball 夹具（VTU ASCII / appended zlib、旧版 4.2 ASCII / 5.1 二进制）都得到同一个 3 分量节点场 `Normals`。
 - [x] `.presult` 往返位级一致；损坏的块只影响所在字段（`ChecksumMismatch`）；Mesh 与结果读取器互相拒绝对方文件。
 - [x] 导入后重开工程可列出字段并读取数值；清单中的 results 引用经路径、版本、摘要校验；sidecar 与网格摘要 / 计数不符时拒绝。
-- [ ] PR 2：`.pchunk` 携带结果场、切面插值、字段诊断。
+- [x] PR 2a：`.pchunk` v2 携带结果场；驻留 `section_surface_field` 与分块 `fine_section_field` 几何与无场剖面位级一致、数值集合一致；节点场线性插值误差 < 1e-9，单元场每三角形三值相等，NaN 传播；块级范围落在全局范围内；同场再次剖面只多 1 次合并读；损坏的场值块只让场剖面失败；从资产 + `ResultAssetReader` 构建与驻留构建字节一致。
+- [ ] PR 2b：应用接入、派生缓存带场、字段诊断。
 - [ ] PR 3：视口上色、字段选择、色标（GUI / GPU 实机验收）。
 - [ ] 每次 commit 的代码、测试、文档和 task 自洽；索引状态一致。
 
@@ -80,6 +82,11 @@
 | 2026-10-24 | `cargo test -p panta-core --lib results` | 导入、重开、损坏隔离、表面无结果 | 5 passed（含 2 项新测试） |
 | 2026-10-24 | `cargo format`、`cargo lint clippy --check`、`cargo lint qmllint --check`、`cargo test --locked --workspace`、offscreen 启动 | 全部通过 | 格式与 Clippy 无告警；workspace 全部 Rust 测试通过，CTest 68/68；offscreen 启动 8 s 超时退出（124，预期） |
 
+| 2026-10-24 | PR 2a：`cargo test -p panta-mesh --lib field` | 8 项分块场测试 + 既有场测试通过 | 11 passed |
+| 2026-10-24 | PR 2a：`cargo quality`、`cargo test --locked --workspace`、offscreen 启动 | 全部通过 | 格式 / Clippy / qmllint 无告警；workspace 全通过，CTest 68/68；offscreen 124（预期） |
+| 2026-10-24 | PR 2a：`ooc_bench --cells 20M --fields --reader pread`（8 线程，Linux，文件可能在页缓存） | 场剖面读调用为个位数、MiB 级 | 128 块 0.29 GiB；斜切面 40 块 40 万三角形：首次选矢量场 103.7 ms / 8 次读 / 30.1 MiB，同场换分量 7 次读 / 28.9 MiB，换标量节点场 8 次 / 10.5 MiB，换单元场 6 次 / 7.4 MiB；打开文件 1 |
+| 2026-10-24 | PR 2a：`ooc_bench --cells 100M --fields --reader pread`（同上） | 亿级下场剖面仍为少次 MiB 级读 | 构建 14.75 s、512 块 1.45 GiB、209 次写、峰值 RSS 4.4 GiB（字段逐个驻留，单元场 0.8 GiB）；斜切面 102 块 117 万三角形：选矢量场 218.7 ms / 22 次读 / 91.1 MiB，换分量 21 次 / 87.7 MiB，换节点标量场 18 次 / 34.1 MiB，换单元场 9 次 / 23.8 MiB；z 向 128 块：选矢量场 225.0 ms / 33 次读 / 106.5 MiB；单次读平均约 3–4 MiB，打开文件 1。命中块在 Morton 序上不连续，读调用数随命中块分散度增长 |
+
 ## 风险与回退
 
 - f64 结果场体积是网格节点数 × 分量 × 8 B，亿级网格单字段约 GiB 级；PR 1 读取整字段驻留，超大网格需等 PR 2 按块读取。回退：清单 `results` 可选，删除该引用即退回纯网格。
@@ -89,6 +96,14 @@
 
 - 2026-10-24：创建任务，确定三 PR 拆分与 sidecar 方案（见前置条件）。
 - 2026-10-24（PR 1）：实现结果场模型与 `.presult`、VTU / 旧版 VTK 解析、工程存储与只读访问；文档更新 [网格架构](../architecture/mesh.md)、[应用与存储](../architecture/application-and-storage.md)。现有 tet_ball 夹具带 `Normals` 节点数组，实体 3D 导入现在会生成 `.presult`。无独立 subagent 评审条件（本会话无法启动独立评审代理），由实现者自检并以测试覆盖失败路径。
+
+- 2026-10-24（PR 2a）决策（保守）：
+  - 结果场嵌入 `.pchunk` 并升级 FORMAT_VERSION 到 2，不另建分块场文件：只打开一个文件，块表一次读入；v1 文件打开失败，应用派生缓存会自动重建（派生缓存可丢弃，不需迁移）。
+  - 场段按字段排列：每个字段先所有块的内部值块，再所有块的外表面值块（都按 Morton 序）。外表面值连续存放，选中一个场只需一次合并读；内部值每次剖面按命中块合并读取（相邻 1 MiB 内合并、单次 ≤ 64 MiB），不进 LRU。
+  - 外表面值只常驻当前一个场（换场时替换），避免多场常驻放大内存。
+  - 粗级别（拖动中）剖面不着色，松手精细剖面才上色；仅支持 1 / 3 分量。
+  - 合成基准场是平滑函数，压缩率偏乐观；真实 CFD 场体积更大，读取字节数会相应上升，读调用次数不变。
+  - 无独立 subagent 评审条件，由实现者自检并以测试覆盖失败路径。
 
 ## 完成摘要
 

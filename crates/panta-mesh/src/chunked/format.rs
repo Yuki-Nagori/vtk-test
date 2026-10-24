@@ -1,7 +1,10 @@
 //! 分块体网格单文件格式（task 027）。
 //!
-//! 布局：`头 16 B | 单元段（各块压缩单元，按 Morton 顺序连续）| 表面段（各块外表面 + 简化外表面，连续）|
-//! 块表（zstd）| 尾 32 B`。打开时一次读尾部窗口拿到块表，再一次大块读入整个表面段；
+//! 布局：`头 16 B | 单元段（各块压缩单元，按 Morton 顺序连续）| 场段（v2，task 029）|
+//! 表面段（各块外表面 + 简化外表面，连续）| 块表（zstd）| 尾 32 B`。
+//! 场段按场排列：每个场先是各块的块内值（节点场按块内局部节点顺序、单元场按块内单元顺序），
+//! 再是各块外表面三角形上的值（节点场每三角形 3 个顶点元组，单元场每三角形 1 个所属单元元组），
+//! 都按 Morton 顺序连续，因此“选中一个场”只需一次读入它的外表面值区段，命中块的块内值可合并读。打开时一次读尾部窗口拿到块表，再一次大块读入整个表面段；
 //! 单元按需读，相邻块合并成大块顺序读（见 [`crate::chunked::ChunkCache`]）。
 //! 所有整数小端；每个压缩段都是带校验和的 zstd 帧。
 
@@ -16,7 +19,8 @@ use crate::{SurfaceMesh, Tetrahedron};
 
 pub(crate) const HEAD_MAGIC: &[u8; 8] = b"PANTAOC1";
 pub(crate) const TAIL_MAGIC: &[u8; 8] = b"PANTAOCE";
-pub(crate) const FORMAT_VERSION: u32 = 1;
+/// v2（task 029）：加入场段与文件级场表；v1 文件视为无效，派生缓存会重建。
+pub(crate) const FORMAT_VERSION: u32 = 2;
 pub(crate) const HEAD_LEN: u64 = 16;
 pub(crate) const TAIL_LEN: u64 = 32;
 /// 打开时一次读入的尾部窗口；块表不超过它时打开只需一次读。
@@ -252,8 +256,46 @@ pub struct ChunkHeader {
     pub(crate) surface_raw_len: u32,
     /// 16³ 占据位图，体素下标 `(k * 16 + j) * 16 + i`。
     pub(crate) voxels: Vec<u8>,
-    /// 场值范围（min，max），按文件级场表顺序；本原型没有场，为空。
+    /// 场值范围（min，max），按文件级场表顺序：标量取值、矢量取模长，忽略缺失值；
+    /// 块内没有有限值时为 `[NaN, NaN]`。
     pub field_ranges: Vec<[f64; 2]>,
+    /// 各场在场段中的区间，与 `field_ranges` 同序。
+    pub(crate) field_blocks: Vec<FieldBlock>,
+}
+
+/// 一块一个场的两个压缩区段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct FieldBlock {
+    pub values_offset: u64,
+    pub values_len: u32,
+    pub values_raw_len: u32,
+    pub boundary_offset: u64,
+    pub boundary_len: u32,
+    pub boundary_raw_len: u32,
+}
+
+impl FieldBlock {
+    pub fn values_range(&self) -> (u64, u64) {
+        (
+            self.values_offset,
+            self.values_offset + u64::from(self.values_len),
+        )
+    }
+
+    pub fn boundary_range(&self) -> (u64, u64) {
+        (
+            self.boundary_offset,
+            self.boundary_offset + u64::from(self.boundary_len),
+        )
+    }
+}
+
+/// 文件级场表的一项。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkFieldInfo {
+    pub name: String,
+    pub association: crate::FieldAssociation,
+    pub components: u8,
 }
 
 impl ChunkHeader {
@@ -282,6 +324,7 @@ impl ChunkHeader {
             surface_raw_len: 0,
             voxels: vec![0; VOXEL_BYTES],
             field_ranges: Vec::new(),
+            field_blocks: Vec::new(),
         }
     }
 
@@ -320,12 +363,36 @@ pub struct ChunkSurface {
     pub simplified: SurfaceMesh,
 }
 
+/// 外表面值元组数：节点场每三角形 3 个，单元场 1 个。
+pub(crate) fn boundary_tuple_count(
+    triangles: usize,
+    association: crate::FieldAssociation,
+) -> usize {
+    match association {
+        crate::FieldAssociation::Node => triangles * 3,
+        crate::FieldAssociation::Cell => triangles,
+    }
+}
+
+/// 解码 f64 小端数组（长度已由块表校验）。
+pub(crate) fn decode_f64s(raw: &[u8]) -> Result<Vec<f64>, ChunkError> {
+    if !raw.len().is_multiple_of(8) {
+        return Err(ChunkError::Format("value block length".to_owned()));
+    }
+    Ok(raw
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|bytes| f64::from_le_bytes(*bytes))
+        .collect())
+}
+
 /// 文件级块表。
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ChunkTable {
     pub tet_count: u64,
     pub node_count: u64,
-    pub field_count: u32,
+    pub fields: Vec<ChunkFieldInfo>,
     pub surface_offset: u64,
     pub surface_len: u64,
     pub chunks: Vec<ChunkHeader>,
@@ -539,9 +606,18 @@ pub(crate) fn encode_table(table: &ChunkTable) -> Vec<u8> {
     out.u64(table.tet_count);
     out.u64(table.node_count);
     out.u32(table.chunks.len() as u32);
-    out.u32(table.field_count);
+    out.u32(table.fields.len() as u32);
     out.u64(table.surface_offset);
     out.u64(table.surface_len);
+    for field in &table.fields {
+        out.u32(field.name.len() as u32);
+        out.0.extend_from_slice(field.name.as_bytes());
+        out.u32(match field.association {
+            crate::FieldAssociation::Node => 0,
+            crate::FieldAssociation::Cell => 1,
+        });
+        out.u32(u32::from(field.components));
+    }
     for chunk in &table.chunks {
         chunk.bounds.iter().for_each(|&point| out.point(point));
         out.u32(chunk.tet_count);
@@ -553,9 +629,15 @@ pub(crate) fn encode_table(table: &ChunkTable) -> Vec<u8> {
         out.u32(chunk.surface_len);
         out.u32(chunk.surface_raw_len);
         out.0.extend_from_slice(&chunk.voxels);
-        for range in &chunk.field_ranges {
+        for (range, block) in chunk.field_ranges.iter().zip(&chunk.field_blocks) {
             out.f64(range[0]);
             out.f64(range[1]);
+            out.u64(block.values_offset);
+            out.u32(block.values_len);
+            out.u32(block.values_raw_len);
+            out.u64(block.boundary_offset);
+            out.u32(block.boundary_len);
+            out.u32(block.boundary_raw_len);
         }
     }
     out.0
@@ -567,9 +649,38 @@ pub(crate) fn decode_table(raw: &[u8]) -> Result<ChunkTable, ChunkError> {
     let node_count = reader.u64()?;
     let entry_floor = 48 + 40 + VOXEL_BYTES;
     let chunk_count = reader.count(entry_floor)?;
-    let field_count = reader.u32()?;
+    let field_count = reader.count(12)?;
     let surface_offset = reader.u64()?;
     let surface_len = reader.u64()?;
+    let mut fields = Vec::with_capacity(field_count);
+    for _ in 0..field_count {
+        let name_len = reader.count(1)?;
+        let name = std::str::from_utf8(reader.bytes(name_len)?)
+            .map_err(|_| ChunkError::Format("field name is not UTF-8".to_owned()))?
+            .to_owned();
+        let association = match reader.u32()? {
+            0 => crate::FieldAssociation::Node,
+            1 => crate::FieldAssociation::Cell,
+            other => {
+                return Err(ChunkError::Format(format!(
+                    "field association {other} unknown"
+                )));
+            }
+        };
+        let components = match reader.u32()? {
+            value @ (1 | 3) => value as u8,
+            other => {
+                return Err(ChunkError::Format(format!(
+                    "field components {other} unsupported"
+                )));
+            }
+        };
+        fields.push(ChunkFieldInfo {
+            name,
+            association,
+            components,
+        });
+    }
     let mut chunks = Vec::with_capacity(chunk_count);
     for _ in 0..chunk_count {
         let bounds = [reader.point()?, reader.point()?];
@@ -581,11 +692,19 @@ pub(crate) fn decode_table(raw: &[u8]) -> Result<ChunkTable, ChunkError> {
         chunk.surface_len = reader.u32()?;
         chunk.surface_raw_len = reader.u32()?;
         chunk.voxels = reader.bytes(VOXEL_BYTES)?.to_vec();
-        if (field_count as usize).saturating_mul(16) > raw.len() {
+        if field_count.saturating_mul(48) > raw.len() {
             return Err(ChunkError::Format("field count exceeds data".to_owned()));
         }
         for _ in 0..field_count {
             chunk.field_ranges.push([reader.f64()?, reader.f64()?]);
+            chunk.field_blocks.push(FieldBlock {
+                values_offset: reader.u64()?,
+                values_len: reader.u32()?,
+                values_raw_len: reader.u32()?,
+                boundary_offset: reader.u64()?,
+                boundary_len: reader.u32()?,
+                boundary_raw_len: reader.u32()?,
+            });
         }
         if u64::from(chunk.surface_len) + chunk.surface_offset > surface_len {
             return Err(ChunkError::Format(
@@ -598,7 +717,7 @@ pub(crate) fn decode_table(raw: &[u8]) -> Result<ChunkTable, ChunkError> {
     Ok(ChunkTable {
         tet_count,
         node_count,
-        field_count,
+        fields,
         surface_offset,
         surface_len,
         chunks,
@@ -678,6 +797,22 @@ pub(crate) fn read_index(
         if start < HEAD_LEN || end > table.surface_offset {
             return Err(ChunkError::Format("cells range out of section".to_owned()));
         }
+        for (block, field) in chunk.field_blocks.iter().zip(&table.fields) {
+            let tuples = match field.association {
+                crate::FieldAssociation::Node => u64::from(chunk.node_count),
+                crate::FieldAssociation::Cell => u64::from(chunk.tet_count),
+            };
+            let (values_start, values_end) = block.values_range();
+            let (boundary_start, boundary_end) = block.boundary_range();
+            if values_start < HEAD_LEN
+                || boundary_start < HEAD_LEN
+                || values_end > table.surface_offset
+                || boundary_end > table.surface_offset
+                || u64::from(block.values_raw_len) != tuples * u64::from(field.components) * 8
+            {
+                return Err(ChunkError::Format("field block invalid".to_owned()));
+            }
+        }
     }
     let section = source.read_at(table.surface_offset, table.surface_len as usize)?;
     let surfaces = table
@@ -691,5 +826,18 @@ pub(crate) fn read_index(
             )?)
         })
         .collect::<Result<Vec<_>, _>>()?;
+    for (chunk, surface) in table.chunks.iter().zip(&surfaces) {
+        for (block, field) in chunk.field_blocks.iter().zip(&table.fields) {
+            if u64::from(block.boundary_raw_len)
+                != boundary_tuple_count(surface.boundary.len(), field.association) as u64
+                    * u64::from(field.components)
+                    * 8
+            {
+                return Err(ChunkError::Format(
+                    "field boundary block invalid".to_owned(),
+                ));
+            }
+        }
+    }
     Ok((table, surfaces))
 }

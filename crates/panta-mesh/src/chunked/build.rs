@@ -6,12 +6,73 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 
+use super::cache::parallel_map;
 use super::format::{
-    ChunkCells, ChunkHeader, ChunkSurface, ChunkTable, FORMAT_VERSION, HEAD_LEN, HEAD_MAGIC,
-    VOXELS_PER_AXIS, Writer, compress, encode_cells, encode_surface, encode_table, encode_tail,
+    ChunkCells, ChunkFieldInfo, ChunkHeader, ChunkSurface, ChunkTable, FORMAT_VERSION, FieldBlock,
+    HEAD_LEN, HEAD_MAGIC, VOXELS_PER_AXIS, Writer, compress, encode_cells, encode_surface,
+    encode_table, encode_tail,
 };
 use super::{ChunkError, worker_count};
-use crate::{SurfaceMesh, SurfaceTriangle, TetMesh, Tetrahedron};
+use crate::field_section::{range_key, tuple};
+use crate::{FieldAssociation, ResultField, SurfaceMesh, SurfaceTriangle, TetMesh, Tetrahedron};
+
+/// 分块构建的结果场来源（task 029）：逐个加载，构建峰值只多一个场。
+pub trait FieldProvider {
+    fn infos(&self) -> Vec<ChunkFieldInfo>;
+    fn load(&mut self, index: usize) -> Result<ResultField, ChunkError>;
+}
+
+/// 无结果场。
+pub struct NoFields;
+
+impl FieldProvider for NoFields {
+    fn infos(&self) -> Vec<ChunkFieldInfo> {
+        Vec::new()
+    }
+    fn load(&mut self, _: usize) -> Result<ResultField, ChunkError> {
+        Err(ChunkError::Invalid("no fields".to_owned()))
+    }
+}
+
+/// 已驻留的结果场。
+pub struct ResidentFields<'a>(pub &'a [ResultField]);
+
+impl FieldProvider for ResidentFields<'_> {
+    fn infos(&self) -> Vec<ChunkFieldInfo> {
+        self.0.iter().map(field_info).collect()
+    }
+    fn load(&mut self, index: usize) -> Result<ResultField, ChunkError> {
+        self.0
+            .get(index)
+            .cloned()
+            .ok_or_else(|| ChunkError::Invalid(format!("field {index} missing")))
+    }
+}
+
+impl FieldProvider for crate::ResultAssetReader {
+    fn infos(&self) -> Vec<ChunkFieldInfo> {
+        self.summaries()
+            .iter()
+            .map(|summary| ChunkFieldInfo {
+                name: summary.name.clone(),
+                association: summary.association,
+                components: summary.components,
+            })
+            .collect()
+    }
+    fn load(&mut self, index: usize) -> Result<ResultField, ChunkError> {
+        self.read_field(index)
+            .map_err(|error| ChunkError::Format(format!("result asset: {error}")))
+    }
+}
+
+fn field_info(field: &ResultField) -> ChunkFieldInfo {
+    ChunkFieldInfo {
+        name: field.name.clone(),
+        association: field.association,
+        components: field.components,
+    }
+}
 
 /// 随机访问的四面体源：分块构建按下标取节点、单元与边界面，不要求整体驻留。
 pub trait TetSource: Sync {
@@ -124,7 +185,20 @@ struct Encoded {
     header: ChunkHeader,
     cells: Vec<u8>,
     surface: Vec<u8>,
+    index: LeafIndex,
 }
+
+/// 写场段时需要的块内全局下标（构建期间常驻，约 4 B / 块内节点 + 4 B / 单元 + 16 B / 外表面三角形）。
+#[derive(Default)]
+struct LeafIndex {
+    nodes: Vec<u32>,
+    cells: Vec<u32>,
+    boundary_nodes: Vec<[u32; 3]>,
+    boundary_owners: Vec<u32>,
+}
+
+/// 场段每批编码的块数：限制同时驻留的压缩场块。
+const FIELD_BATCH: usize = 64;
 
 /// 把 `source` 分块写入 `sink`。取消返回 `Ok(None)`；已写出的部分由调用方丢弃（写临时文件再改名）。
 pub fn build_chunked_volume<W: Write>(
@@ -133,6 +207,27 @@ pub fn build_chunked_volume<W: Write>(
     sink: W,
     progress: &crate::Progress,
 ) -> Result<Option<ChunkBuildSummary>, ChunkError> {
+    build_chunked_volume_with_fields(source, &mut NoFields, options, sink, progress)
+}
+
+/// 同 [`build_chunked_volume`]，并把 `fields` 的每个结果场按块写入场段（task 029）。
+pub fn build_chunked_volume_with_fields<W: Write>(
+    source: &dyn TetSource,
+    fields: &mut dyn FieldProvider,
+    options: ChunkBuildOptions,
+    sink: W,
+    progress: &crate::Progress,
+) -> Result<Option<ChunkBuildSummary>, ChunkError> {
+    let infos = fields.infos();
+    for info in &infos {
+        if info.components != 1 && info.components != 3 {
+            return Err(ChunkError::Invalid(format!(
+                "field {} has {} components",
+                info.name, info.components
+            )));
+        }
+    }
+    let cells_end = if infos.is_empty() { 0.95 } else { 0.8 };
     let tet_count = source.tet_count();
     if tet_count == 0 || tet_count > u32::MAX as usize || source.node_count() > u32::MAX as usize {
         return Err(ChunkError::Invalid(format!(
@@ -179,6 +274,7 @@ pub fn build_chunked_volume<W: Write>(
     let workers = worker_count();
     let mut headers = Vec::with_capacity(leaves.len());
     let mut surfaces = Vec::with_capacity(leaves.len());
+    let mut indices = Vec::with_capacity(leaves.len());
     std::thread::scope(|scope| -> Result<(), ChunkError> {
         let (sender, receiver) = mpsc::sync_channel::<(usize, Encoded)>(workers * 2);
         for _ in 0..workers {
@@ -226,8 +322,9 @@ pub fn build_chunked_volume<W: Write>(
                 offset += encoded.cells.len() as u64;
                 headers.push(header);
                 surfaces.push(encoded.surface);
+                indices.push(encoded.index);
                 written += 1;
-                progress.report(0.2, 0.95, written as u64, leaves.len() as u64);
+                progress.report(0.2, cells_end, written as u64, leaves.len() as u64);
                 if progress.is_cancelled() {
                     cancelled.store(true, Ordering::Relaxed);
                 }
@@ -242,6 +339,45 @@ pub fn build_chunked_volume<W: Write>(
         return Ok(None);
     }
 
+    for (field_index, info) in infos.iter().enumerate() {
+        let field = fields.load(field_index)?;
+        check_field(&field, info, source)?;
+        for header in &mut headers {
+            header.field_ranges.push([f64::NAN; 2]);
+            header.field_blocks.push(FieldBlock::default());
+        }
+        for boundary in [false, true] {
+            for start in (0..indices.len()).step_by(FIELD_BATCH) {
+                let end = (start + FIELD_BATCH).min(indices.len());
+                let encoded = parallel_map(&indices[start..end], |index| {
+                    encode_field_block(&field, index, boundary)
+                });
+                for (chunk, item) in (start..end).zip(encoded) {
+                    let (raw_len, bytes, range) = item?;
+                    let block = &mut headers[chunk].field_blocks[field_index];
+                    let len = u32::try_from(bytes.len())
+                        .map_err(|_| ChunkError::Invalid("field block too large".to_owned()))?;
+                    if boundary {
+                        block.boundary_offset = offset;
+                        block.boundary_len = len;
+                        block.boundary_raw_len = raw_len;
+                    } else {
+                        block.values_offset = offset;
+                        block.values_len = len;
+                        block.values_raw_len = raw_len;
+                        headers[chunk].field_ranges[field_index] = range;
+                    }
+                    out.write_all(&bytes)?;
+                    offset += bytes.len() as u64;
+                }
+                if progress.is_cancelled() {
+                    return Ok(None);
+                }
+            }
+        }
+        progress.report(0.8, 0.95, field_index as u64 + 1, infos.len() as u64);
+    }
+
     let surface_offset = offset;
     let mut relative = 0u64;
     for (header, surface) in headers.iter_mut().zip(&surfaces) {
@@ -253,7 +389,7 @@ pub fn build_chunked_volume<W: Write>(
     let table = ChunkTable {
         tet_count: tet_count as u64,
         node_count: source.node_count() as u64,
-        field_count: 0,
+        fields: infos,
         surface_offset,
         surface_len: relative,
         chunks: headers,
@@ -287,6 +423,17 @@ pub fn build_chunked_volume<W: Write>(
 /// 进度：读取占 0..0.3，分块占 0.3..1（使用调用方进度的默认窗口）。取消返回 `Ok(None)`。
 pub fn build_chunked_from_asset<W: Write>(
     asset: &mut crate::VolumeAssetChunks,
+    options: ChunkBuildOptions,
+    sink: W,
+    progress: &crate::Progress,
+) -> Result<Option<ChunkBuildSummary>, ChunkError> {
+    build_chunked_from_asset_with_fields(asset, &mut NoFields, options, sink, progress)
+}
+
+/// 同 [`build_chunked_from_asset`]，并写入结果场（通常是 `.presult` 读取器，逐个场读入）。
+pub fn build_chunked_from_asset_with_fields<W: Write>(
+    asset: &mut crate::VolumeAssetChunks,
+    fields: &mut dyn FieldProvider,
     options: ChunkBuildOptions,
     sink: W,
     progress: &crate::Progress,
@@ -327,7 +474,7 @@ pub fn build_chunked_from_asset<W: Write>(
         boundary_group_count: counts.boundary_group_count,
     };
     progress.set_window(0.3, 1.0);
-    let result = build_chunked_volume(&mesh, options, sink, progress);
+    let result = build_chunked_volume_with_fields(&mesh, fields, options, sink, progress);
     progress.set_window(0.0, 1.0);
     result
 }
@@ -541,13 +688,16 @@ fn encode_leaf(
             triangles: Vec::new(),
         },
     };
-    for tet in &tets {
+    let mut index = LeafIndex::default();
+    for (tet, &id) in tets.iter().zip(&ids) {
         for face in TET_FACES {
             if let Some(triangle) = boundary.face(face.map(|corner| tet.nodes[corner])) {
                 surface
                     .boundary
                     .push(triangle.nodes.map(|node| source.node(node as usize)));
                 surface.groups.push(triangle.group);
+                index.boundary_nodes.push(triangle.nodes);
+                index.boundary_owners.push(id);
             }
         }
     }
@@ -570,6 +720,8 @@ fn encode_leaf(
         global_cells: ids.iter().map(|&id| u64::from(id)).collect(),
     };
     let raw_cells = encode_cells(&cells);
+    index.nodes = global_nodes;
+    index.cells = ids;
     let raw_surface = encode_surface(&surface);
     header.cells_raw_len = u32::try_from(raw_cells.len())
         .map_err(|_| ChunkError::Invalid("chunk too large".to_owned()))?;
@@ -579,7 +731,78 @@ fn encode_leaf(
         header,
         cells: compress(&raw_cells)?,
         surface: compress(&raw_surface)?,
+        index,
     })
+}
+
+fn check_field(
+    field: &ResultField,
+    info: &ChunkFieldInfo,
+    source: &dyn TetSource,
+) -> Result<(), ChunkError> {
+    let tuples = match info.association {
+        FieldAssociation::Node => source.node_count(),
+        FieldAssociation::Cell => source.tet_count(),
+    };
+    if field_info(field) != *info || field.values.len() != tuples * usize::from(info.components) {
+        return Err(ChunkError::Invalid(format!(
+            "field {} does not match the mesh",
+            info.name
+        )));
+    }
+    Ok(())
+}
+
+/// 一块一个场的块内值（`boundary == false`，同时返回值区间）或外表面值，返回（原始长度，压缩字节，区间）。
+fn encode_field_block(
+    field: &ResultField,
+    index: &LeafIndex,
+    boundary: bool,
+) -> Result<(u32, Vec<u8>, [f64; 2]), ChunkError> {
+    let components = usize::from(field.components);
+    let mut out = Writer::default();
+    let mut push = |id: u32| {
+        let start = id as usize * components;
+        field.values[start..start + components]
+            .iter()
+            .for_each(|&value| out.f64(value));
+    };
+    let mut range = [f64::NAN; 2];
+    match (boundary, field.association) {
+        (false, association) => {
+            let ids = match association {
+                FieldAssociation::Node => &index.nodes,
+                FieldAssociation::Cell => &index.cells,
+            };
+            for &id in ids {
+                push(id);
+                let key = range_key(
+                    tuple(&field.values, components, id as usize),
+                    field.components,
+                );
+                if key.is_finite() {
+                    range = if range[0].is_nan() {
+                        [key, key]
+                    } else {
+                        [range[0].min(key), range[1].max(key)]
+                    };
+                }
+            }
+        }
+        (true, FieldAssociation::Node) => {
+            index
+                .boundary_nodes
+                .iter()
+                .flatten()
+                .for_each(|&id| push(id));
+        }
+        (true, FieldAssociation::Cell) => {
+            index.boundary_owners.iter().for_each(|&id| push(id));
+        }
+    }
+    let raw_len = u32::try_from(out.0.len())
+        .map_err(|_| ChunkError::Invalid("field block too large".to_owned()))?;
+    Ok((raw_len, compress(&out.0)?, range))
 }
 
 /// 标记每个单元包围盒覆盖的体素。
