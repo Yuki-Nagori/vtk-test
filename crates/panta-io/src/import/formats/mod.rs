@@ -19,18 +19,23 @@ pub use ply::parse_ply;
 pub use vtk_legacy::{parse_vtk_legacy, parse_vtk_legacy_grid};
 pub use vtk_xml::{parse_vtp, parse_vtu, parse_vtu_grid};
 
-/// 体网格导入的原始数据：首期只接受线性四面体（VTK 单元类型 10），
-/// 任何其他单元类型整体拒绝，不做部分导入。
+/// 体网格导入的原始数据（task 030 起为原生混合单元）：接受线性 tet(10)、voxel(11，
+/// 按 VTK 定义重排为 hex)、hex(12)、wedge(13)、pyramid(14)；polyhedron(42)、
+/// 二次单元与二维单元整体拒绝，不做部分导入。节点顺序保持来源 VTK 局部顺序。
 ///
-/// `fields` 为来源中的节点 / 单元结果场（task 029），下标与 `points` / `tets` 一一对应；
+/// `fields` 为来源中的节点 / 单元结果场（task 029），下标与 `points` / 原始单元一一对应；
 /// 不支持的数组不阻止网格导入，原因记入 `skipped_fields`。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RawGrid {
     pub points: Vec<[f64; 3]>,
-    pub tets: Vec<[u32; 4]>,
+    pub types: Vec<panta_mesh::CellType>,
+    pub connectivity: Vec<u32>,
     pub fields: Vec<panta_mesh::ResultField>,
     pub skipped_fields: Vec<String>,
 }
+
+/// VTK voxel 节点 2/3、6/7 与六面体编号互换。
+const VOXEL_TO_HEXAHEDRON: [usize; 8] = [0, 1, 3, 2, 4, 5, 7, 6];
 
 impl RawGrid {
     pub(crate) fn new(
@@ -38,43 +43,89 @@ impl RawGrid {
         cells: CellList,
         types: Vec<u64>,
     ) -> FormatResult<Self> {
-        const LINEAR_TETRA: u64 = 10;
+        const VOXEL: u64 = 11;
         if types.len() != cells.len() {
             return Err(FormatError::new("cell types count mismatch"));
         }
-        let mut tets = Vec::with_capacity(cells.len());
-        for (index, (kind, nodes)) in types.iter().zip(cells.iter()).enumerate() {
-            if *kind != LINEAR_TETRA {
+        let mut kinds = Vec::with_capacity(cells.len());
+        let mut connectivity = Vec::with_capacity(cells.connectivity.len());
+        for (index, (&code, nodes)) in types.iter().zip(cells.iter()).enumerate() {
+            let kind = if code == VOXEL {
+                Some(panta_mesh::CellType::Hexahedron)
+            } else {
+                u8::try_from(code)
+                    .ok()
+                    .and_then(panta_mesh::CellType::from_vtk)
+            };
+            let Some(kind) = kind else {
+                let hint = if code == u64::from(panta_mesh::VTK_POLYHEDRON) {
+                    "polyhedron cells are reserved but not supported yet"
+                } else {
+                    "only linear tet (10), voxel (11), hex (12), wedge (13) and pyramid (14) cells are supported"
+                };
                 return Err(FormatError::new(format!(
-                    "cell {index} has type {kind}; only linear tetrahedra (10) are supported"
+                    "cell {index} has type {code}; {hint}"
+                )));
+            };
+            if nodes.len() != kind.node_count() {
+                return Err(FormatError::new(format!(
+                    "cell {index} ({}) must have {} nodes",
+                    kind.name(),
+                    kind.node_count()
                 )));
             }
-            let nodes: [u64; 4] = nodes
-                .try_into()
-                .map_err(|_| FormatError::new(format!("tetrahedron {index} must have 4 nodes")))?;
-            let mut tet = [0u32; 4];
-            for (slot, node) in tet.iter_mut().zip(nodes) {
+            let start = connectivity.len();
+            for &node in nodes {
                 if node as usize >= points.len() {
                     return Err(FormatError::new(format!(
-                        "tetrahedron {index} references node outside the node range"
+                        "cell {index} references node outside the node range"
                     )));
                 }
-                *slot = u32::try_from(node).map_err(|_| FormatError::new("node index overflow"))?;
+                connectivity.push(
+                    u32::try_from(node).map_err(|_| FormatError::new("node index overflow"))?,
+                );
             }
-            tets.push(tet);
+            if code == VOXEL {
+                let voxel: [u32; 8] = std::array::from_fn(|corner| connectivity[start + corner]);
+                for (slot, from) in VOXEL_TO_HEXAHEDRON.iter().enumerate() {
+                    connectivity[start + slot] = voxel[*from];
+                }
+            }
+            kinds.push(kind);
         }
-        if tets.is_empty() {
-            return Err(FormatError::new("grid has no tetrahedra"));
+        if kinds.is_empty() {
+            return Err(FormatError::new("grid has no volume cells"));
         }
         for point in &points {
             checked_point(*point)?;
         }
         Ok(Self {
             points,
-            tets,
+            types: kinds,
+            connectivity,
             fields: Vec::new(),
             skipped_fields: Vec::new(),
         })
+    }
+
+    /// 原始单元数（单元场长度以此为准）。
+    pub fn cell_count(&self) -> usize {
+        self.types.len()
+    }
+
+    /// 取出几何构建领域体网格（结果场留在原处）：纯四面体走 `tet_mesh_from_cells`，
+    /// 混合单元按原单元保存并拆分。
+    pub fn take_mesh(&mut self) -> Result<panta_mesh::TetMesh, panta_mesh::VolumeError> {
+        let types = std::mem::take(&mut self.types);
+        let connectivity = std::mem::take(&mut self.connectivity);
+        let offsets = panta_mesh::cell_offsets(&types, connectivity.len())
+            .map_err(|cell| panta_mesh::VolumeError(format!("cell {cell} node count mismatch")))?;
+        panta_mesh::volume_mesh_from_cells(
+            std::mem::take(&mut self.points),
+            types,
+            offsets,
+            connectivity,
+        )
     }
 
     /// 收下一个来源数组：首期只接受 1 或 3 分量、个数与节点 / 单元数一致的数组；
@@ -90,7 +141,7 @@ impl RawGrid {
         let label = format!("{name} ({})", association.as_str());
         let tuples = match association {
             panta_mesh::FieldAssociation::Node => self.points.len(),
-            panta_mesh::FieldAssociation::Cell => self.tets.len(),
+            panta_mesh::FieldAssociation::Cell => self.cell_count(),
         };
         let reason = if name.is_empty() || name.len() > 255 || name.chars().any(char::is_control) {
             Some("invalid array name".to_owned())
@@ -298,8 +349,7 @@ mod fixture_tests {
 
     /// VTK 写出的四面体球：体网格导入后外表面与表面导入一致（64 个三角形），体素块整体拒绝。
     #[test]
-    fn vtk_tet_fixtures_import_as_volume_and_other_cells_are_rejected()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn vtk_volume_fixtures_import_with_native_cells() -> Result<(), Box<dyn std::error::Error>> {
         let root =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/mesh/formats");
         for name in [
@@ -319,10 +369,20 @@ mod fixture_tests {
             };
             let result = crate::import::parse_volume_snapshot(&snapshot);
             if name.starts_with("voxel") {
-                assert!(result.is_err(), "{name}");
+                // task 030：体素按六面体原生导入。
+                let mut grid = result.map_err(|error| format!("{name}: {error}"))?;
+                assert!(grid.cell_count() > 0, "{name}");
+                assert!(
+                    grid.types
+                        .iter()
+                        .all(|&kind| kind == panta_mesh::CellType::Hexahedron),
+                    "{name}"
+                );
+                let mesh = grid.take_mesh()?;
+                assert!(panta_mesh::validate_tet_mesh(&mesh).is_ok(), "{name}");
                 continue;
             }
-            let grid = result.map_err(|error| format!("{name}: {error}"))?;
+            let mut grid = result.map_err(|error| format!("{name}: {error}"))?;
             // 四种编码的夹具都带同一个节点法向数组，作为 3 分量节点结果场保留（task 029）。
             assert!(
                 grid.skipped_fields.is_empty(),
@@ -339,7 +399,7 @@ mod fixture_tests {
             assert_eq!(summary.missing, 0, "{name}");
             let [low, high] = summary.range.ok_or("normals range missing")?;
             assert!(low > 0.99 && high < 1.01, "{name}: {low}..{high}");
-            let mesh = panta_mesh::tet_mesh_from_cells(grid.points, grid.tets)?;
+            let mesh = grid.take_mesh()?;
             assert_eq!(mesh.boundary.len(), 64, "{name}");
         }
         Ok(())

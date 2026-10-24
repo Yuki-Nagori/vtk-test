@@ -513,6 +513,9 @@ bool ProjectViewModel::beginDiagnoseActiveMesh() {
                     m_meshQuality.insert(QStringLiteral("meanAspectRatio"),
                                          value.mean_aspect_ratio);
                     m_meshQuality.insert(QStringLiteral("poorTetCount"), count(value.poor_count));
+                    m_meshQuality.insert(QStringLiteral("cellCount"), count(value.cell_count));
+                    m_meshQuality.insert(QStringLiteral("cellQualitySummary"),
+                                         QString::fromUtf8(value.cell_quality_summary));
                 }
             } else if (report) {
                 m_meshQuality.clear();
@@ -1379,9 +1382,18 @@ void panta::bridge::ProjectViewModel::refresh_volume() {
                             ? QStringLiteral("单元超过驻留阈值，未载入内存；质量统计、切面与 VTU "
                                              "导出按需流式读取资产，每次需完整扫描")
                             : QStringLiteral("质量统计见“诊断网格”结果");
-    m_volumeInfo = info.available ? QStringLiteral("体网格：%1 节点 / %2 四面体\n%3")
+    // 混合单元（task 030）显示原始单元数与类型构成；纯四面体网格保持原文案。
+    const auto types = QString::fromUtf8(info.cell_type_summary);
+    const auto cells =
+        info.cell_count == info.tet_count
+            ? QStringLiteral("%1 四面体").arg(info.cell_count)
+            : QStringLiteral("%1 单元（拆分 %2 四面体）").arg(info.cell_count).arg(info.tet_count);
+    m_volumeInfo = info.available ? QStringLiteral("体网格：%1 节点 / %2%3\n%4")
                                         .arg(info.node_count)
-                                        .arg(info.tet_count)
+                                        .arg(cells)
+                                        .arg(types.isEmpty() || info.cell_count == info.tet_count
+                                                 ? QString()
+                                                 : QStringLiteral("（%1）").arg(types))
                                         .arg(detail)
                                   : QString();
     if (!m_volumeAvailable)

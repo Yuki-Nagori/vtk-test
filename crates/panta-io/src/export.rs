@@ -488,7 +488,7 @@ mod stream;
 pub(crate) use stream::Base64Probe;
 pub use stream::{export_surface_asset_with_progress, export_volume_asset_vtu};
 
-/// 体网格导出 VTU（ASCII，原始节点与线性四面体单元，坐标为毫米），原子替换目标（task 021）。
+/// 体网格导出 VTU（ASCII，原始节点与原生单元——混合网格按原单元类型与 VTK 局部节点顺序，坐标为毫米），原子替换目标（task 021）。
 /// 按估算字节报告 0–99% 进度，原子替换后到 100%。
 /// 取消时删除临时文件并返回 [`ExportError::Cancelled`]，目标文件不变。
 pub fn export_tet_mesh_vtu(
@@ -497,7 +497,7 @@ pub fn export_tet_mesh_vtu(
     progress: &Progress,
 ) -> Result<(), ExportError> {
     // ASCII：每节点约 3×20 字节，每单元连接/偏移/类型约 40 字节。
-    let estimate = mesh.nodes.len() as u64 * 60 + mesh.tets.len() as u64 * 40 + 512;
+    let estimate = mesh.nodes.len() as u64 * 60 + mesh.cell_count() as u64 * 60 + 512;
     write_atomically(path, progress, estimate, |writer| {
         write_tet_mesh_vtu(mesh, writer)
     })
@@ -559,7 +559,7 @@ pub fn write_tet_mesh_vtu(
         writer,
         "<Piece NumberOfPoints=\"{}\" NumberOfCells=\"{}\">",
         mesh.nodes.len(),
-        mesh.tets.len()
+        mesh.cell_count()
     )?;
     writeln!(
         writer,
@@ -573,25 +573,66 @@ pub fn write_tet_mesh_vtu(
         writer,
         "<Cells><DataArray type=\"Int64\" Name=\"connectivity\" format=\"ascii\">"
     )?;
-    for tet in &mesh.tets {
-        let [a, b, c, d] = tet.nodes;
-        writeln!(writer, "{a} {b} {c} {d}")?;
+    match &mesh.cells {
+        None => {
+            for tet in &mesh.tets {
+                let [a, b, c, d] = tet.nodes;
+                writeln!(writer, "{a} {b} {c} {d}")?;
+            }
+        }
+        Some(layout) => {
+            for cell in 0..layout.cell_count() {
+                write_node_line(writer, layout.cell_nodes(cell))?;
+            }
+        }
     }
     writeln!(
         writer,
         "</DataArray><DataArray type=\"Int64\" Name=\"offsets\" format=\"ascii\">"
     )?;
-    for index in 1..=mesh.tets.len() {
-        writeln!(writer, "{}", index * 4)?;
+    match &mesh.cells {
+        None => {
+            for index in 1..=mesh.tets.len() {
+                writeln!(writer, "{}", index * 4)?;
+            }
+        }
+        Some(layout) => {
+            for end in &layout.offsets[1..] {
+                writeln!(writer, "{end}")?;
+            }
+        }
     }
     writeln!(
         writer,
         "</DataArray><DataArray type=\"UInt8\" Name=\"types\" format=\"ascii\">"
     )?;
-    for _ in &mesh.tets {
-        writeln!(writer, "10")?;
+    match &mesh.cells {
+        None => {
+            for _ in &mesh.tets {
+                writeln!(writer, "10")?;
+            }
+        }
+        Some(layout) => {
+            for kind in &layout.types {
+                writeln!(writer, "{}", kind.vtk_code())?;
+            }
+        }
     }
     writeln!(writer, "</DataArray></Cells>")?;
     writeln!(writer, "</Piece></UnstructuredGrid></VTKFile>")?;
     Ok(())
+}
+
+/// 一行写出单元节点（空格分隔）。
+pub(crate) fn write_node_line(writer: &mut impl Write, nodes: &[u32]) -> io::Result<()> {
+    let mut first = true;
+    for node in nodes {
+        if first {
+            write!(writer, "{node}")?;
+            first = false;
+        } else {
+            write!(writer, " {node}")?;
+        }
+    }
+    writeln!(writer)
 }

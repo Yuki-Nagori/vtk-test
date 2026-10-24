@@ -350,7 +350,7 @@ mod tests {
         assert!(!out.exists());
         export_tet_mesh_vtu(&volume, &out, &progress)?;
         let written = panta_io::import::formats::parse_vtu_grid(&std::fs::read(&out)?)?;
-        assert_eq!(written.tets.len(), volume.tets.len());
+        assert_eq!(written.cell_count(), volume.cell_count());
         // 厘米换算到毫米：VTK 夹具半径约 0.5，换算后外包尺寸应 > 5 mm。
         let span = written
             .points
@@ -372,16 +372,21 @@ mod tests {
             false,
         )?;
         assert!(service.volume_for_import(&surface.id).is_none());
-        // 体素块含非四面体单元，实体 3D 整体拒绝。
-        assert!(matches!(
-            service.import_stl(
-                &fixture("voxel_block_binary.vtu"),
-                "solid-3d",
-                "millimeters",
-                false
-            ),
-            Err(ProjectError::ImportVolumeUnsupported(_))
-        ));
+        // 体素块（VTK_VOXEL）自 task 030 起按六面体原生导入，单元数不变。
+        let voxels = service.import_stl(
+            &fixture("voxel_block_binary.vtu"),
+            "solid-3d",
+            "millimeters",
+            false,
+        )?;
+        let voxel_volume = service
+            .volume_for_import(&voxels.id)
+            .ok_or("voxel block should import as a volume")?;
+        let [tetra, hexahedra, ..] = voxel_volume.cell_type_counts();
+        assert_eq!(tetra, 0);
+        assert_eq!(hexahedra as usize, voxel_volume.cell_count());
+        assert!(hexahedra > 0);
+        assert!(panta_mesh::validate_tet_mesh(&voxel_volume).is_ok());
 
         let mut reopened = ProjectService::new();
         reopened.open(&project.path)?;

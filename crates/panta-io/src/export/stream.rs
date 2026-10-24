@@ -257,14 +257,15 @@ impl<W: Write> Base64Block<W> {
     }
 }
 
-/// 流式导出体网格资产为 `.vtu`（ASCII 线性四面体，与 [`super::write_tet_mesh_vtu`] 输出一致）。
+/// 流式导出体网格资产为 `.vtu`（ASCII 原生单元，与 [`super::write_tet_mesh_vtu`] 输出一致）。
+/// 单元类型逐块收集为每单元 1 B，用于随后写 offsets / types，不驻留连接表。
 pub fn export_volume_asset_vtu(
     chunks: &mut VolumeAssetChunks,
     path: &Path,
     progress: &Progress,
 ) -> Result<(), ExportError> {
     let counts = chunks.counts();
-    let estimate = counts.nodes as u64 * 60 + counts.tets as u64 * 40 + 512;
+    let estimate = counts.nodes as u64 * 60 + counts.cells as u64 * 60 + 512;
     write_atomically(path, progress, estimate, |writer| {
         writeln!(writer, "<?xml version=\"1.0\"?>")?;
         writeln!(
@@ -275,7 +276,7 @@ pub fn export_volume_asset_vtu(
         writeln!(
             writer,
             "<Piece NumberOfPoints=\"{}\" NumberOfCells=\"{}\">",
-            counts.nodes, counts.tets
+            counts.nodes, counts.cells
         )?;
         writeln!(
             writer,
@@ -304,11 +305,16 @@ pub fn export_volume_asset_vtu(
             writer,
             "<Cells><DataArray type=\"Int64\" Name=\"connectivity\" format=\"ascii\">"
         )?;
+        let mut kinds: Vec<u8> = Vec::new();
+        kinds
+            .try_reserve_exact(counts.cells)
+            .map_err(|_| ExportError::Io(io::Error::other("cell type buffer allocation failed")))?;
         let finished = chunks
-            .visit_tets(None, |batch| {
-                for tet in batch.iter().flatten() {
-                    let [a, b, c, d] = tet.nodes;
-                    if let Err(error) = writeln!(writer, "{a} {b} {c} {d}") {
+            .visit_cells(None, |batch| {
+                for (kind, _, nodes) in batch.iter().flatten() {
+                    kinds.push(kind.vtk_code());
+                    if let Err(error) = super::write_node_line(writer, &nodes[..kind.node_count()])
+                    {
                         failure = Some(error);
                         return false;
                     }
@@ -322,19 +328,24 @@ pub fn export_volume_asset_vtu(
         if !finished {
             return Err(ExportError::Cancelled);
         }
+        if kinds.len() != counts.cells {
+            return Err(ExportError::Source(panta_mesh::MeshAssetError::InvalidMesh));
+        }
         writeln!(
             writer,
             "</DataArray><DataArray type=\"Int64\" Name=\"offsets\" format=\"ascii\">"
         )?;
-        for index in 1..=counts.tets {
-            writeln!(writer, "{}", index * 4)?;
+        let mut end = 0_u64;
+        for &code in &kinds {
+            end += panta_mesh::CellType::from_vtk(code).map_or(0, |kind| kind.node_count() as u64);
+            writeln!(writer, "{end}")?;
         }
         writeln!(
             writer,
             "</DataArray><DataArray type=\"UInt8\" Name=\"types\" format=\"ascii\">"
         )?;
-        for _ in 0..counts.tets {
-            writeln!(writer, "10")?;
+        for code in &kinds {
+            writeln!(writer, "{code}")?;
         }
         writeln!(writer, "</DataArray></Cells>")?;
         writeln!(writer, "</Piece></UnstructuredGrid></VTKFile>")?;
