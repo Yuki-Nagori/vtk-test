@@ -1,7 +1,7 @@
 # 032 — OpenFOAM / CGNS 导入与基于面邻接的非正交性 / 偏斜度
 
-- 状态：in-progress
-- 阶段：PR 1（任务文档 + OpenFOAM polyMesh / 结果场 / 多区域 / patch + 米单位）已合并；PR 2（非正交性 / 偏斜度）实施中；PR 3（CGNS，经纯 Rust HDF5）待实施
+- 状态：done
+- 阶段：PR 1（任务文档 + OpenFOAM polyMesh / 结果场 / 多区域 / patch + 米单位）、PR 2（非正交性 / 偏斜度）、PR 3（CGNS，经纯 Rust HDF5）均已完成
 - 依赖：[029](029-result-fields.md)、[030](030-mixed-cells.md)、[031](031-polyhedron-cells.md)
 - 优先级：P1
 - 负责人：Grok Bot
@@ -37,7 +37,7 @@
 
 | 能力 | ParaView vtkCGNSReader | 本任务（CGNS，PR 3） |
 |---|---|---|
-| 文件后端 HDF5 / ADF | 二者（经 CGNS 库） | **HDF5**（纯 Rust 读取）；ADF 识别后拒绝并提示 `adf2hdf` |
+| 文件后端 HDF5 / ADF | 二者（经 CGNS 库） | **HDF5**（纯 Rust 读取）；ADF 识别后拒绝并提示用 `cgnsconvert` 转为 HDF5 |
 | 非结构 Zone：固定单元 section | 支持 | **支持**：TETRA_4 / PYRA_5 / PENTA_6 / HEXA_8；二次单元整体拒绝（同 030） |
 | MIXED | 支持 | **支持**：4.x `ElementStartOffset` 与 3.x 无偏移两种布局 |
 | NGON_n / NFACE_n | 支持 | **支持** → 031 多面体 |
@@ -93,11 +93,11 @@ PR 3（CGNS）：见上表。
 
 1. PR 1：本文档；`panta-io::import::formats::openfoam`（FoamFile 词法 / 二进制列表、polyMesh、cell 形状识别、场）；`ImportFormat::OpenFoam` + 内存包快照；`RawGrid` 增加区域与边界面并在 `take_mesh` 中映射；ImportRecord 可选字段；米单位与 UI 扩展名；测试与夹具；nightly。
 2. PR 2：`panta-mesh` 面邻接质量与汇总接入质量面板；与 checkMesh 交叉核对。
-3. PR 3：`hdf5-pure` + `formats::cgns`；夹具由 libcgns 生成；与 `cgnsview` / h5dump 核对。
+3. PR 3：`hdf5-pure` + `formats::cgns`；夹具由 libcgns 生成并经 `cgnscheck` 校验；导入后用领域校验（体积、闭合）核对。
 
 ## 预计改动
 
-- 新增：`crates/panta-io/src/import/formats/openfoam/{mod,lexer,bundle,tests}.rs`、`…/cgns.rs`（PR 3）；`tests/fixtures/mesh/openfoam/`、`tests/fixtures/mesh/cgns/`。
+- 新增：`crates/panta-io/src/import/formats/openfoam/{mod,lexer,bundle,tests}.rs`、`…/cgns/{mod,tests}.rs`（PR 3）；`tests/fixtures/mesh/openfoam/`、`tests/fixtures/mesh/cgns/`。
 - 修改：`crates/panta-io/src/import.rs`（格式、快照、单位、记录字段）、`formats/mod.rs`（RawGrid）、`crates/panta-core/src/project/import.rs`、`qml/App.qml`、`qml/Dialogs/ImportDialog.qml`、`native/bridge/src/project_view_model.cpp`、`crates/panta-mesh/src/cell_quality.rs`（PR 2）。
 - 持久化：ImportRecord 新增可选字段（serde default，记录版本不变）；网格资产格式不变。
 
@@ -107,11 +107,11 @@ PR 3（CGNS）：见上表。
 
 ## 验收标准
 
-- [ ] OpenFOAM ASCII、binary、`.gz`、多面体、多区域夹具导入后单元数 / 类型分布与 checkMesh 一致，区域数与 patch 边界组正确，单元场值与源文件一致、缺失为 NaN。
-- [ ] 源包任一文件变化时提交报「源已变化」；缺 polyMesh、decomposed 算例、损坏文件给出明确错误。
-- [ ] 非正交性最大 / 平均值与偏斜度最大值与 checkMesh 一致（1e-6 相对）。
-- [ ] CGNS 夹具（HEXA_8、MIXED（含 / 不含偏移）、NGON / NFACE、两 Zone、ZoneBC、Vertex / CellCenter FlowSolution）导入正确；ADF 拒绝并提示。
-- [ ] 每个 PR：`cargo format`、`cargo quality`、`cargo test --locked --workspace`、offscreen 启动通过；涉及 IO / C++ / QML 的 PR nightly 全绿。
+- [x] OpenFOAM ASCII、binary、`.gz`、多面体、多区域夹具导入后单元数 / 类型分布与 checkMesh 一致，区域数与 patch 边界组正确，单元场值与源文件一致、缺失为 NaN。
+- [x] 源包任一文件变化时提交报「源已变化」；缺 polyMesh、decomposed 算例、损坏文件给出明确错误。
+- [x] 非正交性最大 / 平均值与偏斜度最大值与 checkMesh 一致（1e-6 相对）。
+- [x] CGNS 夹具（HEXA_8、MIXED（含 / 不含偏移）、NGON / NFACE、两 Zone、ZoneBC、Vertex / CellCenter FlowSolution）导入正确；ADF 拒绝并提示。
+- [x] 每个 PR：`cargo format`、`cargo quality`、`cargo test --locked --workspace`、offscreen 启动通过；涉及 IO / C++ / QML 的 PR nightly 全绿。
 
 ## 验证计划与结果
 
@@ -122,6 +122,11 @@ PR 3（CGNS）：见上表。
 | 2026-10-24 | PR 1：CI 40083065576 与 nightly 40083070826（Windows / macOS）（本行由 PR 2 补记） | 全绿 | 全绿；squash 合并为 main 7a52c06（2026-10-24 17:54 UTC+8） |
 | 2026-10-24 | PR 2：`cargo test -p panta-io face_quality`，夹具 `skew`（扰动 4×3×2 blockMesh）、`skewdual`（其 polyDualMesh）、`poly` 与 OpenFOAM v1912 checkMesh 对照 | 内部面数一致，最大 / 平均非正交角与最大偏斜度相对误差 ≤ 1e-6 | skew：46 内部面，32.663972° / 21.620442°，偏斜 1.4240861；skewdual：133 内部面，41.626226° / 21.297343°，偏斜 2.4449241；poly：104 内部面，0° / 0°，偏斜 1.0000001——全部在 1e-6 内一致 |
 | 2026-10-24 | PR 2：`cargo format`、`cargo quality`、`cargo test --locked --workspace`（CTest 69/69）、offscreen 启动 8 s；`panta-ffi` 诊断测试（带 `face_quality` 时摘要与结论）、`panta-core` 多区域算例记录 `face_quality` | 全部通过 | 通过；启动 exit 124（超时即正常） |
+| 2026-10-24 | PR 2：大网格基准（release，本机）——`skew` 同形 100×100×100 斜六面体 blockMesh（simpleGrading 3 1 0.5），polyMesh 171 MB（ASCII） | 与 checkMesh 一致，耗时可接受 | 1,000,000 hex；checkMesh：非正交最大 34.434208 / 平均 20.558717，最大偏斜 0.76908328（blockMesh 4.27 s、checkMesh 4.07 s）；本实现：34.434207760 / 20.558716807 / 0.76908327978，读算例 0.905 s、面邻接质量 0.377 s、完整 `parse_openfoam_grid` 2.10 s（临时基准测试已删除） |
+| 2026-10-24 | PR 2：CI 40083935561 与 nightly 40083936686（Windows / macOS）（本行由 PR 3 补记） | 全绿 | 全绿；squash 合并为 main 21786bc（2026-10-24 18:07 UTC+8） |
+| 2026-10-24 | PR 3：`cargo test -p panta-io cgns`（9），夹具见 `tests/fixtures/mesh/cgns/README.md` | 单元类型 / 数量、区域、BC 组、场、体积与夹具一致；3.x 布局与 4.x 相同；ADF / 非 HDF5 拒绝 | mixed：54 点、8 hex + 16 wedge、2 区域、体积 16，组三角形 8 / 8 / 80，`Velocity` 合成矢量、`CellIndex` 单元场；mixed_v3 与 mixed 的 RawGrid 完全相等；tetpyr：3 pyramid + 1 tet、体积 7/6，组 `top` / `cubeBottom` / `unassigned` 2 / 2 / 12；ngon：2 多面体（含反向面）闭合、体积 2，组 `inlet` 2 / `unassigned` 18；表面模式三角形 96 / 16 / 20；ADF 与文本均拒绝 |
+| 2026-10-24 | PR 3：大文件基准（release，本机）——`gen mixed 60`，48.9 MB，2 Zone、216,000 hex + 432,000 wedge、453,962 点 | 可接受 | `parse_cgns_grid` 0.18 s；`take_mesh`（共享的四面体化 + 校验路径，非 CGNS 专属）3.8 s → 2,592,000 tet；表面模式 0.29 s（86,400 三角形）；临时基准测试已删除 |
+| 2026-10-24 | PR 3：`cargo format`、`cargo quality`、`cargo test --locked --workspace`（CTest 69/69，含拖放分类新增 `.foam` / `system/controlDict` / `.cgns` 断言）、offscreen 启动 8 s | 全部通过 | 通过；启动 exit 124（超时即正常） |
 
 ## 风险与回退
 
@@ -150,6 +155,16 @@ PR 3（CGNS）：见上表。
   - **保守决策**：结果存入 ImportRecord 可选字段 `face_quality`（serde default，记录版本不变），诊断面板直接读取、不重算；旧工程与非 OpenFOAM 来源不显示该行。严重非正交 / 偏高偏斜 / 劣质正交质量任一计数非 0 时质量结论为「存在问题」。
   - 正交质量（Fluent 定义）checkMesh 不报告，无法交叉核对；`poly` 对偶网格的边界单元约 0.148（逐单元正交质量同一网格最小 0.100），量级一致，判断为对偶网格边界单元的真实特征。测试只断言其落在 (0, 1]。
 
+- 2026-10-24（PR 3，CGNS）：
+  - `hdf5-pure` 0.47（`std` + `deflate`，MIT OR Apache-2.0，无 build script，新增 crate 仅它与 `byteorder`）；`File::from_bytes` 需要拥有的 `Vec<u8>`，导入时复制一份快照字节，峰值内存约为文件大小的两倍（保守：不为此引入 `'static` 生命周期或 mmap）。
+  - **保守决策**：只读首个 3D Base，其余 Base 记入 skipped；Zone 按名称排序；结构 Zone 跳过并记录（归后续「结构网格」task）；二次及更高阶 3D 单元整网格拒绝；NFACE 单元一律作多面体，不尝试识别为标准单元；Zone 间界面节点不合并（与 ParaView 一致）；不读 `DimensionalUnits`，对话框默认「米」由用户确认；CGNS 不计算面邻接质量。
+  - BC：FaceCenter（含 ElementRange / ElementList）按面元素号取面；Vertex 只在显式二维面 section（非 NGON）中按「全部节点属于点集」匹配，不从体单元反推边界面——没有面 section 的 Vertex BC 记为「无匹配边界面」而不是猜测。被 BC 占用的面不再重复成组，剩余面 section 以 section 名成组。
+  - 场：同 Zone 同位置多个 FlowSolution（常见于多时间步）时加 `solution/` 前缀并全部导入；真正的时间序列（`BaseIterativeData` / `ZoneIterativeData`）归「播放 + 时序结果场」task。FaceCenter / EdgeCenter、部分解、Rind ≠ 0 跳过并记录（libcgns 拒绝为非结构 Zone 写 FaceCenter 解，Rind 无夹具，二者仅代码路径覆盖）。
+  - 导入对话框：`.cgns` 与 OpenFOAM 一样默认「米 + 实体 3D」；文件过滤、拖放分类与不支持类型提示加入 `.cgns`。
+
 ## 完成摘要
 
-未完成。
+- OpenFOAM：polyMesh（ASCII / binary / `.gz`）、标准单元识别 + 多面体、多区域、patch 边界组、最新时间步 volScalar / volVector 单元场、表面模式；内存包快照覆盖源变化检查。
+- 质量：OpenFOAM 面邻接非正交性 / 偏斜度（与 checkMesh 1e-6 内一致，1M 单元 0.38 s）与 Fluent 正交质量，写入 ImportRecord 并在诊断面板展示。
+- CGNS（HDF5）：非结构 Zone（固定类型 / MIXED / NGON+NFACE）、多 Zone 区域、ZoneBC 与面 section 边界组、Vertex / CellCenter FlowSolution 与矢量合成；ADF 拒绝。
+- 未实施（候选后续，未建 task）：VTU / VTK 来源的面邻接质量与逐单元非正交 / 偏斜度字段；OpenFOAM decomposed / collated、cellZones、张量场；CGNS 结构 Zone（并入「结构网格」task）、Family / 1to1、FaceCenter 场；CGNS 与 OpenFOAM 时间序列（并入「播放 + 时序结果场」task）。

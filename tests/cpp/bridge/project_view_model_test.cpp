@@ -707,6 +707,14 @@ TEST(ProjectViewModelTest, RemembersRecentProjectsAndClassifiesDrops) {
               QStringLiteral("mesh"));
     EXPECT_EQ(model.classifyDroppedUrl(QUrl::fromLocalFile(QStringLiteral("/x/a.Ply"))),
               QStringLiteral("mesh"));
+    // CFD 来源（task 032）：OpenFOAM 标记文件 / system/controlDict 与 CGNS。
+    EXPECT_EQ(model.classifyDroppedUrl(QUrl::fromLocalFile(QStringLiteral("/x/case.foam"))),
+              QStringLiteral("mesh"));
+    EXPECT_EQ(
+        model.classifyDroppedUrl(QUrl::fromLocalFile(QStringLiteral("/x/case/system/controlDict"))),
+        QStringLiteral("mesh"));
+    EXPECT_EQ(model.classifyDroppedUrl(QUrl::fromLocalFile(QStringLiteral("/x/flow.CGNS"))),
+              QStringLiteral("mesh"));
     EXPECT_TRUE(
         model.classifyDroppedUrl(QUrl::fromLocalFile(QStringLiteral("/x/a.txt"))).isEmpty());
     EXPECT_TRUE(model.classifyDroppedUrl(QUrl(QStringLiteral("https://e.com/a.stl"))).isEmpty());

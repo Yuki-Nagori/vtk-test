@@ -68,6 +68,13 @@ Netgen API 依据：[v6.2.2604 `nglib.h`](https://github.com/NGSolve/netgen/blob
 - 区域 → `TetMesh` region（名称写入 ImportRecord `region_names`）；非空 patch → 边界组（`boundary_group_names`，多区域为 `区域/patch`，未覆盖三角形归 `unassigned`）。最新时间步的 volScalar / volVector internalField → 单元结果场，单位由 `dimensions` 推出；单位按「米」导入。
 - 面邻接质量（PR 2，`panta_mesh::poly_mesh_face_quality`）：导入时按各区域原始 polyMesh（多边形面、owner / neighbour，非改写后的三角形）计算，口径同 OpenFOAM checkMesh——面中心 / 面积向量按顶点平均点扇形加权，单元中心按棱锥体积加权；非正交角最大值 = 最小余弦的反余弦、平均值 = 余弦平均的反余弦，> 70° 记严重；偏斜度内部面归一化系数 0.2、边界面 0.4，> 4 记偏高；另给 Fluent 正交质量（逐单元取面积向量 vs 中心→面中心、中心→邻居中心余弦的最小值，< 0.15 记劣质）。跨区域合并后写入 ImportRecord `face_quality`（可选字段），诊断面板直接展示，不重算；任一计数非 0 时结论为「存在问题」。VTU / VTK 等无面邻接的来源不计算（候选后续：按排序面节点哈希建邻接）。
 
+### CGNS 导入（task 032）
+
+- 只支持 HDF5 后端，经纯 Rust 的 `hdf5-pure`（MIT OR Apache-2.0）从快照字节只读解析；ADF 后端识别文件头后拒绝并提示用 `cgnsconvert` 转为 HDF5。读取首个 3D `CGNSBase_t` 的非结构 `Zone_t`（结构 Zone 跳过并记录，归后续「结构网格」task）。
+- 单元：TETRA_4 / PYRA_5 / PENTA_6 / HEXA_8、MIXED（4.x `ElementStartOffset` 与 3.x 无偏移两种布局）、NGON_n + NFACE_n（→ 031 多面体，负面号表示反向）；CGNS 线性单元节点顺序与 VTK 一致，不重排；二次及更高阶 3D 单元整网格拒绝。
+- 多 Zone → `TetMesh` region（按 Zone 名排序，节点不跨 Zone 合并，与 ParaView 一致）；单 Zone 不建区域表。`ZoneBC`（PointRange / PointList / ElementRange / ElementList；FaceCenter 按面元素号、Vertex 按节点集合匹配显式面 section）→ 边界组，未被 BC 覆盖的面 section 以 section 名成组，其余三角形归 `unassigned`；多 Zone 组名为 `Zone/名称`。
+- `FlowSolution_t`：Vertex → 节点场，CellCenter → 单元场，`XxxX/Y/Z` 合成三分量矢量；同 Zone 同位置有多个 solution 时加 `solution/` 前缀；其他位置、部分解（PointList / PointRange）、Rind ≠ 0 跳过并记入 skipped 字段；跨 Zone 缺失填 NaN。`DimensionalUnits` 不读，导入对话框默认「米」。CGNS 不计算面邻接质量（PR 2 只针对 OpenFOAM）。
+
 ## 生成流程
 
 应用服务确认几何有效，冻结输入修订和网格参数，创建后台任务，再由 Netgen 适配器生成输出。完成后转换为 Mesh IR、检查有效性、形成质量摘要，最后一次性提交新的网格资产。

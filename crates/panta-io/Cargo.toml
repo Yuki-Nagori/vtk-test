@@ -12,6 +12,7 @@ panta-mesh.workspace = true
 serde.workspace = true
 sha2.workspace = true
 flate2.workspace = true
+hdf5-pure.workspace = true
 
 [lints]
 workspace = true

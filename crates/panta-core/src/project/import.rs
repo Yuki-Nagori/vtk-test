@@ -363,6 +363,7 @@ fn volume_from_prepared(
             panta_io::import::ImportFormat::Vtu
                 | panta_io::import::ImportFormat::VtkLegacy
                 | panta_io::import::ImportFormat::OpenFoam
+                | panta_io::import::ImportFormat::Cgns
         )
     {
         return Ok(None);
