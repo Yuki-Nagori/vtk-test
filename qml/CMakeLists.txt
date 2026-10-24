@@ -23,6 +23,7 @@ set(PANTA_SHELL_QML_FILES
     Components/Composites/DocumentTabBar.qml
     Dialogs/GenerateVolumeDialog.qml
     Dialogs/ImportDialog.qml
+    Dialogs/LargeMeshSettingsDialog.qml
     Dialogs/NewProjectDialog.qml
     Panels/ViewportPane.qml
     Themes/Theme.qml)
@@ -35,7 +36,7 @@ if(NOT PANTA_ENABLE_BRIDGE_MODULE)
   # ViewportPane 依赖 Panta.Visualization（CaeViewport），一并剔除。
   list(REMOVE_ITEM PANTA_SHELL_QML_FILES App.qml Panels/ViewportPane.qml
        Dialogs/NewProjectDialog.qml Dialogs/ImportDialog.qml
-       Dialogs/GenerateVolumeDialog.qml)
+       Dialogs/GenerateVolumeDialog.qml Dialogs/LargeMeshSettingsDialog.qml)
   list(APPEND PANTA_SHELL_QML_FILES AppNoBridge.qml)
 endif()
 

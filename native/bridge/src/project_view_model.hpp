@@ -48,6 +48,10 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     Q_PROPERTY(QString importedDimensions READ importedDimensions NOTIFY importsChanged)
     Q_PROPERTY(quint64 importedTriangleCount READ importedTriangleCount NOTIFY importsChanged)
     Q_PROPERTY(QString activeMeshLodStatus READ activeMeshLodStatus NOTIFY meshChanged)
+    Q_PROPERTY(
+        double lodActivationTriangles READ lodActivationTriangles NOTIFY largeMeshLimitsChanged)
+    Q_PROPERTY(double lodBudgetTriangles READ lodBudgetTriangles NOTIFY largeMeshLimitsChanged)
+    Q_PROPERTY(double volumeStreamCells READ volumeStreamCells NOTIFY largeMeshLimitsChanged)
     Q_PROPERTY(QVariantList meshTypes READ meshTypes CONSTANT)
     Q_PROPERTY(QString defaultMeshType READ defaultMeshType CONSTANT)
     Q_PROPERTY(bool importPreviewPending READ importPreviewPending NOTIFY importPreviewChanged)
@@ -248,6 +252,15 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     /// 只替换视口显示，不写工程、不生成资产。启用时零法向或非有限值被拒绝。
     Q_INVOKABLE bool setSection(bool enabled, double normalX, double normalY, double normalZ,
                                 double fraction);
+    /// 大网格设置（task 026）：表面 LOD 阈值 / 预算（面）、体网格流式阈值（四面体）。
+    /// 校验在 Rust，非法时返回 false 并设置 `project.lod_settings_invalid`；成功后持久化。
+    /// 只影响之后的激活，已打开的网格不重算。
+    Q_INVOKABLE bool setLargeMeshLimits(double surfaceTriangles, double surfaceBudget,
+                                        double volumeCells);
+    Q_INVOKABLE void resetLargeMeshLimits();
+    [[nodiscard]] double lodActivationTriangles() const;
+    [[nodiscard]] double lodBudgetTriangles() const;
+    [[nodiscard]] double volumeStreamCells() const;
     [[nodiscard]] bool volumeAvailable() const { return m_volumeAvailable; }
     [[nodiscard]] QString volumeInfo() const { return m_volumeInfo; }
     [[nodiscard]] bool sectionActive() const { return m_sectionActive; }
@@ -259,6 +272,7 @@ class ProjectViewModel : public panta::visualization::MeshSource {
   signals:
     void animationChanged();
     void volumeChanged();
+    void largeMeshLimitsChanged();
     void errorChanged();
     void projectOperationPendingChanged();
     /// operation 为 create/open/save；成功表示已提交并发布快照。
@@ -293,6 +307,8 @@ class ProjectViewModel : public panta::visualization::MeshSource {
   private:
     void rememberRecentProject(const QString& path);
     [[nodiscard]] static QString recentProjectsFile();
+    [[nodiscard]] static QString largeMeshSettingsFile();
+    void loadLargeMeshLimits();
     bool beginProjectOperation(panta::ffi::ProjectOperationInput input, const QString& operation);
     void prepareActiveMesh();
     bool fail(const panta::ffi::ProjectDiagnostic& diagnostic);

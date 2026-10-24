@@ -26,7 +26,8 @@ qt_add_qml_module(
   src/utf8_boundary.hpp
   src/utf8_boundary.cpp
   src/project_view_model.hpp
-  src/project_view_model.cpp)
+  src/project_view_model.cpp
+  src/large_mesh_settings.cpp)
 panta_native_defaults(panta_bridge)
 # 测试和 C++ 消费者按 <project_view_model.hpp> 引用头文件。
 target_include_directories(panta_bridge PUBLIC src)

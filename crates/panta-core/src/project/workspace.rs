@@ -392,7 +392,10 @@ pub fn project_error_message(code: &str) -> &'static str {
         "animation.io_failed" => "读取序列目录失败。",
         "animation.frame_failed" => "该帧无法读取或解析。",
         "project.mesh_lod_only" => {
-            "该表面网格超过 LOD 阈值，当前只驻留显示用简化网格；表面质量诊断需要完整驻留网格，暂不支持（导出不受影响）。"
+            "该表面网格超过 LOD 阈值，当前只驻留显示用简化网格；表面质量诊断需要完整驻留网格（导出不受影响）。可在“大网格设置”中调高表面 LOD 阈值后重新打开该网格。"
+        }
+        "project.lod_settings_invalid" => {
+            "大网格设置超出范围：表面阈值 100 万–20 亿面，LOD 预算 10 万–2000 万面且小于阈值，体网格阈值 100 万–100 亿单元。"
         }
         "project.streamed_asset_failed" => {
             "无法流式读取完整网格资产：资产文件缺失、已被修改或校验失败，请重新打开该网格。"

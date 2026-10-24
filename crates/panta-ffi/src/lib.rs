@@ -51,6 +51,11 @@ use progress::{
 };
 mod volume;
 use volume::project_service_volume_summary;
+mod limits;
+use limits::{
+    default_large_mesh_limits, project_service_large_mesh_limits,
+    project_service_set_large_mesh_limits,
+};
 mod animation;
 use animation::{
     AnimationSequence, animation_cached_frames, animation_frame, animation_frame_count,
@@ -292,6 +297,14 @@ pub mod bridge {
         pub error: ProjectDiagnostic,
     }
 
+    /// 大网格激活设置（task 026）：表面 LOD 阈值 / 预算（面）、体网格流式阈值（四面体）。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct LargeMeshLimits {
+        pub surface_triangles: u64,
+        pub surface_budget: u64,
+        pub volume_cells: u64,
+    }
+
     #[derive(Default)]
     pub struct AnimationFrameResult {
         pub ready: bool,
@@ -404,6 +417,13 @@ pub mod bridge {
         fn project_service_workspace_close(service: &mut ProjectService, document_id: &str);
         fn project_service_workspace_move(service: &mut ProjectService, from: u64, to: u64);
         fn project_error_message(code: &str) -> String;
+        fn default_large_mesh_limits() -> LargeMeshLimits;
+        fn project_service_large_mesh_limits(service: &ProjectService) -> LargeMeshLimits;
+        /// 校验并替换设置；只影响之后的激活。非法时返回 `project.lod_settings_invalid`。
+        fn project_service_set_large_mesh_limits(
+            service: &mut ProjectService,
+            limits: LargeMeshLimits,
+        ) -> ProjectDiagnostic;
         fn format_project_dimensions(size_x: f64, size_y: f64, size_z: f64, unit: &str) -> String;
         fn mesh_type_catalog() -> Vec<ChoiceDefinition>;
         fn default_mesh_type() -> String;

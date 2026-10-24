@@ -255,6 +255,20 @@ impl ProjectService {
     }
 
     /// 请求取消一次在飞激活；`Cancelled` 终态由 worker 在安全检查点确认。
+    /// 校验并替换大网格设置（task 026）；只影响之后的激活，已驻留文档不重算。
+    pub fn set_activation_limits(
+        &mut self,
+        limits: crate::activation::ActivationLimits,
+    ) -> Result<(), ProjectError> {
+        limits.validate()?;
+        self.activation.set_limits(limits);
+        Ok(())
+    }
+
+    pub fn activation_limits(&self) -> crate::activation::ActivationLimits {
+        self.activation.limits()
+    }
+
     pub fn cancel_asset_activation(&mut self, attempt: u64) -> bool {
         self.activation.cancel(attempt)
     }

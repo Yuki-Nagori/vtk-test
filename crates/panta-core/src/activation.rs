@@ -68,21 +68,61 @@ pub const LOD_ACTIVATION_TRIANGLES: u64 = 20_000_000;
 /// 默认值取 1000 万以 8 GiB 内存机器为保守上限（基准见 task 025 文档）。
 pub const VOLUME_STREAM_ACTIVATION_CELLS: u64 = 10_000_000;
 
-/// 激活阈值：表面面数与体网格单元数（task 026 改为设置项）。
+/// 大网格激活设置（task 026）：表面 LOD 触发面数与 LOD 输出预算、体网格流式激活单元数。
+/// 只影响之后的激活；已驻留文档不重算。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ActivationLimits {
+    /// 表面资产面数超过此值时只驻留显示 LOD。
     pub surface_triangles: u64,
+    /// 显示 LOD 的面数上限。
+    pub surface_budget: u64,
+    /// 体网格四面体数超过此值时单元不驻留、命令按需流式读取。
     pub volume_cells: u64,
+}
+
+impl Default for ActivationLimits {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 impl ActivationLimits {
     pub const DEFAULT: Self = Self {
         surface_triangles: LOD_ACTIVATION_TRIANGLES,
+        surface_budget: panta_mesh::DEFAULT_LOD_TRIANGLE_BUDGET as u64,
         volume_cells: VOLUME_STREAM_ACTIVATION_CELLS,
     };
+    /// 表面触发阈值范围（面）。
+    pub const SURFACE_TRIANGLES_RANGE: std::ops::RangeInclusive<u64> = 1_000_000..=2_000_000_000;
+    /// LOD 预算范围（面），且须小于触发阈值。
+    pub const SURFACE_BUDGET_RANGE: std::ops::RangeInclusive<u64> = 100_000..=20_000_000;
+    /// 体网格流式激活阈值范围（四面体）。
+    pub const VOLUME_CELLS_RANGE: std::ops::RangeInclusive<u64> = 1_000_000..=10_000_000_000;
+
+    /// 范围校验；违反时 detail 指出字段，供界面显示。
+    pub fn validate(&self) -> Result<(), crate::project::ProjectError> {
+        let invalid = |field: &str| {
+            Err(crate::project::ProjectError::LodSettingsInvalid(
+                field.to_owned(),
+            ))
+        };
+        if !Self::SURFACE_TRIANGLES_RANGE.contains(&self.surface_triangles) {
+            return invalid("surface_triangles");
+        }
+        if !Self::SURFACE_BUDGET_RANGE.contains(&self.surface_budget)
+            || self.surface_budget >= self.surface_triangles
+        {
+            return invalid("surface_budget");
+        }
+        if !Self::VOLUME_CELLS_RANGE.contains(&self.volume_cells) {
+            return invalid("volume_cells");
+        }
+        Ok(())
+    }
     /// 完整读取（导出等只读命令）：不走 LOD 或流式激活。
     pub(crate) const RESIDENT: Self = Self {
         surface_triangles: u64::MAX,
+        surface_budget: u64::MAX,
         volume_cells: u64::MAX,
     };
 }
@@ -136,6 +176,8 @@ struct CoordinatorState {
 pub struct ActivationCoordinator {
     state: Mutex<CoordinatorState>,
     generation: AtomicU64,
+    /// 已校验的大网格设置；worker 开始读取时取值（task 026）。
+    limits: Mutex<ActivationLimits>,
 }
 
 impl std::fmt::Debug for ActivationCoordinator {
@@ -152,6 +194,15 @@ impl ActivationCoordinator {
     fn lock(&self) -> std::sync::MutexGuard<'_, CoordinatorState> {
         // 锁中毒只可能来自 panic 传播；恢复内层数据继续串行语义。
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// 替换大网格设置（调用方已校验）；在飞与已驻留的激活不受影响。
+    pub(crate) fn set_limits(&self, limits: ActivationLimits) {
+        *self.limits.lock().unwrap_or_else(PoisonError::into_inner) = limits;
+    }
+
+    pub(crate) fn limits(&self) -> ActivationLimits {
+        *self.limits.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// 提交一次激活。同会话同记录的在飞 attempt 直接复用（去重）；
@@ -328,11 +379,8 @@ fn run_attempt(
     request: ActivationRequest,
     cancel_requested: Arc<AtomicBool>,
 ) {
-    let result = load_asset(
-        request,
-        || cancel_requested.load(Ordering::SeqCst),
-        ActivationLimits::DEFAULT,
-    );
+    let limits = coordinator.limits();
+    let result = load_asset(request, || cancel_requested.load(Ordering::SeqCst), limits);
     coordinator.complete(attempt, result);
 }
 
@@ -372,6 +420,7 @@ fn load_asset(
         &request.expected_digest,
         &cancelled,
         limits.surface_triangles,
+        limits.surface_budget,
     )? {
         return Ok(loaded);
     }
@@ -418,6 +467,7 @@ fn load_lod(
     expected_digest: &str,
     cancelled: &impl Fn() -> bool,
     lod_threshold: u64,
+    budget: u64,
 ) -> Result<Option<Option<LoadedMesh>>, ActivationFailure> {
     let Ok(chunks) = panta_mesh::SurfaceAssetChunks::open(path) else {
         return Ok(None);
@@ -434,10 +484,8 @@ fn load_lod(
         });
     }
     drop(chunks);
-    // 预算不超过阈值的一半，保证 LOD 显著小于触发阈值。
-    let budget = usize::try_from(lod_threshold / 2)
-        .unwrap_or(usize::MAX)
-        .min(panta_mesh::DEFAULT_LOD_TRIANGLE_BUDGET);
+    // 校验保证预算 < 阈值；仍取阈值一半为上限，保证 LOD 显著小于触发阈值。
+    let budget = usize::try_from(budget.min(lod_threshold / 2)).unwrap_or(usize::MAX);
     let result = with_cancellation(cancelled, |progress| {
         panta_mesh::build_surface_lod(path, budget, Some(progress))
     })?;
@@ -803,6 +851,7 @@ mod tests {
         };
         let small = ActivationLimits {
             surface_triangles: 1_000,
+            surface_budget: 500,
             volume_cells: 1_000,
         };
         let lod = load_asset(request(), || false, small)
@@ -843,6 +892,7 @@ mod tests {
         };
         let limits = ActivationLimits {
             surface_triangles: u64::MAX,
+            surface_budget: 500,
             volume_cells: 1_000,
         };
         let streamed = load_asset(request(), || false, limits)
@@ -865,7 +915,100 @@ mod tests {
         let mut wrong = request();
         wrong.expected_digest = "sha256:other".to_owned();
         assert!(load_asset(wrong, || false, limits).is_err());
+
+        // worker 使用协调器中的设置（task 026）：默认驻留，调低阈值后流式。
+        let (coordinator, attempt) = coordinator_with_request();
+        assert_eq!(coordinator.limits(), ActivationLimits::DEFAULT);
+        coordinator.set_limits(limits);
+        run_attempt(
+            Arc::clone(&coordinator),
+            attempt.attempt,
+            request(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let outcomes = coordinator.drain();
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].streamed_volume, Some(block.counts()));
         Ok(())
+    }
+
+    #[test]
+    fn activation_limits_validate_ranges_and_budget_below_threshold() {
+        let field = |limits: ActivationLimits| match limits.validate() {
+            Ok(()) => String::new(),
+            Err(error) => {
+                assert_eq!(error.code(), "project.lod_settings_invalid");
+                error.detail()
+            }
+        };
+        let base = ActivationLimits::DEFAULT;
+        assert_eq!(field(base), "");
+        let lowest = ActivationLimits {
+            surface_triangles: 1_000_000,
+            surface_budget: 100_000,
+            volume_cells: 1_000_000,
+        };
+        assert_eq!(field(lowest), "");
+        let highest = ActivationLimits {
+            surface_triangles: 2_000_000_000,
+            surface_budget: 20_000_000,
+            volume_cells: 10_000_000_000,
+        };
+        assert_eq!(field(highest), "");
+        let cases = [
+            (
+                ActivationLimits {
+                    surface_triangles: 999_999,
+                    ..lowest
+                },
+                "surface_triangles",
+            ),
+            (
+                ActivationLimits {
+                    surface_triangles: 2_000_000_001,
+                    ..highest
+                },
+                "surface_triangles",
+            ),
+            (
+                ActivationLimits {
+                    surface_budget: 99_999,
+                    ..base
+                },
+                "surface_budget",
+            ),
+            (
+                ActivationLimits {
+                    surface_budget: 20_000_001,
+                    ..highest
+                },
+                "surface_budget",
+            ),
+            (
+                ActivationLimits {
+                    surface_budget: 1_000_000,
+                    ..lowest
+                },
+                "surface_budget",
+            ),
+            (
+                ActivationLimits {
+                    volume_cells: 999_999,
+                    ..base
+                },
+                "volume_cells",
+            ),
+            (
+                ActivationLimits {
+                    volume_cells: 10_000_000_001,
+                    ..base
+                },
+                "volume_cells",
+            ),
+        ];
+        for (limits, expected) in cases {
+            assert_eq!(field(limits), expected, "{limits:?}");
+        }
     }
 
     #[test]

@@ -29,7 +29,7 @@
 | 023 | [工作台命令：STEP → Netgen 生成体网格](task/023-step-netgen-volume-command.md) | done |
 | 024 | [任意平面切面](task/024-arbitrary-section-plane.md) | done |
 | 025 | [LOD 状态下流式导出，体网格流式激活、诊断、切面与导出](task/025-lod-streaming-diagnostics-export.md) | done |
-| 026 | [LOD 触发阈值与输出预算设为用户设置](task/026-lod-user-settings.md) | planned |
+| 026 | [大网格阈值（表面 LOD / 体网格流式）设为用户设置](task/026-lod-user-settings.md) | done |
 
 任务先登记范围与验收，实际验证后同步状态。历史编号不再代表本仓库的待办或已交付能力。
 
