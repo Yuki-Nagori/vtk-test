@@ -1265,9 +1265,9 @@ TEST(ProjectViewModelTest, RunsVolumeQualitySectionAndVtuExportInTheBackground) 
     // 切面在后台计算；连续请求合并为最新意图。
     view_model.holdWork = true;
     QSignalSpy meshChanged(&view_model, &ProjectViewModel::meshChanged);
-    ASSERT_TRUE(view_model.setSection(true, 0, 0.5));
+    ASSERT_TRUE(view_model.setSection(true, 1.0, 0.0, 0.0, 0.5));
     ASSERT_EQ(view_model.held.size(), 1U);
-    ASSERT_TRUE(view_model.setSection(true, 0, 0.25));
+    ASSERT_TRUE(view_model.setSection(true, 1.0, 0.0, 0.0, 0.25));
     ASSERT_EQ(view_model.held.size(), 1U);
     view_model.releaseFirst();
     ASSERT_TRUE(QTest::qWaitFor([&] { return view_model.held.size() == 1U; }, 10000));
@@ -1292,7 +1292,29 @@ TEST(ProjectViewModelTest, RunsVolumeQualitySectionAndVtuExportInTheBackground) 
     view_model.holdWork = false;
 
     // 关闭切面后 .vtu 导出在后台写四面体单元。
-    ASSERT_TRUE(view_model.setSection(false, 0, 0.25));
+    // 任意平面（task 024）：法向属性往返；零法向与非有限值在启用时被拒绝且不改变已有平面。
+    EXPECT_FALSE(view_model.setSection(true, 0.0, 0.0, 0.0, 0.5));
+    EXPECT_EQ(view_model.errorCode(), QStringLiteral("project.command_invalid"));
+    EXPECT_FALSE(view_model.setSection(true, std::nan(""), 0.0, 1.0, 0.5));
+    EXPECT_EQ(view_model.sectionNormalX(), 1.0);
+    EXPECT_EQ(view_model.sectionFraction(), 0.25);
+    ASSERT_TRUE(view_model.setSection(true, 0.0, 1.0, 1.0, 0.75));
+    EXPECT_EQ(view_model.sectionNormalX(), 0.0);
+    EXPECT_EQ(view_model.sectionNormalY(), 1.0);
+    EXPECT_EQ(view_model.sectionNormalZ(), 1.0);
+    EXPECT_EQ(view_model.sectionFraction(), 0.75);
+    ASSERT_TRUE(meshChanged.wait(10000));
+    ASSERT_NE(view_model.mesh_snapshot(), nullptr);
+    // 单位四面体在法向 (0,1,1)/√2 上的投影区间为 [0, 1/√2]，0.75 处即平面 y+z = 0.75；
+    // 保留 y+z <= 0.75 一侧，且存在落在平面上的切口顶点。
+    bool obliqueOnPlane = false;
+    for (const auto& vertex : view_model.mesh_snapshot()->vertices) {
+        EXPECT_LE(vertex[1] + vertex[2], 0.75 + 1e-9);
+        obliqueOnPlane = obliqueOnPlane || std::abs(vertex[1] + vertex[2] - 0.75) < 1e-9;
+    }
+    EXPECT_TRUE(obliqueOnPlane);
+    ASSERT_TRUE(view_model.setSection(false, 0.0, 0.0, 0.0, 0.25));
+    EXPECT_EQ(view_model.sectionNormalY(), 1.0);
     ASSERT_TRUE(wait_for_active_mesh(view_model, view_model.activeDocumentId()));
     const QString target = QDir(fixture.path()).filePath(QStringLiteral("out.vtu"));
     QSignalSpy exported(&view_model, &ProjectViewModel::exportFinished);

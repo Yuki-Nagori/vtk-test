@@ -1396,7 +1396,7 @@ void panta::bridge::ProjectViewModel::request_section() {
     auto hostProgress = panta::ffi::task_progress_new();
     const auto progress = std::make_shared<rust::Box<panta::ffi::TaskProgress>>(
         panta::ffi::task_progress_share(*hostProgress));
-    const auto axis = static_cast<std::uint32_t>(m_sectionAxis);
+    const auto normal = m_sectionNormal;
     const double fraction = m_sectionFraction;
     const auto selection = m_meshSelection;
     const auto current = panta::ffi::project_service_current(*m_service);
@@ -1448,10 +1448,10 @@ void panta::bridge::ProjectViewModel::request_section() {
         },
         Qt::QueuedConnection);
     try {
-        startBackgroundWaiter([input, result, progress, axis, fraction] {
+        startBackgroundWaiter([input, result, progress, normal, fraction] {
             auto section = std::make_shared<Section>();
-            section->frame = panta::ffi::section_mesh_display(std::move(input->value()), axis,
-                                                              fraction, **progress);
+            section->frame = panta::ffi::section_mesh_display(
+                std::move(input->value()), normal[0], normal[1], normal[2], fraction, **progress);
             input->reset();
             result->addResult(section);
             result->finish();
@@ -1465,14 +1465,23 @@ void panta::bridge::ProjectViewModel::request_section() {
     m_sectionProgress.emplace(std::move(hostProgress));
 }
 
-bool panta::bridge::ProjectViewModel::setSection(bool enabled, int axis, double fraction) {
+bool panta::bridge::ProjectViewModel::setSection(bool enabled, double normalX, double normalY,
+                                                 double normalZ, double fraction) {
     clearError();
     if (enabled && (!m_volumeAvailable || m_animation))
         return fail(QStringLiteral("project.volume_unavailable"), QStringLiteral("state"),
                     m_activeDocumentId);
+    const double length = std::sqrt(normalX * normalX + normalY * normalY + normalZ * normalZ);
+    const bool planeValid = std::isfinite(length) && length > 0.0 && std::isfinite(fraction);
+    if (enabled && !planeValid)
+        return fail(QStringLiteral("project.command_invalid"), QStringLiteral("state"),
+                    QStringLiteral("section normal or position is invalid"));
     const bool wasActive = m_sectionActive;
-    m_sectionAxis = std::clamp(axis, 0, 2);
-    m_sectionFraction = std::clamp(fraction, 0.0, 1.0);
+    // 关闭切面时允许任意参数，只在平面有效时保留，供下次启用沿用。
+    if (planeValid) {
+        m_sectionNormal = {normalX, normalY, normalZ};
+        m_sectionFraction = std::clamp(fraction, 0.0, 1.0);
+    }
     m_sectionActive = enabled;
     emit volumeChanged();
     if (enabled) {

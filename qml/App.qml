@@ -589,6 +589,7 @@ ApplicationWindow {
                     color: Theme.colorTextMuted
                     wrapMode: Text.WrapAnywhere
                 }
+                // 任意平面切面（task 024）：X/Y/Z 预设只是把法向设为坐标轴；法向分量可编辑（−1..1，步长 0.05）。
                 RowLayout {
                     Layout.fillWidth: true
                     CheckBox {
@@ -596,14 +597,71 @@ ApplicationWindow {
                         text: "切面"
                         enabled: !projectModel.animationActive
                         checked: projectModel.sectionActive
-                        onToggled: projectModel.setSection(checked, sectionAxisBox.currentIndex, sectionSlider.value)
+                        onToggled: projectModel.setSection(checked, projectModel.sectionNormalX, projectModel.sectionNormalY, projectModel.sectionNormalZ, sectionSlider.value)
                     }
-                    ComboBox {
-                        id: sectionAxisBox
-                        objectName: "sectionAxisBox"
+                    Repeater {
+                        model: [
+                            {
+                                "label": "X",
+                                "normal": [1, 0, 0]
+                            },
+                            {
+                                "label": "Y",
+                                "normal": [0, 1, 0]
+                            },
+                            {
+                                "label": "Z",
+                                "normal": [0, 0, 1]
+                            }
+                        ]
+                        delegate: Button {
+                            required property var modelData
+                            objectName: "sectionPreset" + modelData.label
+                            text: modelData.label
+                            flat: true
+                            checkable: false
+                            highlighted: projectModel.sectionNormalX === modelData.normal[0] && projectModel.sectionNormalY === modelData.normal[1] && projectModel.sectionNormalZ === modelData.normal[2]
+                            onClicked: projectModel.setSection(projectModel.sectionActive, modelData.normal[0], modelData.normal[1], modelData.normal[2], sectionSlider.value)
+                        }
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        text: "法向"
+                        color: Theme.colorTextMuted
+                    }
+                    Repeater {
                         model: ["X", "Y", "Z"]
-                        currentIndex: projectModel.sectionAxis
-                        onActivated: index => projectModel.setSection(projectModel.sectionActive, index, sectionSlider.value)
+                        delegate: SpinBox {
+                            id: normalSpin
+                            required property int index
+                            required property string modelData
+                            readonly property real valueScale: 100
+                            readonly property real component: index === 0 ? projectModel.sectionNormalX : index === 1 ? projectModel.sectionNormalY : projectModel.sectionNormalZ
+                            objectName: "sectionNormal" + modelData
+                            Layout.fillWidth: true
+                            editable: true
+                            from: -100
+                            to: 100
+                            stepSize: 5
+                            value: Math.round(component * valueScale)
+                            Accessible.name: "切面法向 " + modelData
+                            textFromValue: (value, locale) => Number(value / valueScale).toLocaleString(locale, "f", 2)
+                            valueFromText: (text, locale) => Math.round(Number.fromLocaleString(locale, text) * valueScale)
+                            validator: DoubleValidator {
+                                bottom: -1
+                                top: 1
+                                decimals: 2
+                            }
+                            onValueModified: {
+                                const normal = [projectModel.sectionNormalX, projectModel.sectionNormalY, projectModel.sectionNormalZ];
+                                normal[index] = value / valueScale;
+                                projectModel.setSection(projectModel.sectionActive, normal[0], normal[1], normal[2], sectionSlider.value);
+                                // 用户编辑会打断绑定；重新绑定到模型值，零法向被拒绝时即回显原有效值。
+                                value = Qt.binding(() => Math.round(normalSpin.component * normalSpin.valueScale));
+                            }
+                        }
                     }
                 }
                 Slider {
@@ -614,7 +672,7 @@ ApplicationWindow {
                     from: 0
                     to: 1
                     value: projectModel.sectionFraction
-                    onMoved: projectModel.setSection(true, sectionAxisBox.currentIndex, value)
+                    onMoved: projectModel.setSection(true, projectModel.sectionNormalX, projectModel.sectionNormalY, projectModel.sectionNormalZ, value)
                 }
             }
             // 大网格 LOD 提示（task 019）：显示的是简化网格，拾取为近似值，诊断/导出不可用。

@@ -186,11 +186,13 @@ pub(super) fn diagnose_mesh_display(
     }
 }
 
-/// 在宿主后台线程计算体网格轴向切面显示坐标（task 022）；取消时 `ready` 为假且无错误。
+/// 在宿主后台线程计算体网格任意平面切面显示坐标（task 022/024）；取消时 `ready` 为假且无错误。
 #[expect(clippy::boxed_local, reason = "切面输入由 CXX Box 独占移交后台线程")]
 pub(super) fn section_mesh_display(
     input: Box<MeshDisplayInput>,
-    axis: u32,
+    normal_x: f64,
+    normal_y: f64,
+    normal_z: f64,
     fraction: f64,
     progress: &crate::TaskProgress,
 ) -> bridge::AnimationFrameResult {
@@ -199,7 +201,8 @@ pub(super) fn section_mesh_display(
         result.error = panta_core::project::ProjectError::VolumeUnavailable(String::new()).into();
         return result;
     };
-    match panta_core::project::section_along_axis(&volume, axis as usize, fraction, &progress.0) {
+    let normal = [normal_x, normal_y, normal_z];
+    match panta_core::project::section_plane(&volume, normal, fraction, &progress.0) {
         Ok(Some(mesh)) => match crate::mesh_coordinates(&mesh) {
             Ok(coordinates) => {
                 result.ready = true;
@@ -307,14 +310,16 @@ mod tests {
         assert_eq!(report.value.triangle_count, 6);
         assert_eq!(progress.0.fraction(), 1.0);
 
-        let section = section_mesh_display(volume_input()?, 0, 0.5, &Default::default());
+        let section =
+            section_mesh_display(volume_input()?, 1.0, 0.0, 0.0, 0.5, &Default::default());
         assert!(section.ready && !section.coordinates.is_empty());
-        let invalid = section_mesh_display(volume_input()?, 5, 0.5, &Default::default());
+        let invalid =
+            section_mesh_display(volume_input()?, 0.0, 0.0, 0.0, 0.5, &Default::default());
         assert_eq!(invalid.error.code, "project.command_invalid");
 
         let cancelled = crate::TaskProgress::default();
         cancelled.0.cancel();
-        let stopped = section_mesh_display(volume_input()?, 0, 0.5, &cancelled);
+        let stopped = section_mesh_display(volume_input()?, 1.0, 0.0, 0.0, 0.5, &cancelled);
         assert!(!stopped.ready && stopped.error.code.is_empty());
         let stopped = diagnose_mesh_display(volume_input()?, &cancelled);
         assert_eq!(stopped.error.code, "project.diagnostics_cancelled");
