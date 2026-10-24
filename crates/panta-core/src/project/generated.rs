@@ -187,6 +187,7 @@ fn commit_generated(
         super::import::MeshPayload {
             volume: Some(volume),
             fields: Vec::new(),
+            time_series: None,
         },
         phase,
         progress,

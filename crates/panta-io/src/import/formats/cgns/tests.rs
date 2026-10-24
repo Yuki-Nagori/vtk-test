@@ -208,3 +208,59 @@ fn xyz_arrays_combine_into_vectors() {
         ]
     );
 }
+
+/// 时间步声明（task 033）：BaseIterativeData 三步，各 Zone 按 FlowSolutionPointers 取解；
+/// Zone b 第 2 步为 Null，该步只有 Zone a 有值。
+#[test]
+fn iterative_data_becomes_time_steps() -> TestResult {
+    let grid = parse_cgns_grid(&bytes("transient.cgns")?)?;
+    let series = grid.time_series.as_ref().ok_or("time series missing")?;
+    let labels: Vec<(f64, &str)> = series
+        .earlier
+        .iter()
+        .map(|step| (step.time, step.label.as_str()))
+        .collect();
+    assert_eq!(labels, [(0.0, "0"), (0.5, "0.5")]);
+    assert_eq!(
+        (series.latest_time, series.latest_label.as_str()),
+        (1.0, "1")
+    );
+    let values = |fields: &[panta_mesh::ResultField], name: &str| -> Option<Vec<f64>> {
+        fields
+            .iter()
+            .find(|field| field.name == name)
+            .map(|field| field.values.clone())
+    };
+    // 未加前缀：同名解按步区分，而不是 032 的「解名/场名」。
+    assert_eq!(values(&series.earlier[0].fields, "T"), Some(vec![0.0, 1.0]));
+    assert_eq!(values(&grid.fields, "T"), Some(vec![200.0, 201.0]));
+    assert_eq!(
+        values(&grid.fields, "P"),
+        Some(vec![2.0, 3.0, 2.0, 2.0, 4.0, 5.0, 4.0, 4.0])
+    );
+    // Zone b 在 0.5 步无解：与 032 多 Zone 规则一致，该 Zone 的单元 / 节点填 NaN（显示为缺失）。
+    let middle = values(&series.earlier[1].fields, "T").ok_or("T missing")?;
+    assert_eq!(middle[0], 100.0);
+    assert!(middle[1].is_nan());
+    let notes = &grid.skipped_fields;
+    assert!(
+        notes
+            .iter()
+            .any(|note| note.contains("a/Initial") && note.contains("not referenced")),
+        "{notes:?}"
+    );
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    Ok(())
+}
+
+/// 无时间步声明的文件仍按 032 行为（多解加前缀），不产生时间序列。
+#[test]
+fn files_without_iterative_data_have_no_time_series() -> TestResult {
+    for name in ["mixed.cgns", "tetpyr.cgns", "ngon.cgns"] {
+        assert!(
+            parse_cgns_grid(&bytes(name)?)?.time_series.is_none(),
+            "{name}"
+        );
+    }
+    Ok(())
+}

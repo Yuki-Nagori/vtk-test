@@ -17,13 +17,15 @@ pub struct CaseFile {
     pub path: PathBuf,
 }
 
-/// 发现阶段的结果：要读取的文件（已排序）、跳过的体场、选中的时间目录与日志说明。
+/// 发现阶段的结果：要读取的文件（已排序）、跳过的体场、最新时间目录与日志说明。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CasePlan {
     pub root: PathBuf,
     pub files: Vec<CaseFile>,
     pub skipped: Vec<(String, String)>,
     pub time: Option<String>,
+    /// 含体场文件的时间目录（时间升序，task 033）。
+    pub times: Vec<String>,
     pub regions: Vec<String>,
 }
 
@@ -142,13 +144,16 @@ pub fn plan_case(selected: &Path) -> Result<CasePlan, String> {
             });
         }
     }
-    let time = sorted_entries(&root)
+    // 全部数值时间目录按时间升序收入（task 033 时间序列）；只含 uniform/ 等子目录、
+    // 没有体场文件的时间目录不成步。
+    let mut times: Vec<(f64, String)> = sorted_entries(&root)
         .into_iter()
         .filter(|(_, path)| path.is_dir())
         .filter_map(|(name, _)| Some((is_time_name(&name)?, name)))
-        .max_by(|left, right| left.0.total_cmp(&right.0))
-        .map(|(_, name)| name);
-    if let Some(time) = &time {
+        .collect();
+    times.sort_by(|left, right| left.0.total_cmp(&right.0));
+    for (_, time) in &times {
+        let mut has_field = false;
         for region in &regions {
             let dir = region_dir(&root.join(time), region);
             let prefix = relative_prefix(time, region);
@@ -161,23 +166,67 @@ pub fn plan_case(selected: &Path) -> Result<CasePlan, String> {
                 };
                 let field = name.strip_suffix(".gz").unwrap_or(&name).to_owned();
                 match class.as_str() {
-                    "volScalarField" | "volVectorField" => plan.files.push(CaseFile {
-                        relative: format!("{prefix}{name}"),
-                        path,
-                    }),
+                    "volScalarField" | "volVectorField" => {
+                        has_field = true;
+                        plan.files.push(CaseFile {
+                            relative: format!("{prefix}{name}"),
+                            path,
+                        })
+                    }
                     other if other.starts_with("vol") && other.ends_with("Field") => {
-                        plan.skipped.push((
-                            format!("{}{field}", relative_prefix("skipped", region)),
-                            other.to_owned(),
-                        ))
+                        let relative = format!("{}{field}", relative_prefix("skipped", region));
+                        if !plan.skipped.iter().any(|(known, _)| *known == relative) {
+                            plan.skipped.push((relative, other.to_owned()));
+                        }
                     }
                     _ => {}
                 }
             }
         }
+        if has_field {
+            plan.times.push(time.clone());
+        }
     }
-    plan.time = time;
+    plan.time = times.last().map(|(_, name)| name.clone());
+    limit_time_steps(&mut plan, MAX_EARLIER_STEP_BYTES);
     Ok(plan)
+}
+
+/// 更早时间步的场文件总字节上限（2 GiB）：超出时只收最新步，并以
+/// [`TIME_STEP_NOTE`] 条目记录说明（task 033 保守决策，避免快照占满内存）。
+pub const MAX_EARLIER_STEP_BYTES: u64 = 2 << 30;
+
+/// 快照中的说明条目路径，内容原样作为跳过说明。
+pub const TIME_STEP_NOTE: &str = "skipped/@time-steps";
+
+pub(crate) fn limit_time_steps(plan: &mut CasePlan, limit: u64) {
+    let Some(latest) = plan.times.last().cloned() else {
+        return;
+    };
+    let is_earlier = |file: &CaseFile| {
+        let time = file.relative.split('/').next().unwrap_or_default();
+        time != "constant" && time != latest
+    };
+    let bytes: u64 = plan
+        .files
+        .iter()
+        .filter(|file| is_earlier(file))
+        .filter_map(|file| std::fs::metadata(&file.path).ok())
+        .map(|metadata| metadata.len())
+        .sum();
+    if bytes <= limit {
+        return;
+    }
+    plan.files.retain(|file| !is_earlier(file));
+    plan.skipped.push((
+        TIME_STEP_NOTE.to_owned(),
+        format!(
+            "time steps: {} earlier time directories hold {bytes} bytes of fields \
+             (limit {limit}); only the latest time {latest} was imported",
+            plan.times.len() - 1
+        ),
+    ));
+    plan.times = vec![latest];
 }
 
 fn relative_prefix(base: &str, region: &str) -> String {

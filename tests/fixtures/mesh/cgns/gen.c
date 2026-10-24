@@ -128,11 +128,66 @@ static void ngon(const char*path){
   CK(cg_close(fn));
 }
 
+/* transient.cgns（task 033）：两个单四面体 Zone "a"、"b"，BaseIterativeData 声明 3 步
+ * TimeValues = 0 / 0.5 / 1，各 Zone 的 ZoneIterativeData/FlowSolutionPointers 指向每步的解。
+ * Zone a 用 Sol0..Sol2，另有未被引用的 "Initial"；Zone b 第 2 步写 "Null"（该步缺解）。
+ * CellCenter 场 T = 100*步 + Zone 序号，Vertex 场 P = 步 + 节点 x。 */
+static void transient(const char*path){
+  int fn,B,Z,S,Fs,F;
+  CK(cg_open(path,CG_MODE_WRITE,&fn));
+  CK(cg_base_write(fn,"Base",3,3,&B));
+  CK(cg_simulation_type_write(fn,B,CGNS_ENUMV(TimeAccurate)));
+  CK(cg_biter_write(fn,B,"TimeIterValues",3));
+  CK(cg_goto(fn,B,"BaseIterativeData_t",1,"end"));
+  double times[3]={0,0.5,1}; cgsize_t three=3;
+  CK(cg_array_write("TimeValues",CGNS_ENUMV(RealDouble),1,&three,times));
+  const char*names[2][3]={{"Sol0","Sol1","Sol2"},{"SolA","Null","SolC"}};
+  for(int zone=0;zone<2;zone++){
+    double x[4]={0,1,0,0}, y[4]={0,0,1,0}, z[4]={0,0,0,1};
+    for(int a=0;a<4;a++) x[a]+=2*zone;
+    cgsize_t size[3]={4,1,0};
+    CK(cg_zone_write(fn,B,zone?"b":"a",size,CGNS_ENUMV(Unstructured),&Z));
+    coords(fn,B,Z,4,x,y,z);
+    cgsize_t tet[4]={1,2,3,4};
+    CK(cg_section_write(fn,B,Z,"Tet",CGNS_ENUMV(TETRA_4),1,1,0,tet,&S));
+    if(zone==0){
+      CK(cg_sol_write(fn,B,Z,"Initial",CGNS_ENUMV(CellCenter),&Fs));
+      double t=-1; CK(cg_field_write(fn,B,Z,Fs,CGNS_ENUMV(RealDouble),"T",&t,&F));
+    }
+    for(int step=0;step<3;step++){
+      if(!strcmp(names[zone][step],"Null")) continue;
+      char cell[33],node[33];
+      snprintf(cell,sizeof cell,"%s",names[zone][step]);
+      snprintf(node,sizeof node,"%sNodes",names[zone][step]);
+      CK(cg_sol_write(fn,B,Z,cell,CGNS_ENUMV(CellCenter),&Fs));
+      double t=100*step+zone; CK(cg_field_write(fn,B,Z,Fs,CGNS_ENUMV(RealDouble),"T",&t,&F));
+      CK(cg_sol_write(fn,B,Z,node,CGNS_ENUMV(Vertex),&Fs));
+      double p[4]; for(int a=0;a<4;a++) p[a]=step+x[a];
+      CK(cg_field_write(fn,B,Z,Fs,CGNS_ENUMV(RealDouble),"P",p,&F));
+    }
+    CK(cg_ziter_write(fn,B,Z,"ZoneIterativeData"));
+    CK(cg_goto(fn,B,"Zone_t",Z,"ZoneIterativeData_t",1,"end"));
+    char cells[3*32],nodes[3*32]; memset(cells,' ',sizeof cells); memset(nodes,' ',sizeof nodes);
+    for(int step=0;step<3;step++){
+      char buf[40];
+      memcpy(cells+32*step,names[zone][step],strlen(names[zone][step]));
+      if(strcmp(names[zone][step],"Null")) snprintf(buf,sizeof buf,"%sNodes",names[zone][step]);
+      else snprintf(buf,sizeof buf,"Null");
+      memcpy(nodes+32*step,buf,strlen(buf));
+    }
+    cgsize_t dims[2]={32,3};
+    CK(cg_array_write("FlowSolutionPointers",CGNS_ENUMV(Character),2,dims,cells));
+    CK(cg_array_write("FlowSolutionVertexPointers",CGNS_ENUMV(Character),2,dims,nodes));
+  }
+  CK(cg_close(fn));
+}
+
 int main(int argc,char**argv){
-  if(argc<3){fprintf(stderr,"usage: gen mixed|tetpyr|ngon out.cgns [n]\n");return 2;}
+  if(argc<3){fprintf(stderr,"usage: gen mixed|tetpyr|ngon|transient out.cgns [n]\n");return 2;}
   if(!strcmp(argv[1],"mixed")) mixed(argv[2],argc>3?atoi(argv[3]):2);
   else if(!strcmp(argv[1],"tetpyr")) tetpyr(argv[2]);
   else if(!strcmp(argv[1],"ngon")) ngon(argv[2]);
+  else if(!strcmp(argv[1],"transient")) transient(argv[2]);
   else return 2;
   return 0;
 }

@@ -51,7 +51,7 @@ mod import;
 mod mesh_assets;
 mod preview;
 mod results;
-pub use results::ResultFieldSource;
+pub use results::{ResultFieldSource, ResultTimeStep};
 mod volume;
 pub use volume::{
     SharedChunks, StreamedAsset, StreamedKind, export_streamed_surface, export_streamed_volume_vtu,
@@ -325,6 +325,7 @@ mod tests {
                 units: "millimeters".to_owned(),
                 source_revision: None,
                 results: None,
+                result_steps: Vec::new(),
             },
         );
 
@@ -461,6 +462,7 @@ mod tests {
                 units: "millimeters".to_owned(),
                 source_revision: None,
                 results: None,
+                result_steps: Vec::new(),
             },
         );
 
@@ -523,6 +525,7 @@ mod tests {
                 units: "millimeters".to_owned(),
                 source_revision: None,
                 results: None,
+                result_steps: Vec::new(),
             },
         );
 

@@ -49,10 +49,13 @@ impl RegionMesh {
     }
 }
 
+/// 体场文件：保持快照中的原始（可能压缩）字节，合并时才逐个解压，避免多时间步同时展开。
 struct FieldFile<'a> {
+    time: String,
     region: String,
     name: String,
-    bytes: Cow<'a, [u8]>,
+    relative: &'a str,
+    bytes: &'a [u8],
 }
 
 struct Case<'a> {
@@ -111,6 +114,9 @@ fn read_case(snapshot: &[u8]) -> FormatResult<Case<'_>> {
                     ),
                 );
             }
+            ["skipped", "@time-steps"] => {
+                skipped.push(String::from_utf8_lossy(entry.bytes).into_owned());
+            }
             ["skipped", rest @ ..] => {
                 let class = String::from_utf8_lossy(entry.bytes);
                 skipped.push(format!(
@@ -121,9 +127,11 @@ fn read_case(snapshot: &[u8]) -> FormatResult<Case<'_>> {
             [_, file] | [_, _, file] => {
                 let region = if parts.len() == 3 { parts[1] } else { "" };
                 fields.push(FieldFile {
+                    time: parts[0].to_owned(),
                     region: region.to_owned(),
                     name: file.strip_suffix(".gz").unwrap_or(file).to_owned(),
-                    bytes: decompress(entry.relative, entry.bytes)?,
+                    relative: entry.relative,
+                    bytes: entry.bytes,
                 });
             }
             _ => {
@@ -715,7 +723,23 @@ pub fn parse_openfoam_grid(snapshot: &[u8]) -> FormatResult<RawGrid> {
     grid.boundary = Some(boundary);
     grid.face_quality = Some(face_quality);
     grid.skipped_fields = case.skipped;
-    merge_fields(&mut grid, &case.regions, &case.fields, &region_offsets);
+    // 时间目录名按数值升序成步（task 033）；单个时间目录时与 032 行为一致。
+    let mut steps: Vec<(f64, String)> = Vec::new();
+    for file in &case.fields {
+        if !steps.iter().any(|(_, label)| *label == file.time) {
+            let time = file.time.parse::<f64>().unwrap_or(f64::NAN);
+            steps.push((time, file.time.clone()));
+        }
+    }
+    steps.sort_by(|left, right| left.0.total_cmp(&right.0));
+    grid.collect_time_steps(&steps, |grid, index| {
+        let files: Vec<&FieldFile<'_>> = case
+            .fields
+            .iter()
+            .filter(|file| file.time == steps[index].1)
+            .collect();
+        merge_fields(grid, &case.regions, &files, &region_offsets);
+    });
     Ok(grid)
 }
 
@@ -723,7 +747,7 @@ pub fn parse_openfoam_grid(snapshot: &[u8]) -> FormatResult<RawGrid> {
 fn merge_fields(
     grid: &mut RawGrid,
     regions: &[RegionMesh],
-    files: &[FieldFile<'_>],
+    files: &[&FieldFile<'_>],
     offsets: &[usize],
 ) {
     let total = grid.cell_count();
@@ -740,7 +764,9 @@ fn merge_fields(
             else {
                 continue;
             };
-            let parsed = match parse_field(&file.bytes, region.cell_count) {
+            let parsed = match decompress(file.relative, file.bytes)
+                .and_then(|bytes| parse_field(&bytes, region.cell_count))
+            {
                 Ok(parsed) if parsed.values.len() == region.cell_count * parsed.components => {
                     parsed
                 }

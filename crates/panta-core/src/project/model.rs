@@ -72,7 +72,22 @@ pub(super) struct MeshAssetRef {
     /// 体网格导入时来源携带的结果场 sidecar（task 029）；可选字段，旧清单与无结果场时省略。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) results: Option<ResultAssetRef>,
+    /// 多时间步结果场（task 033）：时间不减的各步 sidecar，最后一步与 `results` 相同。
+    /// 只有两步及以上时写出；旧清单与单步导入省略，旧版本读到时忽略。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) result_steps: Vec<ResultStepRef>,
 }
+
+/// 一个时间步的结果场 sidecar：物理时间（来源单位，通常为秒）、来源标签与 sidecar 引用。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(super) struct ResultStepRef {
+    pub(super) time: f64,
+    pub(super) label: String,
+    pub(super) results: ResultAssetRef,
+}
+
+// 清单校验拒绝非有限时间，因此 `time` 不会是 NaN，相等关系是自反的。
+impl Eq for ResultStepRef {}
 
 /// 结果场 sidecar 引用：与所属 Mesh 资产同一不可变发布规则，按网格摘要绑定。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
