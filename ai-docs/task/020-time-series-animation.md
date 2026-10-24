@@ -1,5 +1,7 @@
 # 020 — 时序动画：序列加载、预取缓存与播放
 
+> 2026-10-24：播放控件已由 [033](033-playback-time-series-results.md) 统一为视口下方的 `PlaybackBar`，VM 属性改为 `playback*`。
+
 - 状态：done
 - 阶段：网格 / 视口
 - 依赖：[019](019-large-mesh-lod.md)

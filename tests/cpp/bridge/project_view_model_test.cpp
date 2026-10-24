@@ -19,6 +19,7 @@
 #include <QVariantMap>
 #include <QtCore/qcontainerfwd.h>
 #include <QtTest/qtest.h>
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <functional>
@@ -1505,6 +1506,83 @@ TEST(ProjectViewModelTest, ColorsSectionsByResultFieldAndShowsLegend) {
     ASSERT_TRUE(view_model.setSection(false, 0.0, 0.0, 0.0, 0.5));
     EXPECT_FALSE(view_model.fieldLegendVisible());
     EXPECT_EQ(view_model.sectionFieldName(), QStringLiteral("material"));
+}
+
+// task 033：结果场时间步驱动统一播放；切面 + 字段随步更新，色标默认全局范围。
+TEST(ProjectViewModelTest, PlaysResultTimeStepsAndUpdatesFieldSections) {
+    QTemporaryDir fixture;
+    ASSERT_TRUE(fixture.isValid());
+    const QString pvdPath =
+        QDir::cleanPath(QDir(QString::fromUtf8(PANTA_STRINGIFY(PANTA_BRIDGE_GEOMETRY_FIXTURE_DIR)))
+                            .filePath(QStringLiteral("../mesh/pvd/flow.pvd")));
+    ASSERT_TRUE(QFileInfo::exists(pvdPath));
+
+    ProjectViewModel view_model;
+    ASSERT_TRUE(finish_project_operation(
+        view_model, view_model.createProject(QStringLiteral("Steps"), fixture.path())));
+    EXPECT_FALSE(view_model.playbackActive());
+    ASSERT_TRUE(
+        view_model.importStl(pvdPath, QStringLiteral("solid-3d"), QStringLiteral("meters"), false));
+    ASSERT_TRUE(wait_for_active_mesh(view_model, view_model.activeDocumentId()));
+    ASSERT_TRUE(view_model.volumeAvailable());
+    ASSERT_EQ(view_model.playbackSource(), QStringLiteral("timeSteps"));
+    EXPECT_EQ(view_model.playbackFrameCount(), 3);
+    // 默认停在最新一步。
+    EXPECT_EQ(view_model.playbackFrame(), 2);
+    EXPECT_EQ(view_model.playbackTimeLabel(), QStringLiteral("t = 1"));
+    EXPECT_TRUE(view_model.playbackStatus().contains(QStringLiteral("开启切面")));
+    EXPECT_TRUE(view_model.fieldRangeGlobal());
+
+    // 未开切面时逐帧只移动时间轴；循环关闭时停在首帧。
+    view_model.setPlaybackLoop(false);
+    view_model.setPlaybackFrame(0);
+    EXPECT_EQ(view_model.playbackFrame(), 0);
+    view_model.stepPlayback(-1);
+    EXPECT_EQ(view_model.playbackFrame(), 0);
+    view_model.setPlaybackLoop(true);
+    view_model.stepPlayback(-1);
+    EXPECT_EQ(view_model.playbackFrame(), 2);
+
+    // 切面 + 字段 T：色标为全部时间步的全局范围 [0, 108]。
+    ASSERT_TRUE(view_model.setSectionField(QStringLiteral("T"), QStringLiteral("node"), -1));
+    QSignalSpy meshChanged(&view_model, &ProjectViewModel::meshChanged);
+    ASSERT_TRUE(view_model.setSection(true, 0.0, 0.0, 1.0, 0.25));
+    ASSERT_TRUE(meshChanged.wait(10000));
+    EXPECT_TRUE(view_model.fieldLegendVisible());
+    EXPECT_EQ(view_model.fieldLegendMin(), 0.0);
+    EXPECT_EQ(view_model.fieldLegendMax(), 108.0);
+    auto mesh = view_model.mesh_snapshot();
+    ASSERT_NE(mesh, nullptr);
+    ASSERT_FALSE(mesh->scalars.empty());
+    EXPECT_GE(*std::min_element(mesh->scalars.begin(), mesh->scalars.end()), 100.0F);
+
+    // 换到第 0 步：切面数值随步更新，全局色标不变；切到当前步范围后色标收窄。
+    view_model.setPlaybackFrame(0);
+    EXPECT_EQ(view_model.playbackFrame(), 2);
+    ASSERT_TRUE(meshChanged.wait(10000));
+    EXPECT_EQ(view_model.playbackFrame(), 0);
+    mesh = view_model.mesh_snapshot();
+    ASSERT_NE(mesh, nullptr);
+    EXPECT_LT(*std::max_element(mesh->scalars.begin(), mesh->scalars.end()), 10.0F);
+    EXPECT_EQ(view_model.fieldLegendMax(), 108.0);
+    EXPECT_EQ(mesh->scalar_max, 108.0);
+    view_model.setFieldRangeGlobal(false);
+    ASSERT_TRUE(meshChanged.wait(10000));
+    EXPECT_LT(view_model.fieldLegendMax(), 10.0);
+
+    // 播放：循环关闭时播到末帧自动暂停。
+    view_model.setPlaybackLoop(false);
+    view_model.setPlaybackFps(60);
+    QSignalSpy playbackChanged(&view_model, &ProjectViewModel::animationChanged);
+    view_model.setPlaybackPlaying(true);
+    EXPECT_TRUE(view_model.playbackPlaying());
+    for (int attempt = 0; attempt < 200 && view_model.playbackPlaying(); ++attempt)
+        playbackChanged.wait(100);
+    EXPECT_FALSE(view_model.playbackPlaying());
+    EXPECT_EQ(view_model.playbackFrame(), 2);
+    EXPECT_EQ(view_model.playbackTimeLabel(), QStringLiteral("t = 1"));
+
+    EXPECT_FALSE(view_model.playbackStatus().contains(QStringLiteral("正在读取")));
 }
 
 TEST(ProjectViewModelTest, GeneratesVolumeMeshFromStepInTheBackgroundAndHonoursCancel) {

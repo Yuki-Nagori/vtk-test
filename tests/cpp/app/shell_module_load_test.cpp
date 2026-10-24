@@ -52,6 +52,10 @@ class ShellModuleLoadTest final : public QObject {
         QVERIFY(bar);
         QVERIFY(bar->property("documents").toList().isEmpty());
         QVERIFY(bar->property("activeDocumentId").toString().isEmpty());
+        // task 033：统一播放栏随 Shell 加载；无播放来源时隐藏。
+        auto* playback = root->findChild<QObject*>(QStringLiteral("playbackBar"));
+        QVERIFY(playback);
+        QVERIFY(!playback->property("visible").toBool());
         QVERIFY(!root->findChild<QObject*>(QStringLiteral("saveProjectButton"))
                      ->property("enabled")
                      .toBool());

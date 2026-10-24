@@ -13,7 +13,8 @@ pub struct MeshDisplayInput {
     streamed: Option<Arc<panta_core::project::StreamedAsset>>,
     /// 结果 sidecar 句柄（task 029）：驻留体网格场剖面在后台读取字段（单字段缓存）。
     /// `Arc` 保持输入体积小（与其他快照字段同为共享句柄）。
-    results: Option<Arc<panta_core::project::ResultFieldSource>>,
+    /// `Err` 带原因（无结果场或时间步不存在），场剖面时报 CommandInvalid。
+    results: Result<Arc<panta_core::project::ResultFieldSource>, String>,
     /// 导入记录中的面邻接质量（task 032 PR 2）；`None` 表示来源没有面邻接。
     face_quality: Option<panta_core::project::FaceQualityRecord>,
 }
@@ -78,7 +79,8 @@ pub(super) fn project_service_mesh_display_input(
         .result_field_source(import_id)
         .ok()
         .flatten()
-        .map(Arc::new);
+        .map(Arc::new)
+        .ok_or_else(no_result_fields);
     let face_quality = service.service.imports().ok().and_then(|records| {
         records
             .into_iter()
@@ -93,6 +95,29 @@ pub(super) fn project_service_mesh_display_input(
         results,
         face_quality,
     })
+}
+
+fn no_result_fields() -> String {
+    "import has no result fields".to_owned()
+}
+
+/// 第 `step` 个结果场时间步的显示输入（task 033）：网格快照与最新步共享，只替换结果句柄。
+pub(super) fn project_service_mesh_display_input_at(
+    service: &ProjectService,
+    import_id: &str,
+    step: u64,
+) -> Box<MeshDisplayInput> {
+    let mut input = project_service_mesh_display_input(service, import_id);
+    input.results = usize::try_from(step)
+        .map_err(|_| no_result_fields())
+        .and_then(|step| {
+            service
+                .service
+                .result_field_source_at(import_id, step)
+                .map_err(|error| error.to_string())
+        })
+        .map(Arc::new);
+    input
 }
 
 /// 只访问拥有式不可变输入；不访问活跃工程服务，可以移交宿主工作线程。
@@ -318,7 +343,7 @@ fn field_component(component: i32) -> Option<panta_mesh::FieldComponent> {
     }
 }
 
-fn field_association(association: &str) -> Option<panta_mesh::FieldAssociation> {
+pub(crate) fn field_association(association: &str) -> Option<panta_mesh::FieldAssociation> {
     match association {
         "node" => Some(panta_mesh::FieldAssociation::Node),
         "cell" => Some(panta_mesh::FieldAssociation::Cell),
@@ -351,7 +376,7 @@ pub(super) fn section_field_mesh_display(
         (Some(volume), _) => input
             .results
             .as_ref()
-            .ok_or_else(|| ProjectError::CommandInvalid("import has no result fields".to_owned()))
+            .map_err(|detail| ProjectError::CommandInvalid(detail.clone()))
             .and_then(|source| source.read_field(field_name, association))
             .and_then(|field| {
                 panta_core::project::section_plane_field(
@@ -421,7 +446,7 @@ mod tests {
                 lod_source_triangles: 0,
                 volume: None,
                 streamed: None,
-                results: None,
+                results: Err(no_result_fields()),
                 face_quality: None,
             }),
             &crate::TaskProgress::default(),
@@ -434,7 +459,7 @@ mod tests {
                 lod_source_triangles: 0,
                 volume: None,
                 streamed: None,
-                results: None,
+                results: Err(no_result_fields()),
                 face_quality: None,
             }),
             &cancelled,
@@ -456,7 +481,7 @@ mod tests {
                 lod_source_triangles: 0,
                 volume: None,
                 streamed: None,
-                results: None,
+                results: Err(no_result_fields()),
                 face_quality: None,
             }),
             &crate::TaskProgress::default(),
@@ -469,7 +494,7 @@ mod tests {
                 lod_source_triangles: 30_000_000,
                 volume: None,
                 streamed: None,
-                results: None,
+                results: Err(no_result_fields()),
                 face_quality: None,
             }),
             &crate::TaskProgress::default(),
@@ -492,7 +517,7 @@ mod tests {
             lod_source_triangles: 0,
             volume: Some(Arc::new(volume)),
             streamed: None,
-            results: None,
+            results: Err(no_result_fields()),
             face_quality: None,
         }))
     }
@@ -592,7 +617,7 @@ mod tests {
                     kind: StreamedKind::Volume(block.counts()),
                     chunks: None,
                 })),
-                results: None,
+                results: Err(no_result_fields()),
                 face_quality: None,
             })
         };
@@ -635,7 +660,7 @@ mod tests {
                     kind: StreamedKind::Surface { triangles: 5_000 },
                     chunks: None,
                 })),
-                results: None,
+                results: Err(no_result_fields()),
                 face_quality: None,
             })
         };
@@ -657,6 +682,87 @@ mod tests {
         let diagnose = diagnose_mesh_display(surface_input(&surface_digest), &Default::default());
         assert_eq!(diagnose.error.code, "project.mesh_lod_only");
         std::fs::remove_dir_all(&directory)?;
+        Ok(())
+    }
+
+    /// task 033：时间步列表、按步切面取对应步的数值、全局范围覆盖全部步。
+    #[test]
+    fn time_step_sections_read_the_requested_step() -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = crate::temp_directory::Fixture::new()?;
+        let source = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/mesh/pvd/flow.pvd");
+        let mut service = crate::project::project_service_new();
+        service.service.create(&fixture.root, "Steps")?;
+        let record = service
+            .service
+            .import_stl(&source, "solid-3d", "meters", false)?;
+        let steps = crate::volume::project_service_result_time_steps(&service, &record.id);
+        assert!(steps.error.code.is_empty(), "{}", steps.error.detail);
+        let labels: Vec<_> = steps.steps.iter().map(|step| step.label.as_str()).collect();
+        assert_eq!(labels, ["0", "0.5", "1"]);
+        assert_eq!(steps.steps[0].field_count, 3);
+
+        let request = bridge::FieldSectionRequest {
+            field_name: "T".to_owned(),
+            association: "node".to_owned(),
+            component: -1,
+            normal_x: 0.0,
+            normal_y: 0.0,
+            normal_z: 1.0,
+            fraction: 0.25,
+        };
+        let progress = crate::TaskProgress::default();
+        let mut maxima = Vec::new();
+        for step in 0..3 {
+            let section = section_field_mesh_display(
+                project_service_mesh_display_input_at(&service, &record.id, step),
+                &request,
+                &progress,
+            );
+            assert!(section.error.code.is_empty(), "{}", section.error.detail);
+            assert!(section.ready && section.has_range);
+            maxima.push(section.max);
+        }
+        // T = 100 t + 节点号：每一步的切面值落在该步的区间内。
+        assert!(maxima[0] < 10.0);
+        assert!((50.0..60.0).contains(&maxima[1]));
+        assert!((100.0..110.0).contains(&maxima[2]));
+        let missing = section_field_mesh_display(
+            project_service_mesh_display_input_at(&service, &record.id, 3),
+            &request,
+            &progress,
+        );
+        assert_eq!(missing.error.code, "project.command_invalid");
+        // `init` 只在第 0 步：其余步缺字段时报错而不是给出旧值。
+        let init = bridge::FieldSectionRequest {
+            field_name: "init".to_owned(),
+            association: "cell".to_owned(),
+            ..request.clone()
+        };
+        let later = section_field_mesh_display(
+            project_service_mesh_display_input_at(&service, &record.id, 1),
+            &init,
+            &progress,
+        );
+        assert!(!later.error.code.is_empty());
+
+        let range = crate::volume::project_service_result_field_range(
+            &service, &record.id, "T", "node", -1,
+        );
+        assert!(range.error.code.is_empty(), "{}", range.error.detail);
+        assert!(range.has_range);
+        assert_eq!((range.min, range.max), (0.0, 108.0));
+        let only_first = crate::volume::project_service_result_field_range(
+            &service, &record.id, "init", "cell", -1,
+        );
+        assert_eq!((only_first.min, only_first.max), (7.0, 8.0));
+        let component =
+            crate::volume::project_service_result_field_range(&service, &record.id, "p", "cell", 0);
+        assert_eq!((component.min, component.max), (-2.0, 2.0));
+        let invalid = crate::volume::project_service_result_field_range(
+            &service, &record.id, "p", "edge", -1,
+        );
+        assert_eq!(invalid.error.code, "project.command_invalid");
         Ok(())
     }
 
@@ -754,7 +860,7 @@ mod tests {
                 lod_source_triangles: 0,
                 volume: None,
                 streamed: None,
-                results: None,
+                results: Err(no_result_fields()),
                 face_quality: None,
             }),
             &request("velocity", "node", -1),

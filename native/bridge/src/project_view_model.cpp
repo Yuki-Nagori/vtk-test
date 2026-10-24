@@ -82,8 +82,8 @@ ProjectViewModel::ProjectViewModel(QObject* parent)
             !m_diagnosticsProgress && !m_generationProgress)
             m_taskProgressPoll.stop();
     });
-    m_animationPoll.setInterval(10);
-    connect(&m_animationPoll, &QTimer::timeout, this, &ProjectViewModel::tick_animation);
+    m_playbackPoll.setInterval(10);
+    connect(&m_playbackPoll, &QTimer::timeout, this, &ProjectViewModel::tick_playback);
     loadLargeMeshLimits();
     configureDerivedChunkCache();
     refreshAvailableMemory();
@@ -407,9 +407,14 @@ bool ProjectViewModel::beginExportActiveMeshUrl(const QUrl& url) {
     using Result = std::shared_ptr<panta::ffi::ProjectDiagnostic>;
     using Watcher = QFutureWatcher<Result>;
     // 共享快照在 GUI 线程捕获（只增加引用计数），写盘与编码在后台线程完成。
-    const auto input =
-        std::make_shared<std::optional<Input>>(panta::ffi::project_service_mesh_display_input(
-            *m_service, m_activeDocumentId.toStdString()));
+    // 时间步来源（task 033）：结果场取目标步；网格快照与最新步共享。
+    const int step = time_steps_active() ? m_playbackTarget : -1;
+    const auto input = std::make_shared<std::optional<Input>>(
+        step >= 0
+            ? panta::ffi::project_service_mesh_display_input_at(
+                  *m_service, m_activeDocumentId.toStdString(), static_cast<std::uint64_t>(step))
+            : panta::ffi::project_service_mesh_display_input(*m_service,
+                                                             m_activeDocumentId.toStdString()));
     auto hostProgress = panta::ffi::task_progress_new();
     const auto progress = std::make_shared<rust::Box<panta::ffi::TaskProgress>>(
         panta::ffi::task_progress_share(*hostProgress));
@@ -1167,13 +1172,16 @@ void ProjectViewModel::refresh_workspace(bool forceActiveNotification) {
         m_resultFields.clear();
         clear_section_field();
         emit volumeChanged();
-        if (m_animation) {
-            // 切换文档即退出序列查看（保守：序列不与文档并存）。
-            m_animation.reset();
-            m_animationPoll.stop();
-            m_animationPlaying = false;
-            emit animationChanged();
-        }
+        // 切换文档即退出序列查看（保守：序列不与文档并存）；时间步随新文档的体网格重新读取。
+        m_animation.reset();
+        m_playbackPlaying = false;
+        m_timeSteps.clear();
+        m_timeStepsKey.clear();
+        m_timeStepsUnavailable.clear();
+        m_playbackFrameError.clear();
+        m_playbackDisplayed = -1;
+        sync_playback_poll();
+        emit animationChanged();
         prepareActiveMesh();
         emit activeDocumentChanged();
         emit meshChanged();
@@ -1267,13 +1275,13 @@ bool panta::bridge::ProjectViewModel::openAnimationUrl(const QUrl& url) {
     }
     m_animation.emplace(std::move(sequence));
     m_animationFrameCount = static_cast<int>(panta::ffi::animation_frame_count(**m_animation));
-    m_animationTarget = 0;
-    m_animationDisplayed = -1;
-    m_animationPlaying = false;
-    m_animationFrameError.clear();
+    m_playbackTarget = 0;
+    m_playbackDisplayed = -1;
+    m_playbackPlaying = false;
+    m_playbackFrameError.clear();
     panta::ffi::animation_request(**m_animation, 0);
-    m_animationClock.start();
-    m_animationPoll.start();
+    m_playbackClock.start();
+    sync_playback_poll();
     emit animationChanged();
     return true;
 }
@@ -1282,80 +1290,181 @@ void panta::bridge::ProjectViewModel::closeAnimation() {
     if (!m_animation)
         return;
     m_animation.reset();
-    m_animationPoll.stop();
-    m_animationPlaying = false;
+    m_playbackPlaying = false;
     m_animationFrameCount = 0;
-    m_animationDisplayed = -1;
+    m_playbackFrameError.clear();
+    // 回到文档的时间步来源（若有）：停在最新一步，与重新准备的活动网格 / 切面一致。
+    m_playbackTarget = time_steps_active() ? static_cast<int>(m_timeSteps.size()) - 1 : 0;
+    m_playbackDisplayed = time_steps_active() ? m_playbackTarget : -1;
+    sync_playback_poll();
     m_activeMesh.reset();
     emit animationChanged();
     emit meshChanged();
     prepareActiveMesh();
 }
 
-void panta::bridge::ProjectViewModel::setAnimationFrame(int frame) {
-    if (!m_animation || m_animationFrameCount <= 0)
-        return;
-    m_animationTarget = std::clamp(frame, 0, m_animationFrameCount - 1);
-    panta::ffi::animation_request(**m_animation, static_cast<std::uint64_t>(m_animationTarget));
+bool panta::bridge::ProjectViewModel::time_steps_active() const {
+    return !m_animation && m_timeSteps.size() >= 2;
 }
 
-void panta::bridge::ProjectViewModel::stepAnimation(int delta) {
-    if (!m_animation || m_animationFrameCount <= 0)
-        return;
-    const int base = m_animationDisplayed < 0 ? 0 : m_animationDisplayed;
-    setAnimationFrame(((base + delta) % m_animationFrameCount + m_animationFrameCount) %
-                      m_animationFrameCount);
+bool panta::bridge::ProjectViewModel::section_follows_time() const {
+    return time_steps_active() && m_sectionActive && !m_sectionFieldName.isEmpty();
 }
 
-void panta::bridge::ProjectViewModel::setAnimationPlaying(bool playing) {
-    if (!m_animation || m_animationPlaying == playing)
+QString panta::bridge::ProjectViewModel::playbackSource() const {
+    if (m_animation)
+        return QStringLiteral("sequence");
+    if (time_steps_active())
+        return QStringLiteral("timeSteps");
+    return {};
+}
+
+int panta::bridge::ProjectViewModel::playbackFrameCount() const {
+    if (m_animation)
+        return m_animationFrameCount;
+    return time_steps_active() ? static_cast<int>(m_timeSteps.size()) : 0;
+}
+
+void panta::bridge::ProjectViewModel::setPlaybackFrame(int frame) {
+    const int count = playbackFrameCount();
+    if (count <= 0)
         return;
-    m_animationPlaying = playing;
-    m_animationClock.restart();
+    const int target = std::clamp(frame, 0, count - 1);
+    if (m_animation) {
+        m_playbackTarget = target;
+        panta::ffi::animation_request(**m_animation, static_cast<std::uint64_t>(target));
+        return;
+    }
+    if (target == m_playbackTarget && m_playbackDisplayed == target)
+        return;
+    m_playbackTarget = target;
+    m_playbackFrameError.clear();
+    if (section_follows_time()) {
+        // 切面在后台按新步重算；完成前视口保持上一步。
+        request_section();
+    } else {
+        m_playbackDisplayed = target;
+    }
     emit animationChanged();
 }
 
-void panta::bridge::ProjectViewModel::setAnimationFps(int fps) {
+void panta::bridge::ProjectViewModel::stepPlayback(int delta) {
+    const int count = playbackFrameCount();
+    if (count <= 0)
+        return;
+    const int base = m_playbackDisplayed < 0 ? 0 : m_playbackTarget;
+    const int next = m_playbackLoop ? ((base + delta) % count + count) % count
+                                    : std::clamp(base + delta, 0, count - 1);
+    setPlaybackFrame(next);
+}
+
+void panta::bridge::ProjectViewModel::setPlaybackPlaying(bool playing) {
+    if (!playbackActive() || m_playbackPlaying == playing)
+        return;
+    m_playbackPlaying = playing;
+    // 循环关闭且停在末帧时，播放从首帧重新开始（同 ParaView）。
+    if (playing && !m_playbackLoop && m_playbackTarget >= playbackFrameCount() - 1)
+        setPlaybackFrame(0);
+    m_playbackClock.restart();
+    sync_playback_poll();
+    emit animationChanged();
+}
+
+void panta::bridge::ProjectViewModel::setPlaybackFps(int fps) {
     const int clamped = std::clamp(fps, 1, 60);
-    if (clamped == m_animationFps)
+    if (clamped == m_playbackFps)
         return;
-    m_animationFps = clamped;
+    m_playbackFps = clamped;
     emit animationChanged();
 }
 
-QString panta::bridge::ProjectViewModel::animationStatus() const {
-    if (!m_animation)
+void panta::bridge::ProjectViewModel::setPlaybackLoop(bool loop) {
+    if (loop == m_playbackLoop)
+        return;
+    m_playbackLoop = loop;
+    emit animationChanged();
+}
+
+void panta::bridge::ProjectViewModel::setFieldRangeGlobal(bool global) {
+    if (global == m_fieldRangeGlobal)
+        return;
+    m_fieldRangeGlobal = global;
+    emit fieldLegendChanged();
+    if (section_follows_time())
+        request_section();
+}
+
+void panta::bridge::ProjectViewModel::sync_playback_poll() {
+    // 序列需要轮询后台解码；时间步只在播放时计时推进（切面完成由回调通知）。
+    const bool needed = m_animation.has_value() || (time_steps_active() && m_playbackPlaying);
+    if (needed && !m_playbackPoll.isActive())
+        m_playbackPoll.start();
+    else if (!needed && m_playbackPoll.isActive())
+        m_playbackPoll.stop();
+}
+
+QString panta::bridge::ProjectViewModel::playbackTimeLabel() const {
+    const int frame = m_playbackDisplayed < 0 ? 0 : m_playbackDisplayed;
+    if (m_animation)
+        return QString::fromUtf8(
+            panta::ffi::animation_frame_name(**m_animation, static_cast<std::uint64_t>(frame)));
+    if (!time_steps_active())
         return {};
-    const auto frame = m_animationDisplayed < 0 ? 0 : m_animationDisplayed;
-    QString text = QStringLiteral("帧 %1 / %2：%3（已缓存 %4 帧）")
-                       .arg(frame + 1)
-                       .arg(m_animationFrameCount)
-                       .arg(QString::fromUtf8(panta::ffi::animation_frame_name(
-                           **m_animation, static_cast<std::uint64_t>(frame))))
-                       .arg(panta::ffi::animation_cached_frames(**m_animation));
-    if (!m_animationFrameError.isEmpty())
-        text += QStringLiteral("；") + m_animationFrameError;
+    return QStringLiteral("t = %1").arg(m_timeSteps[static_cast<std::size_t>(frame)].label);
+}
+
+QString panta::bridge::ProjectViewModel::playbackStatus() const {
+    if (!playbackActive())
+        return {};
+    const auto frame = m_playbackDisplayed < 0 ? 0 : m_playbackDisplayed;
+    QString text;
+    if (m_animation) {
+        text = QStringLiteral("帧 %1 / %2：%3（已缓存 %4 帧）")
+                   .arg(frame + 1)
+                   .arg(m_animationFrameCount)
+                   .arg(playbackTimeLabel())
+                   .arg(panta::ffi::animation_cached_frames(**m_animation));
+    } else {
+        text = QStringLiteral("时间步 %1 / %2：%3")
+                   .arg(frame + 1)
+                   .arg(m_timeSteps.size())
+                   .arg(playbackTimeLabel());
+        if (!section_follows_time())
+            text += QStringLiteral("；开启切面并选择字段后，结果随时间步更新");
+        else if (m_playbackTarget != m_playbackDisplayed)
+            text += QStringLiteral("；正在读取第 %1 步…").arg(m_playbackTarget + 1);
+    }
+    if (!m_playbackFrameError.isEmpty())
+        text += QStringLiteral("；") + m_playbackFrameError;
     return text;
 }
 
 // 10ms 轮询：播放时按帧率推进目标帧；目标帧未就绪则保持上一帧等待，不阻塞 GUI。
-void panta::bridge::ProjectViewModel::tick_animation() {
-    if (!m_animation || m_animationFrameCount <= 0)
+void panta::bridge::ProjectViewModel::tick_playback() {
+    const int count = playbackFrameCount();
+    if (count <= 0)
         return;
-    if (m_animationPlaying && m_animationDisplayed == m_animationTarget &&
-        m_animationClock.elapsed() >= 1000 / m_animationFps) {
-        setAnimationFrame((m_animationTarget + 1) % m_animationFrameCount);
-        m_animationClock.restart();
+    if (m_playbackPlaying && m_playbackDisplayed == m_playbackTarget &&
+        m_playbackClock.elapsed() >= 1000 / m_playbackFps) {
+        m_playbackClock.restart();
+        if (m_playbackTarget + 1 >= count && !m_playbackLoop) {
+            // 循环关闭：到末帧自动暂停。
+            m_playbackPlaying = false;
+            sync_playback_poll();
+            emit animationChanged();
+        } else {
+            setPlaybackFrame((m_playbackTarget + 1) % count);
+        }
     }
-    if (m_animationDisplayed == m_animationTarget)
+    if (!m_animation || m_playbackDisplayed == m_playbackTarget)
         return;
     auto frame =
-        panta::ffi::animation_frame(**m_animation, static_cast<std::uint64_t>(m_animationTarget));
+        panta::ffi::animation_frame(**m_animation, static_cast<std::uint64_t>(m_playbackTarget));
     if (!frame.error.code.empty()) {
         // 坏帧不替换视口，只记录诊断并视为已到达，播放继续。
-        m_animationFrameError =
+        m_playbackFrameError =
             QString::fromUtf8(panta::ffi::project_error_message(frame.error.code));
-        m_animationDisplayed = m_animationTarget;
+        m_playbackDisplayed = m_playbackTarget;
         emit animationChanged();
         return;
     }
@@ -1375,13 +1484,82 @@ void panta::bridge::ProjectViewModel::tick_animation() {
     } catch (const std::exception& error) {
         fail(QStringLiteral("project.mesh_allocation_failed"), QStringLiteral("resource"),
              QString::fromUtf8(error.what()));
-        setAnimationPlaying(false);
+        setPlaybackPlaying(false);
         return;
     }
-    m_animationFrameError.clear();
-    m_animationDisplayed = m_animationTarget;
+    m_playbackFrameError.clear();
+    m_playbackDisplayed = m_playbackTarget;
     emit meshChanged();
     emit animationChanged();
+}
+
+void panta::bridge::ProjectViewModel::refresh_time_steps(bool streamed) {
+    std::vector<TimeStep> steps;
+    if (m_volumeAvailable) {
+        const auto list = panta::ffi::project_service_result_time_steps(
+            *m_service, m_activeDocumentId.toStdString());
+        for (const auto& step : list.steps)
+            steps.push_back({step.time, QString::fromUtf8(step.label)});
+    }
+    QString unavailable;
+    if (streamed && steps.size() >= 2) {
+        // 分块体网格（task 025/026）的派生分块只含最新步字段：保守禁用时间轴。
+        unavailable = QStringLiteral("该体网格单元未驻留（分块流式），时间轴暂不可用；"
+                                     "切面显示最新时间步 %1")
+                          .arg(steps.back().label);
+        steps.clear();
+    }
+    QString key = m_activeDocumentId + QLatin1Char('#') + QString::number(steps.size());
+    for (const auto& step : steps)
+        key += QLatin1Char('|') + step.label;
+    const bool changed = key != m_timeStepsKey || unavailable != m_timeStepsUnavailable;
+    m_timeStepsUnavailable = unavailable;
+    if (!changed)
+        return;
+    m_timeStepsKey = key;
+    m_timeSteps = std::move(steps);
+    m_globalRangeKey.clear();
+    // 新文档默认停在最新一步（与单步视图一致）。
+    m_playbackPlaying = false;
+    m_playbackFrameError.clear();
+    if (time_steps_active()) {
+        m_playbackTarget = static_cast<int>(m_timeSteps.size()) - 1;
+        m_playbackDisplayed = m_playbackTarget;
+    } else if (!m_animation) {
+        m_playbackTarget = 0;
+        m_playbackDisplayed = -1;
+    }
+    sync_playback_poll();
+    emit animationChanged();
+}
+
+bool panta::bridge::ProjectViewModel::global_field_range(double* min, double* max) {
+    if (!time_steps_active() || !m_fieldRangeGlobal || m_sectionFieldName.isEmpty())
+        return false;
+    const QString key = QStringLiteral("%1|%2|%3|%4")
+                            .arg(m_timeStepsKey, m_sectionFieldName, m_sectionFieldAssociation)
+                            .arg(m_sectionFieldComponent);
+    if (key != m_globalRangeKey) {
+        std::string name;
+        std::string association;
+        QString conversionError;
+        if (!to_boundary_utf8(m_sectionFieldName, &name, &conversionError) ||
+            !to_boundary_utf8(m_sectionFieldAssociation, &association, &conversionError))
+            return false;
+        // 只读各步 sidecar 头部（KiB 级），按字段选择缓存一次。
+        const auto range = panta::ffi::project_service_result_field_range(
+            *m_service, m_activeDocumentId.toStdString(), name, association,
+            m_sectionFieldComponent);
+        m_globalRangeKey = key;
+        m_globalRangeHas = range.error.code.empty() && range.has_range;
+        m_globalRangeMin = range.min;
+        m_globalRangeMax = range.max;
+    }
+    if (!m_globalRangeHas)
+        return false;
+    *min = m_globalRangeMin;
+    *max = m_globalRangeMax;
+    return true;
 }
 
 void panta::bridge::ProjectViewModel::refresh_volume() {
@@ -1411,6 +1589,7 @@ void panta::bridge::ProjectViewModel::refresh_volume() {
     if (!m_volumeAvailable)
         m_sectionActive = false;
     refresh_result_fields();
+    refresh_time_steps(info.available && info.streamed);
     emit volumeChanged();
 }
 
@@ -1533,9 +1712,14 @@ void panta::bridge::ProjectViewModel::request_section() {
     };
     using Result = std::shared_ptr<Section>;
     using Watcher = QFutureWatcher<Result>;
-    const auto input =
-        std::make_shared<std::optional<Input>>(panta::ffi::project_service_mesh_display_input(
-            *m_service, m_activeDocumentId.toStdString()));
+    // 时间步来源（task 033）：结果场取目标步；网格快照与最新步共享。
+    const int step = time_steps_active() ? m_playbackTarget : -1;
+    const auto input = std::make_shared<std::optional<Input>>(
+        step >= 0
+            ? panta::ffi::project_service_mesh_display_input_at(
+                  *m_service, m_activeDocumentId.toStdString(), static_cast<std::uint64_t>(step))
+            : panta::ffi::project_service_mesh_display_input(*m_service,
+                                                             m_activeDocumentId.toStdString()));
     auto hostProgress = panta::ffi::task_progress_new();
     const auto progress = std::make_shared<rust::Box<panta::ffi::TaskProgress>>(
         panta::ffi::task_progress_share(*hostProgress));
@@ -1581,7 +1765,7 @@ void panta::bridge::ProjectViewModel::request_section() {
     connect(watcher.get(), &Watcher::finished, watcher.get(), &QObject::deleteLater);
     connect(
         watcher.get(), &Watcher::finished, this,
-        [this, future = result->future(), selection, revision, fieldTitle, fieldUnits] {
+        [this, future = result->future(), selection, revision, fieldTitle, fieldUnits, step] {
             m_sectionPending = false;
             m_sectionProgress.reset();
             const auto section = future.result();
@@ -1594,13 +1778,27 @@ void panta::bridge::ProjectViewModel::request_section() {
             if (!section || selection != m_meshSelection || !m_sectionActive || m_animation)
                 return;
             const auto& error = section->field ? section->field->error : section->frame.error;
+            const bool timed = step >= 0 && section->field && time_steps_active();
             if (!error.code.empty()) {
+                if (timed) {
+                    // 某一步读取失败（缺字段、sidecar 不符）：保持上一帧，只在播放状态里提示。
+                    m_playbackFrameError =
+                        QStringLiteral("第 %1 步：%2")
+                            .arg(step + 1)
+                            .arg(QString::fromUtf8(panta::ffi::project_error_message(error.code)));
+                    m_playbackDisplayed = step;
+                    emit animationChanged();
+                    return;
+                }
                 hide_field_legend();
                 fail(error);
                 return;
             }
             if (!(section->field ? section->field->ready : section->frame.ready))
                 return;
+            double globalMin = 0.0;
+            double globalMax = 0.0;
+            const bool globalRange = timed && global_field_range(&globalMin, &globalMax);
             try {
                 auto mesh = std::make_shared<panta::visualization::SurfaceMeshSnapshot>();
                 mesh->project_revision = revision;
@@ -1611,6 +1809,10 @@ void panta::bridge::ProjectViewModel::request_section() {
                     mesh->scalars.assign(field.scalars.begin(), field.scalars.end());
                     mesh->scalar_min = field.has_range ? field.min : 0.0;
                     mesh->scalar_max = field.has_range ? field.max : 1.0;
+                    if (timed && globalRange) {
+                        mesh->scalar_min = globalMin;
+                        mesh->scalar_max = globalMax;
+                    }
                 }
                 mesh->vertices.reserve(coordinates.size() / 3);
                 for (std::size_t offset = 0; offset + 2 < coordinates.size(); offset += 3)
@@ -1629,13 +1831,18 @@ void panta::bridge::ProjectViewModel::request_section() {
                 m_fieldLegendVisible = true;
                 m_fieldLegendTitle = fieldTitle;
                 m_fieldLegendUnits = fieldUnits;
-                m_fieldLegendHasRange = field.has_range;
-                m_fieldLegendMin = field.min;
-                m_fieldLegendMax = field.max;
+                m_fieldLegendHasRange = field.has_range || globalRange;
+                m_fieldLegendMin = globalRange ? globalMin : field.min;
+                m_fieldLegendMax = globalRange ? globalMax : field.max;
                 m_fieldMissingVertices = static_cast<double>(field.missing_vertices);
                 emit fieldLegendChanged();
             } else {
                 hide_field_legend();
+            }
+            if (step >= 0 && time_steps_active()) {
+                m_playbackFrameError.clear();
+                m_playbackDisplayed = step;
+                emit animationChanged();
             }
             emit meshChanged();
         },
@@ -1689,6 +1896,11 @@ bool panta::bridge::ProjectViewModel::setSection(bool enabled, double normalX, d
     if (m_sectionPending && m_sectionProgress)
         panta::ffi::task_progress_cancel(**m_sectionProgress);
     hide_field_legend();
+    if (time_steps_active() && m_playbackDisplayed != m_playbackTarget) {
+        // 在途的时间步切面被取消：时间轴直接到达目标步，播放不因此停住。
+        m_playbackDisplayed = m_playbackTarget;
+        emit animationChanged();
+    }
     if (wasActive) {
         m_activeMesh.reset();
         emit meshChanged();

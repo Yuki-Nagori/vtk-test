@@ -522,7 +522,7 @@ ApplicationWindow {
                 font.pixelSize: Theme.fontSmall
                 wrapMode: Text.WrapAnywhere
             }
-            // 时序动画（task 020）：只读序列播放，帧未就绪时停在上一帧等待。
+            // 时序动画（task 020）：只读序列播放；播放控件在视口下方的统一播放栏（task 033）。
             RowLayout {
                 Layout.fillWidth: true
                 Label {
@@ -536,52 +536,6 @@ ApplicationWindow {
                     onClicked: projectModel.animationActive ? projectModel.closeAnimation() : openAnimationFileDialog.open()
                     ToolTip.visible: hovered
                     ToolTip.text: "选择编号序列中的任一帧文件（如 flow_0001.stl），自动发现同前缀的全部帧"
-                }
-            }
-            ColumnLayout {
-                objectName: "animationPanel"
-                Layout.fillWidth: true
-                visible: projectModel.animationActive
-                RowLayout {
-                    Layout.fillWidth: true
-                    Button {
-                        text: "◀"
-                        onClicked: projectModel.stepAnimation(-1)
-                    }
-                    Button {
-                        objectName: "animationPlayButton"
-                        text: projectModel.animationPlaying ? "暂停" : "播放"
-                        onClicked: projectModel.setAnimationPlaying(!projectModel.animationPlaying)
-                    }
-                    Button {
-                        text: "▶"
-                        onClicked: projectModel.stepAnimation(1)
-                    }
-                    SpinBox {
-                        objectName: "animationFpsSpin"
-                        from: 1
-                        to: 60
-                        value: projectModel.animationFps
-                        onValueModified: projectModel.setAnimationFps(value)
-                        ToolTip.visible: hovered
-                        ToolTip.text: "帧率 (fps)"
-                    }
-                }
-                Slider {
-                    objectName: "animationFrameSlider"
-                    Layout.fillWidth: true
-                    from: 0
-                    to: Math.max(0, projectModel.animationFrameCount - 1)
-                    stepSize: 1
-                    value: Math.max(0, projectModel.animationFrame)
-                    onMoved: projectModel.setAnimationFrame(Math.round(value))
-                }
-                Label {
-                    objectName: "animationStatus"
-                    Layout.fillWidth: true
-                    text: projectModel.animationStatus
-                    color: Theme.colorTextMuted
-                    wrapMode: Text.WrapAnywhere
                 }
             }
             // 体网格（task 021）：质量统计与单切面显示；切面只替换视口，不写工程。
@@ -776,6 +730,23 @@ ApplicationWindow {
                             color: Theme.colorTextMuted
                         }
                     }
+                    // 时间步结果（task 033）：默认全部时间步的全局范围，播放时色标不跳变。
+                    RowLayout {
+                        objectName: "fieldRangeModeRow"
+                        visible: projectModel.playbackSource === "timeSteps"
+                        Label {
+                            text: "色标范围"
+                            color: Theme.colorTextMuted
+                        }
+                        ComboBox {
+                            objectName: "fieldRangeModeCombo"
+                            Layout.fillWidth: true
+                            model: ["全部时间步", "当前步"]
+                            currentIndex: projectModel.fieldRangeGlobal ? 0 : 1
+                            Accessible.name: "色标范围"
+                            onActivated: index => projectModel.setFieldRangeGlobal(index === 0)
+                        }
+                    }
                     RowLayout {
                         visible: projectModel.fieldMissingVertices > 0
                         Rectangle {
@@ -878,16 +849,26 @@ ApplicationWindow {
             Layout.preferredWidth: Theme.borderWidth
             color: Theme.colorPanelLine
         }
-        ViewportPane {
-            id: viewportPane
-            objectName: "viewportPane"
+        ColumnLayout {
             Layout.minimumWidth: 0
             Layout.preferredWidth: 640
             Layout.fillWidth: true
             Layout.fillHeight: true
-            meshSource: projectModel
-            reducedMotion: Settings.reducedMotion
-            onPointPicked: (hit, x, y, z, triangle) => shellWindow.recordPick(hit, x, y, z, triangle)
+            spacing: 0
+            ViewportPane {
+                id: viewportPane
+                objectName: "viewportPane"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                meshSource: projectModel
+                reducedMotion: Settings.reducedMotion
+                onPointPicked: (hit, x, y, z, triangle) => shellWindow.recordPick(hit, x, y, z, triangle)
+            }
+            PlaybackBar {
+                objectName: "playbackBar"
+                Layout.fillWidth: true
+                model: projectModel
+            }
         }
     }
 

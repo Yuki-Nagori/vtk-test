@@ -18,6 +18,7 @@
 #include <optional>
 #include <panta/visualization/mesh_source.hpp>
 #include <rust/cxx.h>
+#include <vector>
 
 namespace panta::bridge {
 
@@ -83,11 +84,21 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     Q_PROPERTY(QStringList recentProjects READ recentProjects NOTIFY recentProjectsChanged)
     /// 时序动画（task 020）：只读序列播放，不入工程；活动时视口显示序列帧。
     Q_PROPERTY(bool animationActive READ animationActive NOTIFY animationChanged)
-    Q_PROPERTY(int animationFrameCount READ animationFrameCount NOTIFY animationChanged)
-    Q_PROPERTY(int animationFrame READ animationFrame NOTIFY animationChanged)
-    Q_PROPERTY(bool animationPlaying READ animationPlaying NOTIFY animationChanged)
-    Q_PROPERTY(int animationFps READ animationFps NOTIFY animationChanged)
-    Q_PROPERTY(QString animationStatus READ animationStatus NOTIFY animationChanged)
+    /// 统一播放（task 033）：来源为 "sequence"（020 表面序列）或 "timeSteps"（结果场时间步），
+    /// 无可播放内容时为空串。帧下标为已显示的帧；目标帧未就绪时保持上一帧。
+    Q_PROPERTY(QString playbackSource READ playbackSource NOTIFY animationChanged)
+    Q_PROPERTY(bool playbackActive READ playbackActive NOTIFY animationChanged)
+    Q_PROPERTY(int playbackFrameCount READ playbackFrameCount NOTIFY animationChanged)
+    Q_PROPERTY(int playbackFrame READ playbackFrame NOTIFY animationChanged)
+    Q_PROPERTY(bool playbackPlaying READ playbackPlaying NOTIFY animationChanged)
+    Q_PROPERTY(int playbackFps READ playbackFps NOTIFY animationChanged)
+    Q_PROPERTY(bool playbackLoop READ playbackLoop NOTIFY animationChanged)
+    Q_PROPERTY(QString playbackTimeLabel READ playbackTimeLabel NOTIFY animationChanged)
+    Q_PROPERTY(QString playbackStatus READ playbackStatus NOTIFY animationChanged)
+    /// 有时间步但当前不可播放的原因（如分块体网格）；可播放或无时间步时为空。
+    Q_PROPERTY(QString playbackUnavailable READ playbackUnavailable NOTIFY animationChanged)
+    /// 时间步播放的色标范围：真为全部时间步的全局范围（默认），假为当前步切面范围。
+    Q_PROPERTY(bool fieldRangeGlobal READ fieldRangeGlobal NOTIFY fieldLegendChanged)
     Q_PROPERTY(bool volumeAvailable READ volumeAvailable NOTIFY volumeChanged)
     Q_PROPERTY(QString volumeInfo READ volumeInfo NOTIFY volumeChanged)
     Q_PROPERTY(bool sectionActive READ sectionActive NOTIFY volumeChanged)
@@ -259,16 +270,26 @@ class ProjectViewModel : public panta::visualization::MeshSource {
 
     Q_INVOKABLE bool openAnimationUrl(const QUrl& url);
     Q_INVOKABLE void closeAnimation();
-    Q_INVOKABLE void setAnimationFrame(int frame);
-    Q_INVOKABLE void stepAnimation(int delta);
-    Q_INVOKABLE void setAnimationPlaying(bool playing);
-    Q_INVOKABLE void setAnimationFps(int fps);
     [[nodiscard]] bool animationActive() const { return m_animation.has_value(); }
-    [[nodiscard]] int animationFrameCount() const { return m_animationFrameCount; }
-    [[nodiscard]] int animationFrame() const { return m_animationDisplayed; }
-    [[nodiscard]] bool animationPlaying() const { return m_animationPlaying; }
-    [[nodiscard]] int animationFps() const { return m_animationFps; }
-    [[nodiscard]] QString animationStatus() const;
+    /// 播放控制（task 033）：对当前来源生效；无来源时忽略。
+    Q_INVOKABLE void setPlaybackFrame(int frame);
+    /// 逐帧：循环开启时首尾回绕，关闭时停在首 / 末帧。
+    Q_INVOKABLE void stepPlayback(int delta);
+    Q_INVOKABLE void setPlaybackPlaying(bool playing);
+    Q_INVOKABLE void setPlaybackFps(int fps);
+    Q_INVOKABLE void setPlaybackLoop(bool loop);
+    Q_INVOKABLE void setFieldRangeGlobal(bool global);
+    [[nodiscard]] QString playbackSource() const;
+    [[nodiscard]] bool playbackActive() const { return !playbackSource().isEmpty(); }
+    [[nodiscard]] int playbackFrameCount() const;
+    [[nodiscard]] int playbackFrame() const { return m_playbackDisplayed; }
+    [[nodiscard]] bool playbackPlaying() const { return m_playbackPlaying; }
+    [[nodiscard]] int playbackFps() const { return m_playbackFps; }
+    [[nodiscard]] bool playbackLoop() const { return m_playbackLoop; }
+    [[nodiscard]] QString playbackTimeLabel() const;
+    [[nodiscard]] QString playbackStatus() const;
+    [[nodiscard]] QString playbackUnavailable() const { return m_timeStepsUnavailable; }
+    [[nodiscard]] bool fieldRangeGlobal() const { return m_fieldRangeGlobal; }
     /// 体网格单切面（task 021/024）：平面由法向 (nx, ny, nz) 和沿法向投影区间的 0..1 位置确定；
     /// 只替换视口显示，不写工程、不生成资产。启用时零法向或非有限值被拒绝。
     Q_INVOKABLE bool setSection(bool enabled, double normalX, double normalY, double normalZ,
@@ -418,7 +439,7 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     QTimer m_importPreviewPoll;
     QTimer m_stlImportPoll;
     QTimer m_taskProgressPoll;
-    void tick_animation();
+    void tick_playback();
     void refresh_volume();
     /// 后台计算切面（task 022）：同时最多一个任务，参数变化时取消在途任务并在完成后重跑最新意图。
     void request_section();
@@ -448,14 +469,37 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     [[nodiscard]] QVariantMap find_result_field(const QString& name,
                                                 const QString& association) const;
     std::optional<rust::Box<panta::ffi::AnimationSequence>> m_animation;
-    QTimer m_animationPoll;
-    QElapsedTimer m_animationClock;
     int m_animationFrameCount = 0;
-    int m_animationTarget = 0;
-    int m_animationDisplayed = -1;
-    bool m_animationPlaying = false;
-    int m_animationFps = 10;
-    QString m_animationFrameError;
+    /// 统一播放状态（task 033）：两种来源共用目标 / 已显示帧、播放、帧率与循环。
+    QTimer m_playbackPoll;
+    QElapsedTimer m_playbackClock;
+    int m_playbackTarget = 0;
+    int m_playbackDisplayed = -1;
+    bool m_playbackPlaying = false;
+    int m_playbackFps = 10;
+    bool m_playbackLoop = true;
+    QString m_playbackFrameError;
+    struct TimeStep {
+        double time = 0.0;
+        QString label;
+    };
+    /// 活动体网格文档的结果场时间步（至少 2 步才可播放）。
+    std::vector<TimeStep> m_timeSteps;
+    QString m_timeStepsKey;
+    QString m_timeStepsUnavailable;
+    bool m_fieldRangeGlobal = true;
+    /// 全局色标范围缓存：键为文档 / 字段 / 关联 / 分量。
+    QString m_globalRangeKey;
+    bool m_globalRangeHas = false;
+    double m_globalRangeMin = 0.0;
+    double m_globalRangeMax = 0.0;
+    [[nodiscard]] bool time_steps_active() const;
+    /// 切面需要随时间步重算（切面开启且选了字段）。
+    [[nodiscard]] bool section_follows_time() const;
+    void refresh_time_steps(bool streamed);
+    void sync_playback_poll();
+    /// 当前字段在全部时间步上的范围；无全局范围时返回假。
+    bool global_field_range(double* min, double* max);
     std::optional<rust::Box<panta::ffi::TaskProgress>> m_exportProgress;
     std::optional<rust::Box<panta::ffi::TaskProgress>> m_diagnosticsProgress;
     /// 生成阶段的进度/取消句柄；进入工程提交阶段后清空，进度改读导入请求。

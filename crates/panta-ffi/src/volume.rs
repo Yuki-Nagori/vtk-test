@@ -158,3 +158,93 @@ pub(super) fn project_service_result_fields(
         .collect();
     result
 }
+
+/// 结果场时间步（task 033）：GUI 线程同步调用，只读清单。
+pub(super) fn project_service_result_time_steps(
+    service: &ProjectService,
+    import_id: &str,
+) -> bridge::ResultTimeStepListResult {
+    match service.service.result_time_steps(import_id) {
+        Ok(steps) => bridge::ResultTimeStepListResult {
+            steps: steps
+                .into_iter()
+                .map(|step| bridge::ResultTimeStepInfo {
+                    time: step.time,
+                    label: step.label,
+                    field_count: step.field_count as u64,
+                })
+                .collect(),
+            error: Default::default(),
+        },
+        Err(error) => bridge::ResultTimeStepListResult {
+            steps: Vec::new(),
+            error: error.into(),
+        },
+    }
+}
+
+/// 字段在全部时间步上的显示范围（task 033 全局色标）：只读各步 sidecar 头部的范围摘要，
+/// 不读字段数值。摘要范围为标量值或多分量的模；取单个分量时用 [-最大模, 最大模] 作保守包络。
+/// 缺少该字段的步跳过；无时间步时只看最新结果。
+pub(super) fn project_service_result_field_range(
+    service: &ProjectService,
+    import_id: &str,
+    name: &str,
+    association: &str,
+    component: i32,
+) -> bridge::FieldRangeResult {
+    let mut result = bridge::FieldRangeResult::default();
+    let Some(association) = crate::display::field_association(association) else {
+        result.error = panta_core::project::ProjectError::CommandInvalid(
+            "field association is invalid".to_owned(),
+        )
+        .into();
+        return result;
+    };
+    let sources = (|| -> Result<Vec<_>, panta_core::project::ProjectError> {
+        let steps = service.service.result_time_steps(import_id)?;
+        if steps.is_empty() {
+            return Ok(service
+                .service
+                .result_field_source(import_id)?
+                .into_iter()
+                .collect::<Vec<_>>());
+        }
+        (0..steps.len())
+            .map(|step| service.service.result_field_source_at(import_id, step))
+            .collect()
+    })();
+    let mut range: Option<[f64; 2]> = None;
+    let outcome = sources.and_then(|sources| {
+        for source in sources {
+            let reader = source.open()?;
+            let Some([min, max]) = reader
+                .summaries()
+                .iter()
+                .find(|field| field.name == name && field.association == association)
+                .and_then(|field| field.range)
+            else {
+                continue;
+            };
+            let [min, max] = if component >= 0 {
+                let bound = min.abs().max(max.abs());
+                [-bound, bound]
+            } else {
+                [min, max]
+            };
+            range = Some(range.map_or([min, max], |[low, high]| [low.min(min), high.max(max)]));
+        }
+        Ok(())
+    });
+    match outcome {
+        Ok(()) => {
+            if let Some([min, max]) = range {
+                result.has_range = true;
+                result.min = min;
+                result.max = max;
+            }
+        }
+        Err(error) => result.error = error.into(),
+    }
+    result
+}
