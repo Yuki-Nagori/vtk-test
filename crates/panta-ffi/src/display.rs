@@ -4,14 +4,31 @@ use std::sync::Arc;
 
 pub struct MeshDisplayInput {
     mesh: Result<(Arc<panta_mesh::SurfaceMesh>, u64), bridge::ProjectDiagnostic>,
-    /// 非 0：驻留网格是显示 LOD，值为源面数；诊断与导出拒绝 LOD（task 019）。
+    /// 非 0：驻留网格是显示 LOD，值为源面数；表面诊断拒绝 LOD（task 019），导出改为流式（task 025）。
     lod_source_triangles: u64,
     /// 体网格文档的四面体快照（task 022）：诊断追加质量统计、`.vtu` 导出写四面体、切面在后台计算。
     volume: Option<Arc<panta_mesh::TetMesh>>,
+    /// 需要流式访问的完整资产（task 025）：表面 LOD 的源资产，或单元未驻留的体网格资产。
+    streamed: Option<panta_core::project::StreamedAsset>,
 }
 
 impl MeshDisplayInput {
-    /// 诊断 / 导出需要完整网格；LOD 输入返回明确诊断。
+    fn streamed_volume(&self) -> Option<&panta_core::project::StreamedAsset> {
+        self.streamed
+            .as_ref()
+            .filter(|asset| matches!(asset.kind, panta_core::project::StreamedKind::Volume(_)))
+    }
+
+    fn streamed_surface(&self) -> Option<&panta_core::project::StreamedAsset> {
+        self.streamed.as_ref().filter(|asset| {
+            matches!(
+                asset.kind,
+                panta_core::project::StreamedKind::Surface { .. }
+            )
+        })
+    }
+
+    /// 表面诊断需要完整驻留网格；LOD 输入返回明确诊断（task 025 评估后保留，见任务文档）。
     fn full_mesh(self) -> Result<Arc<panta_mesh::SurfaceMesh>, bridge::ProjectDiagnostic> {
         let (mesh, _) = self.mesh?;
         if self.lod_source_triangles > 0 {
@@ -48,10 +65,12 @@ pub(super) fn project_service_mesh_display_input(
     })();
     let lod_source_triangles = service.service.mesh_lod_source_for_import(import_id);
     let volume = service.service.volume_for_import(import_id);
+    let streamed = service.service.streamed_asset_for_import(import_id);
     Box::new(MeshDisplayInput {
         mesh,
         lod_source_triangles,
         volume,
+        streamed,
     })
 }
 
@@ -100,6 +119,20 @@ pub(super) fn export_mesh_display(
             Err(error) => error.into(),
         };
     }
+    if let (true, Some(asset)) = (is_vtu, input.streamed_volume()) {
+        // 单元未驻留的体网格：从资产流式写出四面体（task 025）。
+        return match panta_core::project::export_streamed_volume_vtu(asset, target, &progress.0) {
+            Ok(()) => bridge::ProjectDiagnostic::default(),
+            Err(error) => error.into(),
+        };
+    }
+    if let Some(asset) = input.streamed_surface() {
+        // 表面显示 LOD：从源资产流式写出完整网格（task 025）。
+        return match panta_core::project::export_streamed_surface(asset, target, &progress.0) {
+            Ok(_) => bridge::ProjectDiagnostic::default(),
+            Err(error) => error.into(),
+        };
+    }
     match input.full_mesh() {
         Ok(mesh) => {
             match panta_core::project::export_mesh_file_with_progress(
@@ -129,7 +162,16 @@ pub(super) fn diagnose_mesh_display(
         )
     };
     let volume = input.volume.clone();
-    if volume.is_some() {
+    let streamed_volume = input.streamed_volume().cloned();
+    let volume_counts = match (&volume, &streamed_volume) {
+        (Some(volume), _) => Some(volume.nodes.len() as u64),
+        (None, Some(asset)) => match asset.kind {
+            panta_core::project::StreamedKind::Volume(counts) => Some(counts.nodes as u64),
+            panta_core::project::StreamedKind::Surface { .. } => None,
+        },
+        (None, None) => None,
+    };
+    if volume_counts.is_some() {
         // 外表面诊断 0–80%，体网格质量统计 80–100%。
         progress.0.set_window(0.0, 0.8);
     }
@@ -159,12 +201,19 @@ pub(super) fn diagnose_mesh_display(
             })
     });
     let result = result.and_then(|mut value| {
-        if let Some(volume) = volume {
+        if let Some(node_count) = volume_counts {
             progress.0.set_window(0.8, 1.0);
-            let quality =
-                panta_core::project::volume_quality(&volume, &progress.0).ok_or_else(cancelled)?;
+            let quality = match (&volume, &streamed_volume) {
+                (Some(volume), _) => panta_core::project::volume_quality(volume, &progress.0),
+                (None, Some(asset)) => {
+                    panta_core::project::streamed_volume_quality(asset, &progress.0)
+                        .map_err(bridge::ProjectDiagnostic::from)?
+                }
+                (None, None) => None,
+            }
+            .ok_or_else(cancelled)?;
             value.volume_available = true;
-            value.node_count = volume.nodes.len() as u64;
+            value.node_count = node_count;
             value.tet_count = quality.tet_count as u64;
             value.min_dihedral_degrees = quality.min_dihedral_degrees;
             value.max_aspect_ratio = quality.max_aspect_ratio;
@@ -197,12 +246,22 @@ pub(super) fn section_mesh_display(
     progress: &crate::TaskProgress,
 ) -> bridge::AnimationFrameResult {
     let mut result = bridge::AnimationFrameResult::default();
-    let Some(volume) = input.volume else {
-        result.error = panta_core::project::ProjectError::VolumeUnavailable(String::new()).into();
-        return result;
-    };
     let normal = [normal_x, normal_y, normal_z];
-    match panta_core::project::section_plane(&volume, normal, fraction, &progress.0) {
+    let section = match (&input.volume, input.streamed_volume()) {
+        (Some(volume), _) => {
+            panta_core::project::section_plane(volume, normal, fraction, &progress.0)
+        }
+        // 单元未驻留：每次切面重新扫描资产单元流（task 025）。
+        (None, Some(asset)) => {
+            panta_core::project::streamed_section_plane(asset, normal, fraction, &progress.0)
+        }
+        (None, None) => {
+            result.error =
+                panta_core::project::ProjectError::VolumeUnavailable(String::new()).into();
+            return result;
+        }
+    };
+    match section {
         Ok(Some(mesh)) => match crate::mesh_coordinates(&mesh) {
             Ok(coordinates) => {
                 result.ready = true;
@@ -236,6 +295,7 @@ mod tests {
                 mesh: Ok((Arc::new(mesh.clone()), 1)),
                 lod_source_triangles: 0,
                 volume: None,
+                streamed: None,
             }),
             &crate::TaskProgress::default(),
         );
@@ -246,6 +306,7 @@ mod tests {
                 mesh: Ok((Arc::new(mesh.clone()), 1)),
                 lod_source_triangles: 0,
                 volume: None,
+                streamed: None,
             }),
             &cancelled,
         );
@@ -265,6 +326,7 @@ mod tests {
                 )),
                 lod_source_triangles: 0,
                 volume: None,
+                streamed: None,
             }),
             &crate::TaskProgress::default(),
         );
@@ -275,6 +337,7 @@ mod tests {
                 mesh: Ok((Arc::new(mesh), 1)),
                 lod_source_triangles: 30_000_000,
                 volume: None,
+                streamed: None,
             }),
             &crate::TaskProgress::default(),
         );
@@ -295,6 +358,7 @@ mod tests {
             mesh: Ok((Arc::new(surface), 1)),
             lod_source_triangles: 0,
             volume: Some(Arc::new(volume)),
+            streamed: None,
         }))
     }
 
@@ -336,6 +400,98 @@ mod tests {
         assert!(error.code.is_empty(), "{}", error.detail);
         let grid = vtu_tet_count(&std::fs::read(&target)?)?;
         assert_eq!(grid, 2);
+        std::fs::remove_dir_all(&directory)?;
+        Ok(())
+    }
+
+    #[test]
+    fn streamed_assets_export_diagnose_and_section_without_resident_cells()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use panta_core::project::{StreamedAsset, StreamedKind};
+        let directory =
+            std::env::temp_dir().join(format!("panta-ffi-streamed-{}", std::process::id()));
+        std::fs::create_dir_all(&directory)?;
+        let block = panta_mesh::SyntheticTetBlock::with_cells_per_axis(3);
+        let volume_path = directory.join("volume.pmesh");
+        let (_, digest) = panta_mesh::write_volume_asset_streaming(
+            std::fs::File::create(&volume_path)?,
+            block.counts(),
+            &block,
+            None,
+        )?
+        .ok_or("cancelled")?;
+        let mut chunks = panta_mesh::VolumeAssetChunks::open(&volume_path)?;
+        let boundary =
+            panta_mesh::boundary_surface_streaming(&mut chunks, None)?.ok_or("cancelled")?;
+        let volume_input = || {
+            Box::new(MeshDisplayInput {
+                mesh: Ok((Arc::new(boundary.clone()), 1)),
+                lod_source_triangles: 0,
+                volume: None,
+                streamed: Some(StreamedAsset {
+                    path: volume_path.clone(),
+                    digest: digest.clone(),
+                    kind: StreamedKind::Volume(block.counts()),
+                }),
+            })
+        };
+        let report = diagnose_mesh_display(volume_input(), &Default::default());
+        assert!(report.error.code.is_empty(), "{}", report.error.detail);
+        assert!(report.value.volume_available);
+        assert_eq!(report.value.tet_count, block.tet_count() as u64);
+        assert_eq!(report.value.node_count, block.node_count() as u64);
+        let section = section_mesh_display(volume_input(), 0.0, 1.0, 0.0, 0.5, &Default::default());
+        assert!(section.ready && !section.coordinates.is_empty());
+        let target = directory.join("volume.vtu");
+        let error = export_mesh_display(
+            volume_input(),
+            target.to_str().ok_or("path")?,
+            &Default::default(),
+        );
+        assert!(error.code.is_empty(), "{}", error.detail);
+        assert_eq!(vtu_tet_count(&std::fs::read(&target)?)?, block.tet_count());
+
+        let torus = panta_mesh::SyntheticTorus::new(5_000);
+        let surface_path = directory.join("surface.pmesh");
+        let (_, surface_digest) = panta_mesh::write_surface_asset_streaming(
+            std::fs::File::create(&surface_path)?,
+            5_000,
+            |range, out| torus.fill(range, out),
+            None,
+        )?
+        .ok_or("cancelled")?;
+        let lod = panta_mesh::SurfaceMesh {
+            triangles: vec![[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]],
+        };
+        let surface_input = |digest: &str| {
+            Box::new(MeshDisplayInput {
+                mesh: Ok((Arc::new(lod.clone()), 1)),
+                lod_source_triangles: 5_000,
+                volume: None,
+                streamed: Some(StreamedAsset {
+                    path: surface_path.clone(),
+                    digest: digest.to_owned(),
+                    kind: StreamedKind::Surface { triangles: 5_000 },
+                }),
+            })
+        };
+        let stl = directory.join("full.stl");
+        let error = export_mesh_display(
+            surface_input(&surface_digest),
+            stl.to_str().ok_or("path")?,
+            &Default::default(),
+        );
+        assert!(error.code.is_empty(), "{}", error.detail);
+        // 完整源资产而非 LOD：84 字节头 + 每面 50 字节。
+        assert_eq!(std::fs::metadata(&stl)?.len(), 84 + 50 * 5_000);
+        let stale = export_mesh_display(
+            surface_input("sha256:stale"),
+            directory.join("stale.stl").to_str().ok_or("path")?,
+            &Default::default(),
+        );
+        assert_eq!(stale.code, "project.export_source_unavailable");
+        let diagnose = diagnose_mesh_display(surface_input(&surface_digest), &Default::default());
+        assert_eq!(diagnose.error.code, "project.mesh_lod_only");
         std::fs::remove_dir_all(&directory)?;
         Ok(())
     }

@@ -2,8 +2,11 @@
 //! 命令作用于共享 `Arc<TetMesh>` 快照，可在宿主后台线程执行（task 022）。
 
 use super::{ProjectError, ProjectService};
-use panta_mesh::{Progress, SurfaceMesh, TetMesh, TetQuality};
-use std::path::Path;
+use panta_mesh::{
+    Progress, SurfaceAssetChunks, SurfaceMesh, TetMesh, TetQuality, VolumeAssetChunks,
+    VolumeStreamCounts, VolumeStreamError,
+};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 impl ProjectService {
@@ -24,6 +27,128 @@ impl ProjectService {
         self.mesh_cache.get(import_id)?;
         self.volume_meshes.get(import_id).cloned()
     }
+}
+
+/// 只读命令按需流式读取的完整网格资产（task 025）：表面显示 LOD 或单元未驻留的体网格。
+/// 路径已通过工程包含关系校验；`digest` 为激活时的资产摘要，读取前再次核对。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamedAsset {
+    pub path: PathBuf,
+    pub digest: String,
+    pub kind: StreamedKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamedKind {
+    /// 驻留网格为显示 LOD，值为源资产面数。
+    Surface { triangles: u64 },
+    /// 体网格单元未驻留，驻留网格为精确外表面。
+    Volume(VolumeStreamCounts),
+}
+
+impl ProjectService {
+    /// 驻留网格需要流式访问完整资产时返回其描述；完整驻留、未驻留或资产索引无效返回 `None`。
+    pub fn streamed_asset_for_import(&self, import_id: &str) -> Option<StreamedAsset> {
+        self.mesh_cache.get(import_id)?;
+        let kind = match (
+            self.streamed_volumes.get(import_id),
+            self.mesh_lod_sources.get(import_id),
+        ) {
+            (Some(counts), _) => StreamedKind::Volume(*counts),
+            (None, Some(&triangles)) => StreamedKind::Surface { triangles },
+            (None, None) => return None,
+        };
+        let request = self.activation_request(import_id).ok()?;
+        let path =
+            super::service::resolve_asset_path(&request.project_root, &request.relative_path)
+                .ok()?;
+        Some(StreamedAsset {
+            path,
+            digest: request.expected_digest,
+            kind,
+        })
+    }
+}
+
+fn open_volume(asset: &StreamedAsset) -> Result<VolumeAssetChunks, ProjectError> {
+    let chunks = VolumeAssetChunks::open(&asset.path).map_err(|error| {
+        ProjectError::StreamedAssetFailed(format!("{}: {error}", asset.path.display()))
+    })?;
+    if chunks.digest() != asset.digest {
+        return Err(ProjectError::StreamedAssetFailed(format!(
+            "{}: digest changed",
+            asset.path.display()
+        )));
+    }
+    Ok(chunks)
+}
+
+fn stream_error(asset: &StreamedAsset, error: VolumeStreamError) -> ProjectError {
+    match error {
+        VolumeStreamError::Asset(error) => {
+            ProjectError::StreamedAssetFailed(format!("{}: {error}", asset.path.display()))
+        }
+        VolumeStreamError::Invalid(detail) => ProjectError::CommandInvalid(detail),
+    }
+}
+
+/// 流式导出表面资产（显示 LOD 状态）的完整网格；STL 与驻留导出一致，带索引格式不焊接。
+pub fn export_streamed_surface(
+    asset: &StreamedAsset,
+    target: &Path,
+    progress: &Progress,
+) -> Result<panta_import::export::ExportFormat, ProjectError> {
+    let mut chunks = SurfaceAssetChunks::open(&asset.path).map_err(|error| {
+        ProjectError::ExportSourceUnavailable(format!("{}: {error}", asset.path.display()))
+    })?;
+    if chunks.digest() != asset.digest {
+        return Err(ProjectError::ExportSourceUnavailable(format!(
+            "{}: digest changed",
+            asset.path.display()
+        )));
+    }
+    panta_import::export::export_surface_asset_with_progress(&mut chunks, target, progress)
+        .map_err(super::service::export_error)
+}
+
+/// 流式导出单元未驻留的体网格为 `.vtu`（与驻留导出逐字节一致）。
+pub fn export_streamed_volume_vtu(
+    asset: &StreamedAsset,
+    target: &Path,
+    progress: &Progress,
+) -> Result<(), ProjectError> {
+    let mut chunks = open_volume(asset)
+        .map_err(|error| ProjectError::ExportSourceUnavailable(error.detail()))?;
+    panta_import::export::export_volume_asset_vtu(&mut chunks, target, progress)
+        .map_err(super::service::export_error)
+}
+
+/// 流式体网格质量统计（结果与驻留统计一致）；取消返回 `Ok(None)`。
+pub fn streamed_volume_quality(
+    asset: &StreamedAsset,
+    progress: &Progress,
+) -> Result<Option<TetQuality>, ProjectError> {
+    let mut chunks = open_volume(asset)?;
+    panta_mesh::tet_quality_streaming(&mut chunks, progress)
+        .map_err(|error| stream_error(asset, error))
+}
+
+/// 流式任意平面切面（与 [`section_plane`] 结果一致）；每次调用重新扫描单元流。
+pub fn streamed_section_plane(
+    asset: &StreamedAsset,
+    normal: [f64; 3],
+    fraction: f64,
+    progress: &Progress,
+) -> Result<Option<SurfaceMesh>, ProjectError> {
+    let length = normal.iter().map(|value| value * value).sum::<f64>().sqrt();
+    if !length.is_finite() || length == 0.0 || !fraction.is_finite() {
+        return Err(ProjectError::CommandInvalid(
+            "section normal or position is invalid".to_owned(),
+        ));
+    }
+    let mut chunks = open_volume(asset)?;
+    panta_mesh::section_plane_streaming(&mut chunks, normal, fraction, progress)
+        .map_err(|error| stream_error(asset, error))
 }
 
 /// 与工程无关的体网格 VTU 导出（Netgen 生成结果复用同一写出路径），带进度与取消。
@@ -57,18 +182,7 @@ pub fn section_plane(
         ));
     }
     let normal = normal.map(|value| value / length);
-    let project =
-        |point: &[f64; 3]| point[0] * normal[0] + point[1] * normal[1] + point[2] * normal[2];
-    let (low, high) =
-        volume
-            .nodes
-            .iter()
-            .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), point| {
-                let offset = project(point);
-                (low.min(offset), high.max(offset))
-            });
-    let offset = low + (high - low) * fraction.clamp(0.0, 1.0);
-    let origin = normal.map(|value| value * offset);
+    let origin = panta_mesh::section_plane_origin(&volume.nodes, normal, fraction);
     panta_mesh::section_surface(volume, origin, normal, progress)
         .map_err(|error| ProjectError::CommandInvalid(error.to_string()))
 }
@@ -241,6 +355,70 @@ mod tests {
             }
         }
         assert!(on_plane > 0);
+        Ok(())
+    }
+
+    #[test]
+    fn streamed_commands_match_resident_commands_and_check_the_digest()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::{
+            StreamedAsset, StreamedKind, export_streamed_volume_vtu, streamed_section_plane,
+            streamed_volume_quality,
+        };
+        let fixture_dir = temp_directory::Fixture::new()?;
+        let block = panta_mesh::SyntheticTetBlock::with_cells_per_axis(4);
+        let path = fixture_dir.root.join("volume.pmesh");
+        let (_, digest) = panta_mesh::write_volume_asset_streaming(
+            std::fs::File::create(&path)?,
+            block.counts(),
+            &block,
+            None,
+        )?
+        .ok_or("cancelled")?;
+        let len = std::fs::metadata(&path)?.len();
+        let (decoded, _) = panta_mesh::MeshAssetReader::open(std::fs::File::open(&path)?, len)?
+            .read(|| false)?
+            .ok_or("cancelled")?;
+        let panta_mesh::MeshAsset::Volume(volume) = decoded else {
+            return Err("expected volume".into());
+        };
+        let asset = StreamedAsset {
+            path: path.clone(),
+            digest,
+            kind: StreamedKind::Volume(block.counts()),
+        };
+        let progress = Progress::new();
+        let quality = streamed_volume_quality(&asset, &progress)?.ok_or("cancelled")?;
+        let resident = volume_quality(&volume, &progress).ok_or("cancelled")?;
+        assert_eq!(quality.poor_count, resident.poor_count);
+        assert_eq!(quality.min_dihedral_degrees, resident.min_dihedral_degrees);
+        let normal = [1.0, 2.0, -0.5];
+        assert_eq!(
+            streamed_section_plane(&asset, normal, 0.3, &progress)?,
+            section_plane(&volume, normal, 0.3, &progress)?
+        );
+        assert!(matches!(
+            streamed_section_plane(&asset, [0.0; 3], 0.3, &progress),
+            Err(ProjectError::CommandInvalid(_))
+        ));
+        let streamed_out = fixture_dir.root.join("streamed.vtu");
+        let resident_out = fixture_dir.root.join("resident.vtu");
+        export_streamed_volume_vtu(&asset, &streamed_out, &progress)?;
+        export_tet_mesh_vtu(&volume, &resident_out, &progress)?;
+        assert_eq!(std::fs::read(&streamed_out)?, std::fs::read(&resident_out)?);
+
+        let stale = StreamedAsset {
+            digest: "sha256:stale".to_owned(),
+            ..asset
+        };
+        assert!(matches!(
+            streamed_volume_quality(&stale, &progress),
+            Err(ProjectError::StreamedAssetFailed(_))
+        ));
+        assert!(matches!(
+            export_streamed_volume_vtu(&stale, &streamed_out, &progress),
+            Err(ProjectError::ExportSourceUnavailable(_))
+        ));
         Ok(())
     }
 }

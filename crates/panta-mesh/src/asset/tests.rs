@@ -306,3 +306,119 @@ fn legacy_v2_sidecars_still_decode_with_their_original_digest() -> TestResult {
     );
     Ok(())
 }
+
+mod volume_streaming {
+    use super::TestResult;
+    use crate::{
+        MeshAsset, MeshAssetReader, Progress, SyntheticTetBlock, TetMesh, VolumeAssetChunks,
+        boundary_surface, boundary_surface_streaming, section_plane_origin,
+        section_plane_streaming, section_surface, tet_quality, tet_quality_streaming,
+        write_volume_asset_streaming,
+    };
+
+    struct Asset(std::path::PathBuf);
+
+    impl Drop for Asset {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    fn write_block(n: usize, name: &str) -> Result<(Asset, TetMesh), Box<dyn std::error::Error>> {
+        let block = SyntheticTetBlock::with_cells_per_axis(n);
+        let path = std::env::temp_dir().join(format!(
+            "panta-volume-stream-{name}-{}.pmesh",
+            std::process::id()
+        ));
+        let asset = Asset(path.clone());
+        let file = std::fs::File::create(&path)?;
+        write_volume_asset_streaming(file, block.counts(), &block, None)?.ok_or("cancelled")?;
+        let mesh = TetMesh {
+            nodes: (0..block.node_count()).map(|i| block.node(i)).collect(),
+            tets: (0..block.tet_count()).map(|i| block.tet(i)).collect(),
+            boundary: (0..block.boundary_count())
+                .map(|i| block.boundary_face(i))
+                .collect(),
+            region_count: 1,
+            boundary_group_count: 6,
+        };
+        Ok((asset, mesh))
+    }
+
+    #[test]
+    fn streamed_synthetic_volume_passes_full_validation_and_round_trips() -> TestResult {
+        let (asset, expected) = write_block(4, "roundtrip")?;
+        let len = std::fs::metadata(&asset.0)?.len();
+        let reader = MeshAssetReader::open(std::fs::File::open(&asset.0)?, len)?;
+        let (decoded, _) = reader.read(|| false)?.ok_or("cancelled")?;
+        // 完整读取执行 validate_tet_mesh：正向、无重复单元、边界面与单元面一致。
+        assert_eq!(decoded, MeshAsset::Volume(expected.clone()));
+        let chunks = VolumeAssetChunks::open(&asset.0)?;
+        assert_eq!(chunks.counts().tets, 6 * 64);
+        assert_eq!(chunks.counts().nodes, 125);
+        assert_eq!(chunks.counts().boundary, 12 * 16);
+        Ok(())
+    }
+
+    #[test]
+    fn streaming_boundary_quality_and_section_match_in_memory_results() -> TestResult {
+        let (asset, mesh) = write_block(5, "ops")?;
+        let mut chunks = VolumeAssetChunks::open(&asset.0)?;
+        let surface = boundary_surface_streaming(&mut chunks, None)?.ok_or("cancelled")?;
+        assert_eq!(surface, boundary_surface(&mesh));
+
+        let progress = Progress::new();
+        let streamed = tet_quality_streaming(&mut chunks, &progress)?.ok_or("cancelled")?;
+        let resident = tet_quality(&mesh, &Progress::new()).ok_or("cancelled")?;
+        assert_eq!(streamed.tet_count, resident.tet_count);
+        assert_eq!(streamed.poor_count, resident.poor_count);
+        assert_eq!(streamed.min_dihedral_degrees, resident.min_dihedral_degrees);
+        assert_eq!(streamed.max_aspect_ratio, resident.max_aspect_ratio);
+        assert!((streamed.mean_aspect_ratio - resident.mean_aspect_ratio).abs() < 1e-12);
+        assert_eq!(progress.fraction(), 1.0);
+
+        let normal = [0.3, -0.5, 0.8];
+        let length = (0.09_f64 + 0.25 + 0.64).sqrt();
+        let unit = normal.map(|value| value / length);
+        let origin = section_plane_origin(&mesh.nodes, unit, 0.4);
+        let expected =
+            section_surface(&mesh, origin, unit, &Progress::new())?.ok_or("cancelled")?;
+        let section = section_plane_streaming(&mut chunks, normal, 0.4, &Progress::new())?
+            .ok_or("cancelled")?;
+        assert_eq!(section, expected);
+        assert!(section_plane_streaming(&mut chunks, [0.0; 3], 0.4, &Progress::new()).is_err());
+
+        let cancelled = Progress::new();
+        cancelled.cancel();
+        assert!(tet_quality_streaming(&mut chunks, &cancelled)?.is_none());
+        assert!(section_plane_streaming(&mut chunks, normal, 0.4, &cancelled)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn streaming_volume_writer_rejects_out_of_range_records() {
+        struct Broken;
+        impl crate::VolumeSource for Broken {
+            fn nodes(&self, range: std::ops::Range<usize>, out: &mut Vec<[f64; 3]>) {
+                out.extend(range.map(|i| [i as f64, 0.0, 0.0]));
+            }
+            fn tets(&self, range: std::ops::Range<usize>, out: &mut Vec<crate::Tetrahedron>) {
+                out.extend(range.map(|_| crate::Tetrahedron {
+                    nodes: [0, 1, 2, 99],
+                    region: 0,
+                }));
+            }
+            fn boundary(&self, _: std::ops::Range<usize>, _: &mut Vec<crate::SurfaceTriangle>) {}
+        }
+        let counts = crate::VolumeStreamCounts {
+            nodes: 4,
+            tets: 1,
+            boundary: 0,
+            region_count: 1,
+            boundary_group_count: 0,
+        };
+        let result =
+            write_volume_asset_streaming(std::io::Cursor::new(Vec::new()), counts, &Broken, None);
+        assert_eq!(result, Err(crate::MeshAssetError::InvalidMesh));
+    }
+}

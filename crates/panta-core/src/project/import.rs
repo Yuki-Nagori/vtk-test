@@ -167,6 +167,7 @@ impl ProjectService {
         self.latest_mesh_id = Some(record.id.clone());
         self.mesh_cache.insert_active(record.id.clone(), mesh);
         self.mesh_lod_sources.remove(&record.id);
+        self.streamed_volumes.remove(&record.id);
         self.set_volume_mesh(&record.id, volume);
         self.current = Some(state);
         Ok(Some(record))

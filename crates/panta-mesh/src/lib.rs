@@ -14,9 +14,10 @@ mod synthetic;
 mod volume;
 pub use asset::{
     MESH_ASSET_FORMAT_VERSION, MeshAsset, MeshAssetError, MeshAssetReader, MeshAssetRef,
-    SurfaceAssetChunks, Triangle, decode_mesh_asset, decode_mesh_asset_with_digest,
-    encode_mesh_asset, encode_mesh_asset_ref, is_readable_mesh_asset_version,
-    mesh_asset_encoded_len, surface_mesh_expanded_bytes, write_surface_asset_streaming,
+    SurfaceAssetChunks, Triangle, VolumeAssetChunks, VolumeSource, VolumeStreamCounts,
+    decode_mesh_asset, decode_mesh_asset_with_digest, encode_mesh_asset, encode_mesh_asset_ref,
+    is_readable_mesh_asset_version, mesh_asset_encoded_len, surface_mesh_expanded_bytes,
+    write_surface_asset_streaming, write_volume_asset_streaming,
 };
 pub use diagnostics::{
     DEFAULT_RELATIVE_WELD_TOLERANCE, DiagnosticError, DiagnosticOptions, SurfaceDiagnostics,
@@ -24,10 +25,12 @@ pub use diagnostics::{
 };
 pub use lod::{DEFAULT_LOD_TRIANGLE_BUDGET, SurfaceLod, build_surface_lod, simplify_surface};
 pub use progress::{PROGRESS_STRIDE, Progress};
-pub use synthetic::SyntheticTorus;
+pub use synthetic::{SyntheticTetBlock, SyntheticTorus};
 pub use volume::{
-    POOR_ASPECT_RATIO, POOR_MIN_DIHEDRAL_DEGREES, TetQuality, VolumeError, boundary_faces,
-    boundary_surface, section_surface, tet_mesh_from_cells, tet_quality,
+    POOR_ASPECT_RATIO, POOR_MIN_DIHEDRAL_DEGREES, TetQuality, VolumeError, VolumeStreamError,
+    boundary_faces, boundary_surface, boundary_surface_streaming, section_plane_origin,
+    section_plane_streaming, section_surface, tet_mesh_from_cells, tet_quality,
+    tet_quality_streaming,
 };
 
 #[derive(Debug, Clone, PartialEq)]

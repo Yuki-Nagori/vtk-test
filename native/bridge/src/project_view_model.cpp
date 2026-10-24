@@ -1212,8 +1212,9 @@ void ProjectViewModel::sync_activation_poll() {
 QString panta::bridge::ProjectViewModel::activeMeshLodStatus() const {
     if (!m_activeMesh || m_activeLodSourceTriangles == 0)
         return {};
-    return QStringLiteral(
-               "大网格：显示简化 LOD %1 面 / 源 %2 面；拾取坐标为近似值，诊断与导出不可用")
+    return QStringLiteral("大网格：显示简化 LOD %1 面 / 源 %2 面；拾取坐标为近似值。"
+                          "导出流式读取完整源资产（OBJ/PLY/VTK/VTP/VTU "
+                          "不焊接顶点）；表面质量诊断需完整驻留，不可用")
         .arg(m_activeMeshTriangles)
         .arg(m_activeLodSourceTriangles);
 }
@@ -1364,10 +1365,15 @@ void panta::bridge::ProjectViewModel::refresh_volume() {
     const auto info =
         panta::ffi::project_service_volume_summary(*m_service, m_activeDocumentId.toStdString());
     m_volumeAvailable = info.available;
-    m_volumeInfo = info.available ? QStringLiteral("体网格：%1 节点 / %2 四面体\n"
-                                                   "质量统计见“诊断网格”结果")
+    // 流式体网格（task 025）：单元未驻留，每次质量统计、切面与 VTU 导出都完整扫描资产。
+    const auto detail = info.streamed
+                            ? QStringLiteral("单元超过驻留阈值，未载入内存；质量统计、切面与 VTU "
+                                             "导出按需流式读取资产，每次需完整扫描")
+                            : QStringLiteral("质量统计见“诊断网格”结果");
+    m_volumeInfo = info.available ? QStringLiteral("体网格：%1 节点 / %2 四面体\n%3")
                                         .arg(info.node_count)
                                         .arg(info.tet_count)
+                                        .arg(detail)
                                   : QString();
     if (!m_volumeAvailable)
         m_sectionActive = false;

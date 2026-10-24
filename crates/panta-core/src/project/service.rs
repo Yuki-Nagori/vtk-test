@@ -29,6 +29,8 @@ pub struct ProjectService {
     pub(super) mesh_lod_sources: HashMap<String, u64>,
     /// 驻留网格来自体网格资产时的四面体数据（task 021）；显示网格为其外表面。
     pub(super) volume_meshes: HashMap<String, Arc<panta_mesh::TetMesh>>,
+    /// 流式激活的体网格（task 025）：单元不驻留，按需从资产读取；值为资产计数。
+    pub(super) streamed_volumes: HashMap<String, panta_mesh::VolumeStreamCounts>,
     pub(super) activation: Arc<crate::activation::ActivationCoordinator>,
     // 候选提交期间锁住工程元数据；Mesh 驻留和只读显示操作仍可继续。
     pub(super) pending_project: Option<super::command_job::PendingProjectOperation>,
@@ -91,6 +93,7 @@ impl ProjectService {
         self.mesh_cache.clear();
         self.mesh_lod_sources.clear();
         self.volume_meshes.clear();
+        self.streamed_volumes.clear();
         self.activation_attempts.clear();
         self.activation.advance_generation();
         self.reset_document_workspace();
@@ -159,7 +162,7 @@ impl ProjectService {
     }
 
     /// 已提交 Surface 资产的读取请求；校验清单索引但不访问文件系统。
-    fn activation_request(
+    pub(super) fn activation_request(
         &self,
         import_id: &str,
     ) -> Result<crate::activation::ActivationRequest, ProjectError> {
@@ -206,6 +209,16 @@ impl ProjectService {
         target: &Path,
     ) -> Result<panta_import::export::ExportFormat, ProjectError> {
         panta_import::export::detect_export_format(target).map_err(export_error)?;
+        // 驻留网格为显示 LOD 时缓存不是完整网格，改为流式读取资产（task 025）。
+        if let Some(
+            asset @ super::StreamedAsset {
+                kind: super::StreamedKind::Surface { .. },
+                ..
+            },
+        ) = self.streamed_asset_for_import(import_id)
+        {
+            return super::export_streamed_surface(&asset, target, &panta_mesh::Progress::new());
+        }
         let loaded;
         let mesh = match self.mesh_for_import(import_id) {
             Some(mesh) => mesh,
@@ -598,5 +611,6 @@ pub(super) fn export_error(error: panta_import::export::ExportError) -> ProjectE
         ExportError::TooLarge(limit) => ProjectError::ExportTooLarge(limit.to_owned()),
         ExportError::Cancelled => ProjectError::ExportCancelled,
         ExportError::Io(error) => ProjectError::ExportWriteFailed(error.to_string()),
+        ExportError::Source(error) => ProjectError::ExportSourceUnavailable(error.to_string()),
     }
 }

@@ -40,6 +40,8 @@ pub enum ProjectError {
     ExportWriteFailed(String),
     /// 宿主在写出完成前取消了导出；目标文件未被改动。
     ExportCancelled,
+    /// 流式读取完整网格资产失败：资产缺失、摘要与激活时不一致或块校验失败（task 025）。
+    StreamedAssetFailed(String),
 }
 
 impl ProjectError {
@@ -75,6 +77,7 @@ impl ProjectError {
             Self::ExportSourceUnavailable(_) => "project.export_source_unavailable",
             Self::ExportWriteFailed(_) => "project.export_write_failed",
             Self::ExportCancelled => "project.export_cancelled",
+            Self::StreamedAssetFailed(_) => "project.streamed_asset_failed",
         }
     }
 
@@ -106,6 +109,7 @@ impl ProjectError {
             Self::LocationCreateFailed(_)
             | Self::ImportAssetWriteFailed(_)
             | Self::ExportWriteFailed(_)
+            | Self::StreamedAssetFailed(_)
             | Self::Io(_) => "io",
         }
     }
@@ -139,6 +143,7 @@ impl ProjectError {
             | Self::ExportTooLarge(name)
             | Self::ExportSourceUnavailable(name)
             | Self::ExportWriteFailed(name)
+            | Self::StreamedAssetFailed(name)
             | Self::Io(name) => name.clone(),
             Self::UnsupportedSchema(schema) => schema.to_string(),
         }

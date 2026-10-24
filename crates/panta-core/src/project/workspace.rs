@@ -392,7 +392,10 @@ pub fn project_error_message(code: &str) -> &'static str {
         "animation.io_failed" => "读取序列目录失败。",
         "animation.frame_failed" => "该帧无法读取或解析。",
         "project.mesh_lod_only" => {
-            "该网格过大，当前仅加载了显示用简化网格（LOD）；质量诊断与导出需要完整网格，暂不支持。"
+            "该表面网格超过 LOD 阈值，当前只驻留显示用简化网格；表面质量诊断需要完整驻留网格，暂不支持（导出不受影响）。"
+        }
+        "project.streamed_asset_failed" => {
+            "无法流式读取完整网格资产：资产文件缺失、已被修改或校验失败，请重新打开该网格。"
         }
         _ => "无法完成工程操作。",
     }

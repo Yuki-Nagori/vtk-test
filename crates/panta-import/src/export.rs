@@ -48,6 +48,8 @@ pub enum ExportError {
     /// 宿主经 [`Progress::cancel`] 取消；临时文件已删除，目标未被改动。
     Cancelled,
     Io(io::Error),
+    /// 流式导出时源资产读取或校验失败（task 025）。
+    Source(panta_mesh::MeshAssetError),
 }
 
 impl Display for ExportError {
@@ -57,6 +59,7 @@ impl Display for ExportError {
             Self::TooLarge(limit) => write!(formatter, "mesh exceeds format limit: {limit}"),
             Self::Cancelled => write!(formatter, "export cancelled"),
             Self::Io(error) => write!(formatter, "{error}"),
+            Self::Source(error) => write!(formatter, "source asset: {error}"),
         }
     }
 }
@@ -184,7 +187,7 @@ fn estimated_bytes(mesh: &SurfaceMesh, format: ExportFormat) -> u64 {
 }
 
 /// 统计写出字节并映射到 `start`–99% 进度；取消时以 Interrupted 中止写出。
-struct ProgressWriter<'a, W: Write> {
+pub(crate) struct ProgressWriter<'a, W: Write> {
     inner: W,
     progress: &'a Progress,
     written: u64,
@@ -285,7 +288,7 @@ fn write_stl(mesh: &SurfaceMesh, writer: &mut impl Write) -> Result<(), ExportEr
     Ok(())
 }
 
-fn facet_normal(triangle: &[[f64; 3]; 3]) -> [f32; 3] {
+pub(crate) fn facet_normal(triangle: &[[f64; 3]; 3]) -> [f32; 3] {
     let [a, b, c] = triangle;
     let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
     let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
@@ -460,7 +463,7 @@ fn write_base64_block(
     Ok(())
 }
 
-fn base64(bytes: &[u8]) -> Vec<u8> {
+pub(crate) fn base64(bytes: &[u8]) -> Vec<u8> {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = Vec::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
@@ -481,6 +484,12 @@ fn base64(bytes: &[u8]) -> Vec<u8> {
 #[path = "export_tests.rs"]
 mod tests;
 
+#[path = "export_stream.rs"]
+mod stream;
+#[cfg(test)]
+pub(crate) use stream::Base64Probe;
+pub use stream::{export_surface_asset_with_progress, export_volume_asset_vtu};
+
 /// 体网格导出 VTU（ASCII，原始节点与线性四面体单元，坐标为毫米），原子替换目标（task 021）。
 /// 按估算字节报告 0–99% 进度，原子替换后到 100%。
 /// 取消时删除临时文件并返回 [`ExportError::Cancelled`]，目标文件不变。
@@ -489,18 +498,31 @@ pub fn export_tet_mesh_vtu(
     path: &Path,
     progress: &Progress,
 ) -> Result<(), ExportError> {
+    // ASCII：每节点约 3×20 字节，每单元连接/偏移/类型约 40 字节。
+    let estimate = mesh.nodes.len() as u64 * 60 + mesh.tets.len() as u64 * 40 + 512;
+    write_atomically(path, progress, estimate, |writer| {
+        write_tet_mesh_vtu(mesh, writer)
+    })
+}
+
+/// 先写同目录 `.partial` 临时文件再原子替换目标；按写出字节相对 `estimate` 报告 0–99% 进度，
+/// 取消（写出中断）映射为 [`ExportError::Cancelled`]，失败时删除临时文件。
+pub(crate) fn write_atomically(
+    path: &Path,
+    progress: &Progress,
+    estimate: u64,
+    write: impl FnOnce(&mut ProgressWriter<'_, BufWriter<File>>) -> Result<(), ExportError>,
+) -> Result<(), ExportError> {
     let temporary = temporary_path(path);
     let result = (|| {
-        // ASCII：每节点约 3×20 字节，每单元连接/偏移/类型约 40 字节。
-        let estimate = mesh.nodes.len() as u64 * 60 + mesh.tets.len() as u64 * 40 + 512;
         let mut writer = ProgressWriter {
             inner: BufWriter::with_capacity(1 << 20, File::create(&temporary)?),
             progress,
             written: 0,
-            estimate,
+            estimate: estimate.max(1),
             start: 0.0,
         };
-        write_tet_mesh_vtu(mesh, &mut writer).map_err(|error| match error {
+        write(&mut writer).map_err(|error| match error {
             ExportError::Io(io) if io.kind() == io::ErrorKind::Interrupted => {
                 ExportError::Cancelled
             }
