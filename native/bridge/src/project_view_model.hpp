@@ -5,6 +5,7 @@
 #pragma once
 
 #include "panta_ffi.h"
+#include <QColor>
 #include <QElapsedTimer>
 #include <QStringList>
 #include <QTimer>
@@ -94,6 +95,24 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     Q_PROPERTY(double sectionNormalY READ sectionNormalY NOTIFY volumeChanged)
     Q_PROPERTY(double sectionNormalZ READ sectionNormalZ NOTIFY volumeChanged)
     Q_PROPERTY(double sectionFraction READ sectionFraction NOTIFY volumeChanged)
+    /// 结果场（task 029）：活动体网格的字段摘要列表，每项含 name / association（node、cell）/
+    /// components / units / missing / hasRange / min / max / sectionable。
+    Q_PROPERTY(QVariantList resultFields READ resultFields NOTIFY volumeChanged)
+    Q_PROPERTY(QString sectionFieldName READ sectionFieldName NOTIFY fieldLegendChanged)
+    Q_PROPERTY(
+        QString sectionFieldAssociation READ sectionFieldAssociation NOTIFY fieldLegendChanged)
+    Q_PROPERTY(int sectionFieldComponent READ sectionFieldComponent NOTIFY fieldLegendChanged)
+    /// 色标（视口矩形外显示）：最近一次完成的场剖面的标题、单位、有限值范围与缺失顶点数。
+    Q_PROPERTY(bool fieldLegendVisible READ fieldLegendVisible NOTIFY fieldLegendChanged)
+    Q_PROPERTY(QString fieldLegendTitle READ fieldLegendTitle NOTIFY fieldLegendChanged)
+    Q_PROPERTY(QString fieldLegendUnits READ fieldLegendUnits NOTIFY fieldLegendChanged)
+    Q_PROPERTY(double fieldLegendMin READ fieldLegendMin NOTIFY fieldLegendChanged)
+    Q_PROPERTY(double fieldLegendMax READ fieldLegendMax NOTIFY fieldLegendChanged)
+    Q_PROPERTY(bool fieldLegendHasRange READ fieldLegendHasRange NOTIFY fieldLegendChanged)
+    Q_PROPERTY(double fieldMissingVertices READ fieldMissingVertices NOTIFY fieldLegendChanged)
+    /// 与视口查找表同源的色标控制点：[{position, color}]，color 为 QColor。
+    Q_PROPERTY(QVariantList fieldLegendStops READ fieldLegendStops CONSTANT)
+    Q_PROPERTY(QString fieldMissingColor READ fieldMissingColor CONSTANT)
 
   public:
     explicit ProjectViewModel(QObject* parent = nullptr);
@@ -273,10 +292,29 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     [[nodiscard]] double sectionNormalY() const { return m_sectionNormal[1]; }
     [[nodiscard]] double sectionNormalZ() const { return m_sectionNormal[2]; }
     [[nodiscard]] double sectionFraction() const { return m_sectionFraction; }
+    /// 选择切面着色字段（task 029）：空名称恢复单色切面；`component` 为 -1 取模、0..2 取分量。
+    /// 字段不存在、不可剖面或分量越界时返回 false 并设置 `project.command_invalid`。
+    Q_INVOKABLE bool setSectionField(const QString& name, const QString& association,
+                                     int component);
+    [[nodiscard]] QVariantList resultFields() const { return m_resultFields; }
+    [[nodiscard]] QString sectionFieldName() const { return m_sectionFieldName; }
+    [[nodiscard]] QString sectionFieldAssociation() const { return m_sectionFieldAssociation; }
+    [[nodiscard]] int sectionFieldComponent() const { return m_sectionFieldComponent; }
+    [[nodiscard]] bool fieldLegendVisible() const { return m_fieldLegendVisible; }
+    [[nodiscard]] QString fieldLegendTitle() const { return m_fieldLegendTitle; }
+    [[nodiscard]] QString fieldLegendUnits() const { return m_fieldLegendUnits; }
+    [[nodiscard]] double fieldLegendMin() const { return m_fieldLegendMin; }
+    [[nodiscard]] double fieldLegendMax() const { return m_fieldLegendMax; }
+    [[nodiscard]] bool fieldLegendHasRange() const { return m_fieldLegendHasRange; }
+    [[nodiscard]] double fieldMissingVertices() const { return m_fieldMissingVertices; }
+    [[nodiscard]] static QVariantList fieldLegendStops();
+    /// `#rrggbb`；QML 的 color 属性直接接受该字符串。
+    [[nodiscard]] static QString fieldMissingColor();
 
   signals:
     void animationChanged();
     void volumeChanged();
+    void fieldLegendChanged();
     void largeMeshLimitsChanged();
     void errorChanged();
     void projectOperationPendingChanged();
@@ -392,6 +430,23 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     bool m_sectionActive = false;
     std::array<double, 3> m_sectionNormal{0.0, 0.0, 1.0};
     double m_sectionFraction = 0.5;
+    QVariantList m_resultFields;
+    QString m_sectionFieldName;
+    QString m_sectionFieldAssociation;
+    int m_sectionFieldComponent = -1;
+    bool m_fieldLegendVisible = false;
+    QString m_fieldLegendTitle;
+    QString m_fieldLegendUnits;
+    double m_fieldLegendMin = 0.0;
+    double m_fieldLegendMax = 0.0;
+    bool m_fieldLegendHasRange = false;
+    double m_fieldMissingVertices = 0.0;
+    /// 清除字段选择与色标并发出 fieldLegendChanged。
+    void clear_section_field();
+    void hide_field_legend();
+    void refresh_result_fields();
+    [[nodiscard]] QVariantMap find_result_field(const QString& name,
+                                                const QString& association) const;
     std::optional<rust::Box<panta::ffi::AnimationSequence>> m_animation;
     QTimer m_animationPoll;
     QElapsedTimer m_animationClock;

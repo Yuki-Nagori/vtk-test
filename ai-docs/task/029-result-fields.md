@@ -1,7 +1,7 @@
 # 029 — 结果场：导入、存储、分块携带、切面插值与视口上色
 
-- 状态：in-progress
-- 阶段：PR 1（#33）、PR 2a（#34）已合并；PR 2b/4（应用接入：派生分块带场、工程场剖面 API）实施中
+- 状态：done
+- 阶段：PR 1（#33）、PR 2a（#34）、PR 2b（#35）已合并；PR 3（显示：上色、字段选择、色标）随本 PR 合并后完成。GUI / GPU 实机验收待人工
 - 依赖：[028](028-out-of-core-rollout.md)、[021](021-volume-mesh.md)
 - 优先级：P1
 - 负责人：Grok Bot
@@ -70,8 +70,8 @@
 - [x] 导入后重开工程可列出字段并读取数值；清单中的 results 引用经路径、版本、摘要校验；sidecar 与网格摘要 / 计数不符时拒绝。
 - [x] PR 2a：`.pchunk` v2 携带结果场；驻留 `section_surface_field` 与分块 `fine_section_field` 几何与无场剖面位级一致、数值集合一致；节点场线性插值误差 < 1e-9，单元场每三角形三值相等，NaN 传播；块级范围落在全局范围内；同场再次剖面只多 1 次合并读；损坏的场值块只让场剖面失败；从资产 + `ResultAssetReader` 构建与驻留构建字节一致。
 - [x] PR 2b：激活请求携带 `.presult` 引用；派生文件名含结果摘要并带场构建，结果 sidecar 不符时按无场构建；`section_plane_field` / `streamed_section_plane_field` 几何与无场切面位级一致、两路数值集合一致；无派生文件回退、字段不存在、参数非法都返回 CommandInvalid。字段诊断：字段级摘要沿用 PR 1 `result_fields_for_import`（缺失数、范围），切面级用 `FieldSection::value_range` / `missing_vertices`，由 PR 3 显示。
-- [ ] PR 3：视口上色、字段选择、色标（GUI / GPU 实机验收）。
-- [ ] 每次 commit 的代码、测试、文档和 task 自洽；索引状态一致。
+- [x] PR 3：FFI 字段列表（仅读 sidecar 头）与场切面（驻留 / 分块）；VTK 按共享 Cool to Warm 控制点上色，缺失值黄色；QML 字段 / 分量选择与视口外色标（范围、单位、缺失顶点数）；非法字段、关联、分量被拒绝且不改变选择；驻留路径同场重复切面复用缓存（`Arc::ptr_eq`）。自动测试在 offscreen / 无 GPU 环境下通过，**实机 GUI / GPU 观感验收未做**（见下）。
+- [x] 每次 commit 的代码、测试、文档和 task 自洽；索引状态一致。
 
 ## 验证计划与结果
 
@@ -89,6 +89,10 @@
 
 | 2026-10-24 | PR 2b：`cargo test -p panta-core --lib derived`、`results` | 带场派生、场剖面一致、回退与错误路径 | 3 passed / 5 passed |
 | 2026-10-24 | PR 2b：`cargo quality`、`cargo test --locked --workspace`、offscreen 启动 | 全部通过 | 见 PR CI |
+| 2026-10-24 | PR 3：`cargo test -p panta-core --lib results`、`cargo test -p panta-ffi field_sections` | 单字段缓存、换场替换、字段列表、驻留场切面、非法请求、取消、无体网格 | 5 passed / 1 passed |
+| 2026-10-24 | PR 3：CTest `Visualization.PrimitiveScene`、`ProjectViewModelTest.ColorsSectionsByResultFieldAndShowsLegend` | 查找表端点 / NaN 色、范围扩展、标量数组；字段选择校验、色标内容、换分量、清除与关闭切面隐藏色标 | Passed |
+| 2026-10-24 | PR 3：`cargo quality`、`cargo test --locked --workspace`、offscreen 启动 | 全部通过 | 格式 / Clippy / qmllint 无告警；CTest 69/69；offscreen 124（预期） |
+| 待人工 | 实机 GUI + GPU（Windows / macOS / Linux 桌面） | 切面颜色与色标渐变一致、缺失值黄色、拖动切面不卡顿、色标不遮挡视口 | 未验证（本环境无显示器 / GPU） |
 
 ## 风险与回退
 
@@ -104,6 +108,14 @@
   - 派生文件名 `<资产摘要>-<结果摘要>.pchunk`，结果文件变化即换文件，不在旧文件上追加；同一资产的无场 / 带场文件在 LRU（保留 4 个）中各占一位。
   - 结果 sidecar 打不开、摘要或计数不符时按无场构建，激活不失败（结果场是可选数据）；构建内存估计加上最大单字段体积。
   - 逐次流式回退（无派生文件）不做场剖面：每次切面都要整字段读取，亿级下不可接受；返回 CommandInvalid，由 UI 退回无场切面。
+- 2026-10-24（PR 3）决策（保守）：
+  - 色表只定义一次（`field_color_stops`，ParaView Cool to Warm 三个控制点，RGB 线性插值），VTK 查找表与 QML 色标都从它取值；缺失值（NaN）黄色，超范围夹紧。
+  - 驻留场切面：首次整字段读一次，服务级只缓存一个字段（按结果摘要 + 名称 + 关联为键），换字段先释放旧字段再读；拖动切面不重复读文件。
+  - 字段列表在 GUI 线程只读 sidecar 头（KiB 级）；`sectionable` 要求 1 / 3 分量，且体网格驻留或派生分块含该字段。
+  - 显示标量传 f32，范围保持 f64；常量场范围按 ±max(|v|·1e-6, 0.5) 扩展，避免零宽查找表。
+  - 不开启「映射前插值标量」（InterpolateScalarsBeforeMapping），避免 WebGPU 纹理路径风险；代价是三角形内颜色按顶点 RGB 线性过渡，需实机确认观感。
+  - 色标放在侧栏切面面板（视口矩形之外）；关闭切面或切换文档 / 打开动画时隐藏。
+  - 无独立 subagent 评审条件，由实现者自检并以测试覆盖失败路径。
 - 2026-10-24（PR 2a）决策（保守）：
   - 结果场嵌入 `.pchunk` 并升级 FORMAT_VERSION 到 2，不另建分块场文件：只打开一个文件，块表一次读入；v1 文件打开失败，应用派生缓存会自动重建（派生缓存可丢弃，不需迁移）。
   - 场段按字段排列：每个字段先所有块的内部值块，再所有块的外表面值块（都按 Morton 序）。外表面值连续存放，选中一个场只需一次合并读；内部值每次剖面按命中块合并读取（相邻 1 MiB 内合并、单次 ≤ 64 MiB），不进 LRU。
@@ -114,4 +126,4 @@
 
 ## 完成摘要
 
-未完成。
+四个 PR 完成结果场全链路：导入保留 VTU / 旧版 VTK 节点 / 单元数组到 `.presult`；`.pchunk` v2 携带场值与块级范围；工程层驻留 / 分块场剖面；视口按字段上色并显示色标。遗留：实机 GUI / GPU 观感验收；仅支持 1 / 3 分量；合成基准场压缩率偏乐观；逐次流式回退不支持场剖面；无映射前标量插值。

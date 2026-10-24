@@ -42,6 +42,8 @@ pub struct ProjectService {
     pub(super) import_request: u64,
     pub(super) execution: crate::execution::ProjectExecution,
     pub(super) workspace: DocumentWorkspace,
+    /// 结果场单字段缓存（task 029）：驻留场剖面拖动时复用。
+    pub(super) result_field_cache: super::results::ResultFieldCache,
 }
 
 impl ProjectService {

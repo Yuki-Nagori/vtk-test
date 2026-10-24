@@ -2,11 +2,14 @@
 
 #include "surface_mesh.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <memory>
 #include <vtkActor.h>
 #include <vtkCamera.h>
+#include <vtkColorTransferFunction.h>
 #include <vtkNew.h>
+#include <vtkPointData.h>
 #include <vtkPolyData.h>
 #include <vtkPolyDataMapper.h>
 #include <vtkProperty.h>
@@ -41,6 +44,31 @@ void configure_default_camera(vtkWebGPURenderer* renderer, vtkActor* actor, doub
     renderer->ResetCameraClippingRange();
 }
 
+std::array<double, 2> field_display_range(double minimum, double maximum) {
+    if (!std::isfinite(minimum) || !std::isfinite(maximum) || maximum < minimum)
+        return {0.0, 1.0};
+    if (maximum > minimum)
+        return {minimum, maximum};
+    // 常值场：扩成非零区间，颜色落在色标中段。
+    const double half = std::max(std::abs(minimum) * 1e-6, 0.5);
+    return {minimum - half, maximum + half};
+}
+
+void configure_field_colors(vtkPolyDataMapper* mapper, const SurfaceMeshSnapshot& mesh) {
+    const auto [low, high] = field_display_range(mesh.scalar_min, mesh.scalar_max);
+    vtkNew<vtkColorTransferFunction> colors;
+    colors->SetColorSpaceToRGB();
+    for (const auto& stop : field_color_stops)
+        colors->AddRGBPoint(low + (high - low) * stop.position, stop.red, stop.green, stop.blue);
+    colors->SetNanColor(field_missing_color[0], field_missing_color[1], field_missing_color[2]);
+    colors->ClampingOn();
+    mapper->SetLookupTable(colors);
+    mapper->SetScalarModeToUsePointData();
+    mapper->SetColorModeToMapScalars();
+    mapper->SetScalarRange(low, high);
+    mapper->ScalarVisibilityOn();
+}
+
 void replace_primitive_geometry(vtkActor* actor, vtkRenderWindow* window,
                                 const std::shared_ptr<const SurfaceMeshSnapshot>& mesh) {
     auto* previous_mapper = actor->GetMapper();
@@ -56,7 +84,12 @@ void replace_primitive_geometry(vtkActor* actor, vtkRenderWindow* window,
     vtkNew<vtkPolyDataMapper> mapper;
     vtkSmartPointer<vtkPolyData> data = make_surface_poly_data(*mesh);
     mapper->SetInputData(data.GetPointer());
-    mapper->ScalarVisibilityOff();
+    const bool colored = data->GetPointData()->GetScalars() != nullptr;
+    if (colored) {
+        configure_field_colors(mapper, *mesh);
+    } else {
+        mapper->ScalarVisibilityOff();
+    }
     actor->SetMapper(mapper);
     actor->SetOrientation(0.0, 0.0, 0.0);
     auto* material = actor->GetProperty();

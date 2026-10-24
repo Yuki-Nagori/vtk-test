@@ -3,6 +3,8 @@
 
 use super::{ProjectError, ProjectService};
 use panta_mesh::{FieldAssociation, FieldSummary, ResultAssetReader, ResultField};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 impl ProjectService {
     /// 导入记录携带的结果场摘要（只读 sidecar 头部与字段表）；无结果场返回空表。
@@ -26,16 +28,7 @@ impl ProjectService {
         let mut reader = self.open_result_asset(import_id)?.ok_or_else(|| {
             ProjectError::CommandInvalid("import has no result fields".to_owned())
         })?;
-        let index = reader
-            .summaries()
-            .iter()
-            .position(|field| field.name == name && field.association == association)
-            .ok_or_else(|| {
-                ProjectError::CommandInvalid(format!(
-                    "result field {name} ({}) not found",
-                    association.as_str()
-                ))
-            })?;
+        let index = field_index(&reader, name, association)?;
         reader.read_field(index).map_err(result_error)
     }
 
@@ -43,6 +36,17 @@ impl ProjectService {
         &self,
         import_id: &str,
     ) -> Result<Option<ResultAssetReader>, ProjectError> {
+        self.result_field_source(import_id)?
+            .map(|source| source.open())
+            .transpose()
+    }
+
+    /// 结果 sidecar 的只读句柄（不做文件 IO）：显示适配在后台线程打开、核对并读字段。
+    /// 句柄共享服务的单字段缓存，拖动切面时同一字段不重复整字段读取。
+    pub fn result_field_source(
+        &self,
+        import_id: &str,
+    ) -> Result<Option<ResultFieldSource>, ProjectError> {
         let state = self.current.as_ref().ok_or(ProjectError::NoProject)?;
         let record = state
             .imports
@@ -63,15 +67,6 @@ impl ProjectService {
             .parent()
             .ok_or_else(|| ProjectError::Io("project has no package directory".to_owned()))?;
         let path = super::service::resolve_asset_path(root, &results.relative_path)?;
-        let reader = ResultAssetReader::open(&path).map_err(result_error)?;
-        if reader.digest() != results.digest
-            || reader.mesh_digest() != asset.digest
-            || reader.summaries().len() != results.field_count as usize
-        {
-            return Err(ProjectError::ManifestInvalid(
-                "result asset does not match its mesh asset".to_owned(),
-            ));
-        }
         let counts = self
             .volume_meshes
             .get(import_id)
@@ -81,15 +76,104 @@ impl ProjectService {
                     .get(import_id)
                     .map(|counts| (counts.nodes, counts.tets))
             });
-        if let Some((nodes, cells)) = counts
+        Ok(Some(ResultFieldSource {
+            path,
+            digest: results.digest.clone(),
+            mesh_digest: asset.digest.clone(),
+            field_count: results.field_count as usize,
+            counts,
+            cache: self.result_field_cache.clone(),
+        }))
+    }
+}
+
+/// 服务级单字段缓存：键为（结果摘要、字段名、关联）。
+pub(super) type ResultFieldCache = Arc<Mutex<Option<CachedField>>>;
+type CachedField = (String, String, FieldAssociation, Arc<ResultField>);
+
+/// 结果 sidecar 的定位与核对参数；`open` / `read_field` 做文件 IO，可在任意线程调用。
+#[derive(Clone, Debug)]
+pub struct ResultFieldSource {
+    path: PathBuf,
+    digest: String,
+    mesh_digest: String,
+    field_count: usize,
+    counts: Option<(usize, usize)>,
+    cache: ResultFieldCache,
+}
+
+impl ResultFieldSource {
+    /// 打开 sidecar 并核对文件摘要、绑定网格摘要、字段数与节点 / 单元计数。
+    pub fn open(&self) -> Result<ResultAssetReader, ProjectError> {
+        let reader = ResultAssetReader::open(&self.path).map_err(result_error)?;
+        if reader.digest() != self.digest
+            || reader.mesh_digest() != self.mesh_digest
+            || reader.summaries().len() != self.field_count
+        {
+            return Err(ProjectError::ManifestInvalid(
+                "result asset does not match its mesh asset".to_owned(),
+            ));
+        }
+        if let Some((nodes, cells)) = self.counts
             && (reader.node_count() != nodes as u64 || reader.cell_count() != cells as u64)
         {
             return Err(ProjectError::ManifestInvalid(
                 "result asset counts do not match the volume mesh".to_owned(),
             ));
         }
-        Ok(Some(reader))
+        Ok(reader)
     }
+
+    /// 读取一个字段（整字段顺序读）；与上次读取的字段相同时直接返回缓存。
+    pub fn read_field(
+        &self,
+        name: &str,
+        association: FieldAssociation,
+    ) -> Result<Arc<ResultField>, ProjectError> {
+        if let Some(field) = self.cached(name, association) {
+            return Ok(field);
+        }
+        // 先放下旧字段，避免新旧两份同时驻留。
+        if let Ok(mut cache) = self.cache.lock() {
+            *cache = None;
+        }
+        let mut reader = self.open()?;
+        let index = field_index(&reader, name, association)?;
+        let field = Arc::new(reader.read_field(index).map_err(result_error)?);
+        if let Ok(mut cache) = self.cache.lock() {
+            *cache = Some((
+                self.digest.clone(),
+                name.to_owned(),
+                association,
+                field.clone(),
+            ));
+        }
+        Ok(field)
+    }
+
+    fn cached(&self, name: &str, association: FieldAssociation) -> Option<Arc<ResultField>> {
+        let cache = self.cache.lock().ok()?;
+        let (digest, cached_name, cached_association, field) = cache.as_ref()?;
+        (*digest == self.digest && cached_name == name && *cached_association == association)
+            .then(|| field.clone())
+    }
+}
+
+fn field_index(
+    reader: &ResultAssetReader,
+    name: &str,
+    association: FieldAssociation,
+) -> Result<usize, ProjectError> {
+    reader
+        .summaries()
+        .iter()
+        .position(|field| field.name == name && field.association == association)
+        .ok_or_else(|| {
+            ProjectError::CommandInvalid(format!(
+                "result field {name} ({}) not found",
+                association.as_str()
+            ))
+        })
 }
 
 fn result_error(error: panta_mesh::MeshAssetError) -> ProjectError {
@@ -188,6 +272,26 @@ mod tests {
                 .flatten()
                 .all(|value| *value == 1.0 || *value == 2.0)
         );
+        // 显示句柄共享单字段缓存：同字段复用，换字段后旧字段被替换。
+        let source = service
+            .result_field_source(&record.id)?
+            .ok_or("result source")?;
+        let velocity = source.read_field("velocity", FieldAssociation::Node)?;
+        let again = source.read_field("velocity", FieldAssociation::Node)?;
+        assert!(std::sync::Arc::ptr_eq(&velocity, &again));
+        assert_eq!(
+            source
+                .read_field("material", FieldAssociation::Cell)?
+                .values,
+            [1.0, 2.0]
+        );
+        let reread = source.read_field("velocity", FieldAssociation::Node)?;
+        assert!(!std::sync::Arc::ptr_eq(&velocity, &reread));
+        assert_eq!(velocity.values, reread.values);
+        assert!(matches!(
+            source.read_field("missing", FieldAssociation::Node),
+            Err(ProjectError::CommandInvalid(_))
+        ));
 
         // sidecar 被改写（摘要不符）时拒绝读取，网格本身不受影响。
         let results = service

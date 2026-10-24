@@ -51,6 +51,7 @@ mod import;
 mod mesh_assets;
 mod preview;
 mod results;
+pub use results::ResultFieldSource;
 mod volume;
 pub use volume::{
     SharedChunks, StreamedAsset, StreamedKind, export_streamed_surface, export_streamed_volume_vtu,
