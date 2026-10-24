@@ -154,7 +154,7 @@ fn clip_boundary(
 }
 
 /// 与平面相交的四面体截面多边形（三角扇）。
-fn section_polygon(
+pub(crate) fn section_polygon(
     nodes: &[[f64; 3]],
     distance: &[f64],
     tet: &Tetrahedron,
@@ -391,7 +391,7 @@ pub fn tet_quality(mesh: &TetMesh, progress: &crate::Progress) -> Option<TetQual
 }
 
 /// 返回（最小二面角°，纵横比）；退化单元为（0，∞）。
-fn single_quality(p: [[f64; 3]; 4]) -> (f64, f64) {
+pub(crate) fn single_quality(p: [[f64; 3]; 4]) -> (f64, f64) {
     let normals = OUTWARD_FACES.map(|[a, b, c]| cross(sub(p[b], p[a]), sub(p[c], p[a])));
     let areas = normals.map(|n| dot(n, n).sqrt() / 2.0);
     let (a, b, c) = (sub(p[1], p[0]), sub(p[2], p[0]), sub(p[3], p[0]));
@@ -425,7 +425,7 @@ fn signed_volume6(nodes: &[[f64; 3]], cell: [MeshIndex; 4]) -> f64 {
     dot(sub(b, a), cross(sub(c, a), sub(d, a)))
 }
 
-fn clip_triangle(corners: [([f64; 3], f64); 3]) -> Vec<[f64; 3]> {
+pub(crate) fn clip_triangle(corners: [([f64; 3], f64); 3]) -> Vec<[f64; 3]> {
     let mut output = Vec::with_capacity(4);
     for index in 0..3 {
         let (point, distance) = corners[index];
@@ -446,7 +446,7 @@ fn lerp_on_plane(a: [f64; 3], da: f64, b: [f64; 3], db: f64) -> [f64; 3] {
 }
 
 /// 截面点按绕 `normal` 的逆时针排列，使扇形三角形法向沿 `normal`。
-fn order_around(points: &mut [[f64; 3]], normal: [f64; 3]) {
+pub(crate) fn order_around(points: &mut [[f64; 3]], normal: [f64; 3]) {
     if points.len() < 3 {
         return;
     }
@@ -475,7 +475,7 @@ fn order_around(points: &mut [[f64; 3]], normal: [f64; 3]) {
     }
 }
 
-fn fan(polygon: &[[f64; 3]], output: &mut Vec<[[f64; 3]; 3]>) {
+pub(crate) fn fan(polygon: &[[f64; 3]], output: &mut Vec<[[f64; 3]; 3]>) {
     for index in 1..polygon.len().saturating_sub(1) {
         let triangle = [polygon[0], polygon[index], polygon[index + 1]];
         let area = cross(sub(triangle[1], triangle[0]), sub(triangle[2], triangle[0]));
@@ -485,11 +485,11 @@ fn fan(polygon: &[[f64; 3]], output: &mut Vec<[[f64; 3]; 3]>) {
     }
 }
 
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+pub(crate) fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+pub(crate) fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
         a[2] * b[0] - a[0] * b[2],
@@ -497,7 +497,7 @@ fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     ]
 }
 
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+pub(crate) fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     std::array::from_fn(|axis| a[axis] - b[axis])
 }
 
