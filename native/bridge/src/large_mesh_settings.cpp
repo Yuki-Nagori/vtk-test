@@ -1,4 +1,5 @@
-/// 大网格激活设置（task 026）：QSettings 持久化，校验与生效在 Rust。
+/// 大网格激活设置（task 026 / 028）：QSettings 持久化，校验与生效在 Rust；
+/// 另负责派生分块缓存目录与可用物理内存的宿主侧查询。
 #include "panta_ffi.h"
 #include "project_view_model.hpp"
 #include <QDir>
@@ -10,6 +11,8 @@
 #include <cstdint>
 #include <optional>
 #include <panta/qt_adapter/standard_paths.hpp>
+#include <panta/qt_adapter/system_memory.hpp>
+#include <string>
 
 namespace panta::bridge {
 
@@ -18,6 +21,8 @@ namespace {
 constexpr auto kSurfaceTrianglesKey = "large_mesh/surface_triangles";
 constexpr auto kSurfaceBudgetKey = "large_mesh/surface_budget";
 constexpr auto kVolumeCellsKey = "large_mesh/volume_cells";
+constexpr auto kVolumeModeKey = "large_mesh/volume_mode";
+constexpr auto kChunkCacheKey = "large_mesh/chunk_cache_mib";
 
 /// QML 数值为 double：只接受有限、非负的整数（< 2^53，精确可表示）。
 std::optional<std::uint64_t> to_count(double value) {
@@ -47,12 +52,22 @@ void ProjectViewModel::loadLargeMeshLimits() {
     bool ok_triangles = false;
     bool ok_budget = false;
     bool ok_cells = false;
+    bool ok_mode = true;
+    bool ok_cache = true;
+    // task 026 写出的文件没有模式与块缓存键：沿用默认值。
+    const auto defaults = panta::ffi::default_large_mesh_limits();
     const panta::ffi::LargeMeshLimits limits{
         settings.value(QLatin1String(kSurfaceTrianglesKey)).toULongLong(&ok_triangles),
         settings.value(QLatin1String(kSurfaceBudgetKey)).toULongLong(&ok_budget),
-        settings.value(QLatin1String(kVolumeCellsKey)).toULongLong(&ok_cells)};
+        settings.value(QLatin1String(kVolumeCellsKey)).toULongLong(&ok_cells),
+        settings.contains(QLatin1String(kVolumeModeKey))
+            ? settings.value(QLatin1String(kVolumeModeKey)).toUInt(&ok_mode)
+            : defaults.volume_mode,
+        settings.contains(QLatin1String(kChunkCacheKey))
+            ? settings.value(QLatin1String(kChunkCacheKey)).toULongLong(&ok_cache)
+            : defaults.chunk_cache_mib};
     // 读到非法值时保持 Rust 默认值，不报错（持久化文件可能被手工改坏）。
-    if (ok_triangles && ok_budget && ok_cells)
+    if (ok_triangles && ok_budget && ok_cells && ok_mode && ok_cache)
         static_cast<void>(panta::ffi::project_service_set_large_mesh_limits(*m_service, limits));
 }
 
@@ -71,15 +86,27 @@ double ProjectViewModel::volumeStreamCells() const {
         panta::ffi::project_service_large_mesh_limits(*m_service).volume_cells);
 }
 
+int ProjectViewModel::volumeMode() const {
+    return static_cast<int>(panta::ffi::project_service_large_mesh_limits(*m_service).volume_mode);
+}
+
+double ProjectViewModel::chunkCacheMib() const {
+    return static_cast<double>(
+        panta::ffi::project_service_large_mesh_limits(*m_service).chunk_cache_mib);
+}
+
 bool ProjectViewModel::setLargeMeshLimits(double surfaceTriangles, double surfaceBudget,
-                                          double volumeCells) {
+                                          double volumeCells, int volumeMode,
+                                          double chunkCacheMib) {
     const auto triangles = to_count(surfaceTriangles);
     const auto budget = to_count(surfaceBudget);
     const auto cells = to_count(volumeCells);
-    if (!triangles || !budget || !cells)
+    const auto cache = to_count(chunkCacheMib);
+    if (!triangles || !budget || !cells || !cache || volumeMode < 0)
         return fail(QStringLiteral("project.lod_settings_invalid"), QStringLiteral("validation"),
                     QStringLiteral("not a non-negative integer"));
-    const panta::ffi::LargeMeshLimits limits{*triangles, *budget, *cells};
+    const panta::ffi::LargeMeshLimits limits{*triangles, *budget, *cells,
+                                             static_cast<std::uint32_t>(volumeMode), *cache};
     const auto error = panta::ffi::project_service_set_large_mesh_limits(*m_service, limits);
     if (!error.code.empty())
         return fail(error);
@@ -92,6 +119,9 @@ bool ProjectViewModel::setLargeMeshLimits(double surfaceTriangles, double surfac
                           QVariant::fromValue(static_cast<qulonglong>(*budget)));
         settings.setValue(QLatin1String(kVolumeCellsKey),
                           QVariant::fromValue(static_cast<qulonglong>(*cells)));
+        settings.setValue(QLatin1String(kVolumeModeKey), volumeMode);
+        settings.setValue(QLatin1String(kChunkCacheKey),
+                          QVariant::fromValue(static_cast<qulonglong>(*cache)));
         settings.sync();
     }
     emit largeMeshLimitsChanged();
@@ -108,6 +138,22 @@ void ProjectViewModel::resetLargeMeshLimits() {
         settings.sync();
     }
     emit largeMeshLimitsChanged();
+}
+
+void ProjectViewModel::configureDerivedChunkCache() {
+    // 派生文件可随时重建，放在缓存目录；目录由 Rust 在首次构建时创建。
+    const QString directory =
+        panta::qt_adapter::standard_location(panta::qt_adapter::StandardLocation::Cache);
+    const std::string path =
+        directory.isEmpty()
+            ? std::string()
+            : QDir(directory).filePath(QStringLiteral("volume-chunks")).toStdString();
+    panta::ffi::project_service_set_derived_chunk_dir(*m_service, path);
+}
+
+void ProjectViewModel::refreshAvailableMemory() {
+    panta::ffi::project_service_set_available_memory(
+        *m_service, panta::qt_adapter::available_physical_memory());
 }
 
 } // namespace panta::bridge

@@ -27,6 +27,12 @@
 #include <limits>
 #include <windows.h>
 #endif
+#if defined(__GLIBC__) || defined(__linux__)
+#include <cstdlib>
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
+#endif
 #ifdef PANTA_ENABLE_BRIDGE_MODULE
 
 Q_IMPORT_QML_PLUGIN(Panta_BridgePlugin)
@@ -82,9 +88,26 @@ void write_stderr_utf8(std::string_view message) {
     (void)std::fwrite(message.data(), sizeof(char), message.size(), stderr);
 }
 
+/// 限制 glibc malloc arena 数（task 028）。
+///
+/// 分块读取与 Rayon 工作线程各自分配 MiB 级缓冲，glibc 默认每核最多 8 个 arena，
+/// 释放后的块留在各 arena 里，RSS 长期远高于实际占用。上限 2 是低风险折中：
+/// 分配器竞争对本应用的单次大块分配影响很小。用户显式设置了 MALLOC_ARENA_MAX 时尊重环境变量。
+/// Windows（系统堆）与 macOS（libmalloc）不受影响，这里不做任何事。
+void limit_malloc_arenas() {
+#ifdef __GLIBC__
+    if (std::getenv("MALLOC_ARENA_MAX") == nullptr) {
+        // 失败只意味着保留 glibc 默认行为，无需报告。
+        static_cast<void>(mallopt(M_ARENA_MAX, 2));
+    }
+#endif
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
+    // 必须早于任何工作线程创建（task 028）。
+    limit_malloc_arenas();
     // 原生崩溃此前控制台零输出（任务 047，Rust 实现 panta_foundation::crash）：
     // 先于一切逻辑安装；失败直接写 stderr，此时 Qt 应用尚未创建。
     try {

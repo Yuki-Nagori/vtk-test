@@ -2,6 +2,7 @@
 //! 命令作用于共享 `Arc<TetMesh>` 快照，可在宿主后台线程执行（task 022）。
 
 use super::{ProjectError, ProjectService};
+use panta_mesh::chunked::{ChunkError, ChunkedVolume};
 use panta_mesh::{
     Progress, SurfaceAssetChunks, SurfaceMesh, TetMesh, TetQuality, VolumeAssetChunks,
     VolumeStreamCounts, VolumeStreamError,
@@ -36,7 +37,31 @@ pub struct StreamedAsset {
     pub path: PathBuf,
     pub digest: String,
     pub kind: StreamedKind,
+    /// 激活时打开的派生分块文件（task 028）：切面与质量按需读块；`None` 时逐次流式扫描 v3 资产。
+    pub chunks: Option<SharedChunks>,
 }
+
+/// 共享的分块体网格句柄；相等性按同一打开实例判断。
+#[derive(Clone)]
+pub struct SharedChunks(pub Arc<ChunkedVolume>);
+
+impl std::fmt::Debug for SharedChunks {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SharedChunks")
+            .field("tets", &self.0.tet_count())
+            .field("reader", &self.0.reader_kind())
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for SharedChunks {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for SharedChunks {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamedKind {
@@ -62,10 +87,19 @@ impl ProjectService {
         let path =
             super::service::resolve_asset_path(&request.project_root, &request.relative_path)
                 .ok()?;
+        let chunks = match kind {
+            StreamedKind::Volume(_) => self
+                .chunked_volumes
+                .get(import_id)
+                .cloned()
+                .map(SharedChunks),
+            StreamedKind::Surface { .. } => None,
+        };
         Some(StreamedAsset {
             path,
             digest: request.expected_digest,
             kind,
+            chunks,
         })
     }
 }
@@ -123,17 +157,31 @@ pub fn export_streamed_volume_vtu(
         .map_err(super::service::export_error)
 }
 
+fn chunk_error(error: ChunkError) -> ProjectError {
+    match error {
+        ChunkError::Invalid(detail) => ProjectError::CommandInvalid(detail),
+        other => ProjectError::StreamedAssetFailed(format!("derived chunk file: {other}")),
+    }
+}
+
 /// 流式体网格质量统计（结果与驻留统计一致）；取消返回 `Ok(None)`。
+/// 有派生分块文件时按块并行统计并缓存每块结果（task 028），否则顺序扫描 v3 资产。
 pub fn streamed_volume_quality(
     asset: &StreamedAsset,
     progress: &Progress,
 ) -> Result<Option<TetQuality>, ProjectError> {
+    if let Some(SharedChunks(volume)) = &asset.chunks {
+        return volume
+            .quality(&|| progress.is_cancelled())
+            .map_err(chunk_error);
+    }
     let mut chunks = open_volume(asset)?;
     panta_mesh::tet_quality_streaming(&mut chunks, progress)
         .map_err(|error| stream_error(asset, error))
 }
 
-/// 流式任意平面切面（与 [`section_plane`] 结果一致）；每次调用重新扫描单元流。
+/// 流式任意平面切面（与 [`section_plane`] 的三角形集合一致，顺序可能不同）。
+/// 有派生分块文件时只读命中块（task 028），否则每次调用重新扫描单元流。
 pub fn streamed_section_plane(
     asset: &StreamedAsset,
     normal: [f64; 3],
@@ -145,6 +193,14 @@ pub fn streamed_section_plane(
         return Err(ProjectError::CommandInvalid(
             "section normal or position is invalid".to_owned(),
         ));
+    }
+    if let Some(SharedChunks(volume)) = &asset.chunks {
+        let plane = volume
+            .plane_through_nodes(normal, fraction)
+            .map_err(chunk_error)?;
+        return volume
+            .fine_section(&plane, &|| progress.is_cancelled())
+            .map_err(chunk_error);
     }
     let mut chunks = open_volume(asset)?;
     panta_mesh::section_plane_streaming(&mut chunks, normal, fraction, progress)
@@ -359,6 +415,95 @@ mod tests {
     }
 
     #[test]
+    fn chunked_streamed_commands_match_resident_commands() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use super::{
+            SharedChunks, StreamedAsset, StreamedKind, export_streamed_volume_vtu,
+            streamed_section_plane, streamed_volume_quality,
+        };
+        let fixture_dir = temp_directory::Fixture::new()?;
+        let block = panta_mesh::SyntheticTetBlock::with_cells_per_axis(5);
+        let path = fixture_dir.root.join("volume.pmesh");
+        let (_, digest) = panta_mesh::write_volume_asset_streaming(
+            std::fs::File::create(&path)?,
+            block.counts(),
+            &block,
+            None,
+        )?
+        .ok_or("cancelled")?;
+        let chunk_path = fixture_dir.root.join("volume.pchunk");
+        panta_mesh::chunked::build_chunked_from_asset(
+            &mut panta_mesh::VolumeAssetChunks::open(&path)?,
+            panta_mesh::chunked::ChunkBuildOptions {
+                max_chunk_cells: 100,
+                simplify_ratio: 4,
+            },
+            std::fs::File::create(&chunk_path)?,
+            &Progress::new(),
+        )?
+        .ok_or("cancelled")?;
+        let chunks = std::sync::Arc::new(panta_mesh::chunked::ChunkedVolume::open_file(
+            &chunk_path,
+            64 << 10,
+        )?);
+        let len = std::fs::metadata(&path)?.len();
+        let (decoded, _) = panta_mesh::MeshAssetReader::open(std::fs::File::open(&path)?, len)?
+            .read(|| false)?
+            .ok_or("cancelled")?;
+        let panta_mesh::MeshAsset::Volume(volume) = decoded else {
+            return Err("expected volume".into());
+        };
+        let asset = StreamedAsset {
+            path: path.clone(),
+            digest,
+            kind: StreamedKind::Volume(block.counts()),
+            chunks: Some(SharedChunks(std::sync::Arc::clone(&chunks))),
+        };
+        assert_eq!(asset.clone(), asset);
+        let progress = Progress::new();
+        let sorted = |mesh: panta_mesh::SurfaceMesh| {
+            let mut keys: Vec<[u64; 9]> = mesh
+                .triangles
+                .iter()
+                .map(|t| std::array::from_fn(|i| t[i / 3][i % 3].to_bits()))
+                .collect();
+            keys.sort_unstable();
+            keys
+        };
+        for (normal, fraction) in [([1.0, 2.0, -0.5], 0.3), ([0.0, 0.0, 1.0], 0.5)] {
+            let streamed =
+                streamed_section_plane(&asset, normal, fraction, &progress)?.ok_or("cancelled")?;
+            let resident =
+                section_plane(&volume, normal, fraction, &progress)?.ok_or("cancelled")?;
+            assert_eq!(sorted(streamed), sorted(resident));
+        }
+        let quality = streamed_volume_quality(&asset, &progress)?.ok_or("cancelled")?;
+        let resident = volume_quality(&volume, &progress).ok_or("cancelled")?;
+        assert_eq!(quality.tet_count, resident.tet_count);
+        assert_eq!(quality.poor_count, resident.poor_count);
+        assert_eq!(quality.min_dihedral_degrees, resident.min_dihedral_degrees);
+        assert_eq!(quality.max_aspect_ratio, resident.max_aspect_ratio);
+        assert!(matches!(
+            streamed_section_plane(&asset, [0.0; 3], 0.3, &progress),
+            Err(ProjectError::CommandInvalid(_))
+        ));
+        // 导出仍走 v3 顺序流式路径，与驻留导出逐字节一致。
+        let streamed_out = fixture_dir.root.join("streamed.vtu");
+        let resident_out = fixture_dir.root.join("resident.vtu");
+        export_streamed_volume_vtu(&asset, &streamed_out, &progress)?;
+        export_tet_mesh_vtu(&volume, &resident_out, &progress)?;
+        assert_eq!(std::fs::read(&streamed_out)?, std::fs::read(&resident_out)?);
+        let cancelled = Progress::new();
+        cancelled.cancel();
+        // 每块质量结果已缓存：再次统计不读块，取消标志不影响直接返回。
+        assert_eq!(
+            streamed_volume_quality(&asset, &cancelled)?.map(|value| value.tet_count),
+            Some(resident.tet_count)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn streamed_commands_match_resident_commands_and_check_the_digest()
     -> Result<(), Box<dyn std::error::Error>> {
         use super::{
@@ -386,6 +531,7 @@ mod tests {
             path: path.clone(),
             digest,
             kind: StreamedKind::Volume(block.counts()),
+            chunks: None,
         };
         let progress = Progress::new();
         let quality = streamed_volume_quality(&asset, &progress)?.ok_or("cancelled")?;

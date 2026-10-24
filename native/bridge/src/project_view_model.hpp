@@ -52,6 +52,8 @@ class ProjectViewModel : public panta::visualization::MeshSource {
         double lodActivationTriangles READ lodActivationTriangles NOTIFY largeMeshLimitsChanged)
     Q_PROPERTY(double lodBudgetTriangles READ lodBudgetTriangles NOTIFY largeMeshLimitsChanged)
     Q_PROPERTY(double volumeStreamCells READ volumeStreamCells NOTIFY largeMeshLimitsChanged)
+    Q_PROPERTY(int volumeMode READ volumeMode NOTIFY largeMeshLimitsChanged)
+    Q_PROPERTY(double chunkCacheMib READ chunkCacheMib NOTIFY largeMeshLimitsChanged)
     Q_PROPERTY(QVariantList meshTypes READ meshTypes CONSTANT)
     Q_PROPERTY(QString defaultMeshType READ defaultMeshType CONSTANT)
     Q_PROPERTY(bool importPreviewPending READ importPreviewPending NOTIFY importPreviewChanged)
@@ -252,15 +254,18 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     /// 只替换视口显示，不写工程、不生成资产。启用时零法向或非有限值被拒绝。
     Q_INVOKABLE bool setSection(bool enabled, double normalX, double normalY, double normalZ,
                                 double fraction);
-    /// 大网格设置（task 026）：表面 LOD 阈值 / 预算（面）、体网格流式阈值（四面体）。
+    /// 大网格设置（task 026 / 028）：表面 LOD 阈值 / 预算（面）、体网格分块阈值（四面体）、
+    /// 体网格模式（0 按阈值分块、1 按可用内存自动、2 禁用分块完整驻留）与块缓存预算（MiB）。
     /// 校验在 Rust，非法时返回 false 并设置 `project.lod_settings_invalid`；成功后持久化。
-    /// 只影响之后的激活，已打开的网格不重算。
+    /// 只影响之后的激活，已打开的网格不重算；块缓存预算立即作用于已打开的分块体网格。
     Q_INVOKABLE bool setLargeMeshLimits(double surfaceTriangles, double surfaceBudget,
-                                        double volumeCells);
+                                        double volumeCells, int volumeMode, double chunkCacheMib);
     Q_INVOKABLE void resetLargeMeshLimits();
     [[nodiscard]] double lodActivationTriangles() const;
     [[nodiscard]] double lodBudgetTriangles() const;
     [[nodiscard]] double volumeStreamCells() const;
+    [[nodiscard]] int volumeMode() const;
+    [[nodiscard]] double chunkCacheMib() const;
     [[nodiscard]] bool volumeAvailable() const { return m_volumeAvailable; }
     [[nodiscard]] QString volumeInfo() const { return m_volumeInfo; }
     [[nodiscard]] bool sectionActive() const { return m_sectionActive; }
@@ -309,6 +314,10 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     [[nodiscard]] static QString recentProjectsFile();
     [[nodiscard]] static QString largeMeshSettingsFile();
     void loadLargeMeshLimits();
+    /// 把派生分块缓存目录交给 Rust（task 028）：`CacheLocation/volume-chunks`。
+    void configureDerivedChunkCache();
+    /// 激活前刷新可用物理内存（task 028），供“按可用内存自动”和派生分块构建门槛使用。
+    void refreshAvailableMemory();
     bool beginProjectOperation(panta::ffi::ProjectOperationInput input, const QString& operation);
     void prepareActiveMesh();
     bool fail(const panta::ffi::ProjectDiagnostic& diagnostic);

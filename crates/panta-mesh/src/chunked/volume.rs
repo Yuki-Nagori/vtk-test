@@ -93,6 +93,17 @@ pub struct ChunkedVolume {
     quality: Mutex<Vec<Option<ChunkQuality>>>,
 }
 
+impl std::fmt::Debug for ChunkedVolume {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ChunkedVolume")
+            .field("chunks", &self.headers.len())
+            .field("tets", &self.tet_count())
+            .field("reader", &self.reader_kind())
+            .finish_non_exhaustive()
+    }
+}
+
 impl ChunkedVolume {
     /// 按默认实现打开：优先只读映射，映射不可用时回退合并定位读。
     pub fn open_file(path: &Path, cache_budget: usize) -> Result<Self, ChunkError> {
@@ -183,6 +194,36 @@ impl ChunkedVolume {
         let (low, high) = probe.span(&self.bounds());
         let offset = low + (high - low) * fraction.clamp(0.0, 1.0);
         SectionPlane::new(probe.normal.map(|value| value * offset), probe.normal)
+    }
+
+    /// 与 [`crate::section_plane_origin`] 同义的平面：在节点沿 `normal` 投影区间的 `fraction` 处。
+    /// 节点投影的极值必在外表面顶点上取得（单元都在外表面围成的闭区域内），
+    /// 因此只扫描常驻的外表面即可，不读单元；与驻留 / 流式切面的位置逐位一致。
+    pub fn plane_through_nodes(
+        &self,
+        normal: [f64; 3],
+        fraction: f64,
+    ) -> Result<SectionPlane, ChunkError> {
+        let probe = SectionPlane::new([0.0; 3], normal)?;
+        if !fraction.is_finite() {
+            return Err(ChunkError::Invalid(
+                "section fraction is not finite".to_owned(),
+            ));
+        }
+        let unit = probe.normal;
+        let (low, high) = self
+            .surfaces
+            .iter()
+            .flat_map(|surface| surface.boundary.iter().flatten())
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), point| {
+                let offset = dot(*point, unit);
+                (low.min(offset), high.max(offset))
+            });
+        if !low.is_finite() || !high.is_finite() {
+            return self.plane_at(normal, fraction);
+        }
+        let offset = low + (high - low) * fraction.clamp(0.0, 1.0);
+        SectionPlane::new(unit.map(|value| value * offset), unit)
     }
 
     /// 与平面相交的块（包围盒跨越平面）。

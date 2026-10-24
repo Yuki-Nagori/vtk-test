@@ -3,6 +3,7 @@
 
 mod activation;
 pub mod animation;
+mod derived_chunks;
 mod execution;
 pub mod path;
 pub mod project;

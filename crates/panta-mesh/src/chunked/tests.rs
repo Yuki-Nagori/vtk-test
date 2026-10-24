@@ -348,3 +348,80 @@ fn exclusive_lock_forces_positioned_read_fallback() -> Result<(), Box<dyn Error>
     assert_eq!(volume.reader_kind(), "mmap");
     Ok(())
 }
+
+#[test]
+fn plane_through_nodes_matches_resident_section_position() -> Result<(), Box<dyn Error>> {
+    let mesh = synthetic_mesh(6);
+    let volume = open(build(&mesh, 120)?, usize::MAX)?;
+    for normal in [[0.3, 0.2, 1.0], [1.0, 0.0, 0.0], [-1.0, -2.0, 0.5]] {
+        for fraction in [0.0, 0.37, 0.5, 1.0, 1.5] {
+            let plane = volume.plane_through_nodes(normal, fraction)?;
+            let length = normal.iter().map(|value| value * value).sum::<f64>().sqrt();
+            let unit = normal.map(|value| value / length);
+            let origin = crate::section_plane_origin(&mesh.nodes, unit, fraction);
+            assert_eq!(plane.normal, unit);
+            assert_eq!(plane.origin, origin, "{normal:?} {fraction}");
+            let expected =
+                section_surface(&mesh, origin, unit, &Progress::new())?.ok_or("cancel")?;
+            let actual = volume.fine_section(&plane, &|| false)?.ok_or("cancel")?;
+            assert_eq!(
+                sorted_keys(&actual.triangles),
+                sorted_keys(&expected.triangles)
+            );
+        }
+    }
+    assert!(volume.plane_through_nodes([0.0; 3], 0.5).is_err());
+    assert!(
+        volume
+            .plane_through_nodes([0.0, 0.0, 1.0], f64::NAN)
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn build_from_v3_asset_matches_build_from_resident_mesh() -> Result<(), Box<dyn Error>> {
+    let block = SyntheticTetBlock::with_cells_per_axis(5);
+    let path = std::env::temp_dir().join(format!("panta-chunk-{}-asset.pmesh", std::process::id()));
+    let asset = TempFile(path.clone());
+    crate::write_volume_asset_streaming(
+        std::fs::File::create(&asset.0)?,
+        block.counts(),
+        &block,
+        None,
+    )?
+    .ok_or("cancelled")?;
+    let mut chunks = crate::VolumeAssetChunks::open(&asset.0)?;
+    let mut from_asset = Vec::new();
+    let progress = Progress::new();
+    super::build_chunked_from_asset(
+        &mut chunks,
+        ChunkBuildOptions::default(),
+        &mut from_asset,
+        &progress,
+    )?
+    .ok_or("cancelled")?;
+    assert!((progress.fraction() - 1.0).abs() < 1e-9);
+    let mut from_mesh = Vec::new();
+    build_chunked_volume(
+        &synthetic_mesh(5),
+        ChunkBuildOptions::default(),
+        &mut from_mesh,
+        &Progress::new(),
+    )?
+    .ok_or("cancelled")?;
+    assert_eq!(from_asset, from_mesh);
+    let cancelled = Progress::new();
+    cancelled.cancel();
+    let mut chunks = crate::VolumeAssetChunks::open(&asset.0)?;
+    assert!(
+        super::build_chunked_from_asset(
+            &mut chunks,
+            ChunkBuildOptions::default(),
+            Vec::new(),
+            &cancelled
+        )?
+        .is_none()
+    );
+    Ok(())
+}

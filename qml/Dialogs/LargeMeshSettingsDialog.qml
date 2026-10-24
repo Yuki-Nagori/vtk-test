@@ -1,5 +1,5 @@
-// 任务 026：大网格设置。表面 LOD 阈值/预算与体网格流式阈值，界面以“万”为单位；
-// 校验在 Rust，修改只影响之后打开的网格。
+// 任务 026 / 028：大网格设置。表面 LOD 阈值/预算与体网格分块阈值（界面以“万”为单位）、
+// 体网格模式与块缓存预算（MiB）；校验在 Rust，修改只影响之后打开的网格（块缓存预算立即生效）。
 import QtQuick
 import QtQuick.Layouts
 import Panta.Bridge
@@ -29,6 +29,13 @@ DialogWindow {
         trianglesField.text = dialog.toWan(dialog.projectModel.lodActivationTriangles);
         budgetField.text = dialog.toWan(dialog.projectModel.lodBudgetTriangles);
         cellsField.text = dialog.toWan(dialog.projectModel.volumeStreamCells);
+        modeCombo.currentIndex = dialog.projectModel.volumeMode;
+        cacheField.text = String(dialog.projectModel.chunkCacheMib);
+    }
+
+    function cacheMib(text) {
+        const value = Number(text);
+        return text.length > 0 && isFinite(value) ? value : -1;
     }
 
     function open() {
@@ -43,7 +50,7 @@ DialogWindow {
     function submit() {
         if (!visible)
             return;
-        if (dialog.projectModel.setLargeMeshLimits(dialog.fromWan(trianglesField.text), dialog.fromWan(budgetField.text), dialog.fromWan(cellsField.text)))
+        if (dialog.projectModel.setLargeMeshLimits(dialog.fromWan(trianglesField.text), dialog.fromWan(budgetField.text), dialog.fromWan(cellsField.text), modeCombo.currentIndex, dialog.cacheMib(cacheField.text)))
             dialog.close();
     }
 
@@ -67,7 +74,7 @@ DialogWindow {
 
             ThemedLabel {
                 Layout.fillWidth: true
-                text: "超过阈值的表面网格以 LOD 显示（导出仍读取完整源资产）；超过阈值的体网格以流式方式激活、诊断和切面。修改只影响之后打开的网格。"
+                text: "超过阈值的表面网格以 LOD 显示（导出仍读取完整源资产）；超过阈值的体网格只驻留外表面，诊断和切面按块读取（派生分块文件放在缓存目录）。“按可用内存自动”按可用物理内存的一半推算阈值；“禁用分块”始终完整读入内存。修改只影响之后打开的网格。"
                 textSize: Theme.fontSmall
                 textColor: Theme.colorTextMuted
                 wrapMode: Text.Wrap
@@ -112,7 +119,19 @@ DialogWindow {
                 }
 
                 ThemedLabel {
-                    text: "体网格流式阈值 (万单元)"
+                    text: "体网格模式"
+                    textSize: Theme.fontBody
+                }
+                ThemedComboBox {
+                    id: modeCombo
+                    objectName: "volumeModeCombo"
+                    Layout.fillWidth: true
+                    model: ["按阈值分块", "按可用内存自动", "禁用分块（完整驻留）"]
+                    Accessible.name: "体网格模式"
+                }
+
+                ThemedLabel {
+                    text: "体网格分块阈值 (万单元)"
                     textSize: Theme.fontBody
                 }
                 ThemedTextField {
@@ -121,9 +140,27 @@ DialogWindow {
                     Layout.fillWidth: true
                     Layout.preferredHeight: Theme.controlHeight
                     placeholderText: "100 – 1000000"
-                    Accessible.name: "体网格流式阈值"
+                    Accessible.name: "体网格分块阈值"
                     selectByMouse: true
+                    enabled: modeCombo.currentIndex !== 2
                     invalid: dialog.projectModel.errorDetail === "volume_cells"
+                    onAccepted: dialog.submit()
+                }
+
+                ThemedLabel {
+                    text: "块缓存预算 (MiB)"
+                    textSize: Theme.fontBody
+                }
+                ThemedTextField {
+                    id: cacheField
+                    objectName: "chunkCacheField"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: Theme.controlHeight
+                    placeholderText: "64 – 1048576"
+                    Accessible.name: "块缓存预算"
+                    selectByMouse: true
+                    enabled: modeCombo.currentIndex !== 2
+                    invalid: dialog.projectModel.errorDetail === "chunk_cache_mib"
                     onAccepted: dialog.submit()
                 }
             }
