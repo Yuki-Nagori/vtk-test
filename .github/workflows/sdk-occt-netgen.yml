@@ -1,0 +1,142 @@
+# OCCT + Netgen 预编译 SDK 生产管线（原 Panta 任务 038，vtk-test 任务 041 迁入；workflow_dispatch 手动触发）。
+#
+# Netgen 与 OCCT 是硬 ABI 锁定（USE_OCC 链接其构建时的 OCCT），因此合并
+# 为一个管线、一个 Release（tag sdk-occt-netgen-8.0.1-6.2.2604，资产
+# 3 平台 × 2 依赖）。生产顺序 occt → netgen（Netgen 链接同工具链 OCCT）；
+# 自检通过后上传构建产物；`publish` 输入为 true 时由收口 job 发布：
+# 单一 tag 语义——不存在则创建，已存在则刷新说明并清空全部旧资产后重传
+# （维护者 2026-09-21 决策：重产即全量覆盖，改名/停产的旧文件不残留），
+# 发布说明取自 tools/sdk/releases/occt-netgen-8.0.1-6.2.2604.md。开发者与
+# 普通 CI 经 031 的 sdk-provision 消费发布归档，不编译第三方源码。
+#
+# runner 工具链：cmake/ninja 为 runner 镜像预装组件（受信生产环境，不是
+# 开发者基线）；本管线不消费 Qt（GUI 全关），VTK 管线独立（sdk-vtk.yml）。
+
+name: SDK artifacts (OCCT+Netgen)
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 发布到 GitHub Release（tag sdk-occt-netgen-8.0.1-6.2.2604）
+        type: boolean
+        default: false
+
+concurrency:
+  group: sdk-occt-netgen
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  occt-netgen:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            cmake_generator: Ninja
+            sdk_triple: macos-arm64
+          - os: ubuntu-latest
+            cmake_generator: Ninja
+            sdk_triple: linux-x86_64
+          - os: windows-2022
+            cmake_generator: Visual Studio 17 2022
+            cmake_generator_platform: x64
+            sdk_triple: windows-x86_64
+    runs-on: ${{ matrix.os }}
+    env:
+      CMAKE_GENERATOR: ${{ matrix.cmake_generator }}
+      CMAKE_GENERATOR_PLATFORM: ${{ matrix.cmake_generator_platform }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set macOS SDK deployment target
+        if: runner.os == 'macOS'
+        run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
+
+      - name: Produce OCCT and Netgen SDKs
+        shell: bash
+        run: |
+          # 本管线不消费 Qt：关闭 VTK 描述即不触发 qt-provision 下载。
+          cmake -S tools/sdk -B sdk-build/superbuild -DPANTA_SDK_ENABLE_VTK=OFF
+          cmake --build sdk-build/superbuild --target occt_sdk netgen_sdk
+
+      - name: Selfcheck artifacts
+        shell: bash
+        run: |
+          cmake -S tools/sdk/selfcheck -B sdk-build/selfcheck-occt \
+            -DPSDK_ROOT="$PWD/sdk-build/superbuild/out/occt/8.0.1/${{ matrix.sdk_triple }}" \
+            -DPSDK_PACKAGE=OpenCASCADE \
+            -DPSDK_REQUIRED_TARGETS="TKernel TKDESTEP"
+          # NetgenConfig.cmake 为大写 N：包名须用 `Netgen`，否则在大小写
+          # 敏感文件系统（Linux ext4）上 find_package(netgen) 找不到。
+          cmake -S tools/sdk/selfcheck -B sdk-build/selfcheck-netgen \
+            -DPSDK_ROOT="$PWD/sdk-build/superbuild/out/netgen/6.2.2604/${{ matrix.sdk_triple }}" \
+            -DPSDK_PACKAGE=Netgen \
+            -DPSDK_REQUIRED_TARGETS="ngcore nglib" \
+            -DCMAKE_PREFIX_PATH="$PWD/sdk-build/superbuild/out/occt/8.0.1/${{ matrix.sdk_triple }}"
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          cmake -DPKG_ROOT="$PWD/sdk-build/superbuild/out/occt/8.0.1/${{ matrix.sdk_triple }}" \
+            -DPKG_NAME=occt -DPKG_VERSION=8.0.1 \
+            -DPKG_TRIPLE="${{ matrix.sdk_triple }}" \
+            -DPKG_DIST="$PWD/sdk-build/dist" \
+            -P tools/sdk/package.cmake
+          cmake -DPKG_ROOT="$PWD/sdk-build/superbuild/out/netgen/6.2.2604/${{ matrix.sdk_triple }}" \
+            -DPKG_NAME=netgen -DPKG_VERSION=6.2.2604 \
+            -DPKG_TRIPLE="${{ matrix.sdk_triple }}" \
+            -DPKG_DIST="$PWD/sdk-build/dist" \
+            -P tools/sdk/package.cmake
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: occt-netgen-${{ matrix.sdk_triple }}
+          path: sdk-build/dist/*
+          if-no-files-found: error
+
+  # 发布收口：等三平台制品齐备后在单一 job 执行。清空再上传不能放在矩阵
+  # job 里并发执行——删除循环会撞上其他平台的上传窗口。
+  publish:
+    name: publish release assets (single tag)
+    if: inputs.publish
+    needs: [occt-netgen]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: occt-netgen-*
+          merge-multiple: true
+          path: sdk-build/dist
+
+      - name: Publish release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view sdk-occt-netgen-8.0.1-6.2.2604 --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release edit sdk-occt-netgen-8.0.1-6.2.2604 \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "OCCT 8.0.1 + Netgen 6.2.2604 配套 SDK" \
+              --notes-file tools/sdk/releases/occt-netgen-8.0.1-6.2.2604.md
+            gh release view sdk-occt-netgen-8.0.1-6.2.2604 --repo "$GITHUB_REPOSITORY" --json assets \
+              --jq '.assets[].name' | while IFS= read -r asset; do
+                gh release delete-asset sdk-occt-netgen-8.0.1-6.2.2604 "$asset" \
+                  --repo "$GITHUB_REPOSITORY" --yes
+              done
+          else
+            gh release create sdk-occt-netgen-8.0.1-6.2.2604 \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "OCCT 8.0.1 + Netgen 6.2.2604 配套 SDK" \
+              --notes-file tools/sdk/releases/occt-netgen-8.0.1-6.2.2604.md
+          fi
+          gh release upload sdk-occt-netgen-8.0.1-6.2.2604 sdk-build/dist/* --clobber \
+            --repo "$GITHUB_REPOSITORY"

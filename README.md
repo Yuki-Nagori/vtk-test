@@ -7,7 +7,7 @@
 
 当前保留 Qt Quick / C++ ViewModel 宿主、Rust 工程创建 / 打开 / 保存、STL 导入与旁置网格资产、VTK WebGPU 原生视口，以及 OCCT STEP 和 Netgen 体网格适配与测试。STEP 接入工程、网格生成交互和网格修复仍需后续实现与验证，不把适配冒烟当作完整工作流。后续还需导入已求解数据，将结果场与网格、材料区域和边界标签关联后可视化，见[模型与结果数据设计](ai-docs/architecture/study-and-automation.md)。界面直接使用中文，已收敛为工程工具栏、模型列表与 VTK 视口；分析设置等旧界面已移除，工程中原有设置字段暂保留。未加载模型时视口留白，不创建默认 Welcome 场景。
 
-VTK 与 OCCT/Netgen 继续使用已发布 Release 的 SDK，下载地址和 SHA256 由 `native/cmake/sdk-provision.cmake` 锁定。本仓库不保留 SDK 生产 workflow 或构建脚本，来源记录保留在 `tools/sdk/releases/`。
+VTK、OCCT/Netgen 与 GoogleTest 使用预编译 SDK，下载地址和 SHA256 由 `native/cmake/sdk-provision.cmake` 锁定。SDK 由本仓库 `.github/workflows/sdk-*.yml` 按 `tools/sdk/` 的构建描述手动生产并发布到 Release（任务 041 自原 Panta 迁入），发布说明位于 `tools/sdk/releases/`。
 
 ## 快速开始
 
