@@ -7,6 +7,11 @@
 //! 都按 Morton 顺序连续，因此“选中一个场”只需一次读入它的外表面值区段，命中块的块内值可合并读。打开时一次读尾部窗口拿到块表，再一次大块读入整个表面段；
 //! 单元按需读，相邻块合并成大块顺序读（见 [`crate::chunked::ChunkCache`]）。
 //! 所有整数小端；每个压缩段都是带校验和的 zstd 帧。
+//!
+//! v3（task 030）：分块以原始单元为单位（混合单元整体落在同一块），块表与块头加原始单元数；
+//! 块内每个拆分四面体的 `global_cells` 记原始单元 ID（非降序，同一单元的拆分四面体相邻），
+//! 混合块另存块内原始单元布局（类型 + 局部节点连接），供逐类型质量与单元场使用；
+//! 单元场按块内原始单元顺序存值。v2 文件视为无效，派生缓存会自动重建。
 
 use std::fs::File;
 use std::path::Path;
@@ -15,12 +20,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::ChunkError;
 use crate::mapped::MappedFile;
-use crate::{SurfaceMesh, Tetrahedron};
+use crate::{CellType, SurfaceMesh, Tetrahedron};
 
 pub(crate) const HEAD_MAGIC: &[u8; 8] = b"PANTAOC1";
 pub(crate) const TAIL_MAGIC: &[u8; 8] = b"PANTAOCE";
-/// v2（task 029）：加入场段与文件级场表；v1 文件视为无效，派生缓存会重建。
-pub(crate) const FORMAT_VERSION: u32 = 2;
+/// v2（task 029）：加入场段与文件级场表；v3（task 030）：原始单元 ID 与混合单元布局。
+/// 旧版本文件视为无效，派生缓存会重建。
+pub(crate) const FORMAT_VERSION: u32 = 3;
 pub(crate) const HEAD_LEN: u64 = 16;
 pub(crate) const TAIL_LEN: u64 = 32;
 /// 打开时一次读入的尾部窗口；块表不超过它时打开只需一次读。
@@ -246,8 +252,11 @@ fn positioned_read(file: &File, offset: u64, buffer: &mut [u8]) -> std::io::Resu
 pub struct ChunkHeader {
     /// 节点包围盒 `[min, max]`。
     pub bounds: [[f64; 3]; 2],
+    /// 块内拆分四面体数。
     pub tet_count: u32,
     pub node_count: u32,
+    /// 块内原始单元数（纯四面体块等于 `tet_count`）；单元场按它计元组。
+    pub cell_count: u32,
     pub(crate) cells_offset: u64,
     pub(crate) cells_len: u32,
     pub(crate) cells_raw_len: u32,
@@ -316,6 +325,7 @@ impl ChunkHeader {
             bounds,
             tet_count,
             node_count,
+            cell_count: tet_count,
             cells_offset: 0,
             cells_len: 0,
             cells_raw_len: 0,
@@ -337,21 +347,56 @@ impl ChunkHeader {
 }
 
 /// 解码后的一块单元：节点、四面体用块内局部下标；全局 ID 与原始顺序一致（升序）。
+/// `global_cells` 是每个拆分四面体所属的原始单元 ID（纯四面体时严格升序，混合时非降序）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChunkCells {
     pub global_nodes: Vec<u64>,
     pub nodes: Vec<[f64; 3]>,
     pub tets: Vec<Tetrahedron>,
     pub global_cells: Vec<u64>,
+    /// 混合块的原始单元布局；纯四面体块为 `None`（块内单元即四面体）。
+    pub layout: Option<ChunkCellLayout>,
+}
+
+/// 块内原始单元布局（task 030）：连接用块内局部节点下标，`tet_cells` 为各拆分四面体的块内单元下标。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkCellLayout {
+    pub types: Vec<CellType>,
+    pub offsets: Vec<u32>,
+    pub connectivity: Vec<u32>,
+    pub tet_cells: Vec<u32>,
+}
+
+impl ChunkCellLayout {
+    pub fn cell_nodes(&self, cell: usize) -> &[u32] {
+        &self.connectivity[self.offsets[cell] as usize..self.offsets[cell + 1] as usize]
+    }
 }
 
 impl ChunkCells {
+    /// 块内原始单元数。
+    pub fn cell_count(&self) -> usize {
+        self.layout
+            .as_ref()
+            .map_or(self.tets.len(), |layout| layout.types.len())
+    }
+
+    /// 第 `tet` 个拆分四面体的块内原始单元下标。
+    pub fn tet_cell(&self, tet: usize) -> usize {
+        self.layout
+            .as_ref()
+            .map_or(tet, |layout| layout.tet_cells[tet] as usize)
+    }
+
     /// 驻留字节数估算（缓存预算用）。
     pub fn resident_bytes(&self) -> usize {
         self.global_nodes.len() * 8
             + self.nodes.len() * 24
             + self.tets.len() * std::mem::size_of::<Tetrahedron>()
             + self.global_cells.len() * 8
+            + self.layout.as_ref().map_or(0, |layout| {
+                layout.types.len() * 5 + layout.connectivity.len() * 4 + layout.tet_cells.len() * 4
+            })
     }
 }
 
@@ -392,6 +437,8 @@ pub(crate) fn decode_f64s(raw: &[u8]) -> Result<Vec<f64>, ChunkError> {
 pub(crate) struct ChunkTable {
     pub tet_count: u64,
     pub node_count: u64,
+    /// 原始单元数（纯四面体等于 `tet_count`）。
+    pub cell_count: u64,
     pub fields: Vec<ChunkFieldInfo>,
     pub surface_offset: u64,
     pub surface_len: u64,
@@ -482,6 +529,9 @@ impl<'a> Reader<'a> {
         }
         Ok(count)
     }
+    pub fn remaining(&self) -> usize {
+        self.data.len() - self.at
+    }
     pub fn finish(&self) -> Result<(), ChunkError> {
         if self.at == self.data.len() {
             Ok(())
@@ -510,6 +560,16 @@ pub(crate) fn encode_cells(cells: &ChunkCells) -> Vec<u8> {
     for &id in &cells.global_cells {
         out.u64(id - previous);
         previous = id;
+    }
+    // v3：混合块布局；0 表示纯四面体块。
+    match &cells.layout {
+        None => out.u32(0),
+        Some(layout) => {
+            out.u32(layout.types.len() as u32);
+            out.0
+                .extend(layout.types.iter().map(|kind| kind.vtk_code()));
+            layout.connectivity.iter().for_each(|&node| out.u32(node));
+        }
     }
     out.0
 }
@@ -554,12 +614,79 @@ pub(crate) fn decode_cells(raw: &[u8]) -> Result<ChunkCells, ChunkError> {
             .ok_or_else(|| ChunkError::Format("cell id overflow".to_owned()))?;
         global_cells.push(previous);
     }
+    let layout = match reader.count(1)? {
+        0 => None,
+        cell_count => Some(decode_layout(
+            &mut reader,
+            cell_count,
+            node_count,
+            &global_cells,
+        )?),
+    };
     reader.finish()?;
     Ok(ChunkCells {
         global_nodes,
         nodes,
         tets,
         global_cells,
+        layout,
+    })
+}
+
+/// 解码混合块布局；拆分四面体按原始单元 ID 成段排列，段数必须等于单元数。
+fn decode_layout(
+    reader: &mut Reader<'_>,
+    cell_count: usize,
+    node_count: usize,
+    global_cells: &[u64],
+) -> Result<ChunkCellLayout, ChunkError> {
+    let types = reader
+        .bytes(cell_count)?
+        .iter()
+        .map(|&code| {
+            CellType::from_vtk(code)
+                .ok_or_else(|| ChunkError::Format(format!("cell type {code} unknown")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut offsets = Vec::with_capacity(cell_count + 1);
+    offsets.push(0u32);
+    let mut total = 0usize;
+    for kind in &types {
+        total += kind.node_count();
+        offsets.push(
+            u32::try_from(total)
+                .map_err(|_| ChunkError::Format("cell connectivity too long".to_owned()))?,
+        );
+    }
+    if total.saturating_mul(4) > reader.remaining() {
+        return Err(ChunkError::Format("count exceeds data".to_owned()));
+    }
+    let mut connectivity = Vec::with_capacity(total);
+    for _ in 0..total {
+        let node = reader.u32()?;
+        if node as usize >= node_count {
+            return Err(ChunkError::Format("cell node out of range".to_owned()));
+        }
+        connectivity.push(node);
+    }
+    let mut tet_cells = Vec::with_capacity(global_cells.len());
+    let mut cell = 0u32;
+    for (index, &id) in global_cells.iter().enumerate() {
+        if index > 0 && id != global_cells[index - 1] {
+            cell += 1;
+        }
+        tet_cells.push(cell);
+    }
+    if global_cells.is_empty() || cell as usize + 1 != cell_count {
+        return Err(ChunkError::Format(
+            "cell layout does not match tet owners".to_owned(),
+        ));
+    }
+    Ok(ChunkCellLayout {
+        types,
+        offsets,
+        connectivity,
+        tet_cells,
     })
 }
 
@@ -605,6 +732,7 @@ pub(crate) fn encode_table(table: &ChunkTable) -> Vec<u8> {
     let mut out = Writer::default();
     out.u64(table.tet_count);
     out.u64(table.node_count);
+    out.u64(table.cell_count);
     out.u32(table.chunks.len() as u32);
     out.u32(table.fields.len() as u32);
     out.u64(table.surface_offset);
@@ -622,6 +750,7 @@ pub(crate) fn encode_table(table: &ChunkTable) -> Vec<u8> {
         chunk.bounds.iter().for_each(|&point| out.point(point));
         out.u32(chunk.tet_count);
         out.u32(chunk.node_count);
+        out.u32(chunk.cell_count);
         out.u64(chunk.cells_offset);
         out.u32(chunk.cells_len);
         out.u32(chunk.cells_raw_len);
@@ -647,7 +776,8 @@ pub(crate) fn decode_table(raw: &[u8]) -> Result<ChunkTable, ChunkError> {
     let mut reader = Reader::new(raw);
     let tet_count = reader.u64()?;
     let node_count = reader.u64()?;
-    let entry_floor = 48 + 40 + VOXEL_BYTES;
+    let cell_count = reader.u64()?;
+    let entry_floor = 48 + 44 + VOXEL_BYTES;
     let chunk_count = reader.count(entry_floor)?;
     let field_count = reader.count(12)?;
     let surface_offset = reader.u64()?;
@@ -685,6 +815,10 @@ pub(crate) fn decode_table(raw: &[u8]) -> Result<ChunkTable, ChunkError> {
     for _ in 0..chunk_count {
         let bounds = [reader.point()?, reader.point()?];
         let mut chunk = ChunkHeader::empty(bounds, reader.u32()?, reader.u32()?);
+        chunk.cell_count = reader.u32()?;
+        if chunk.cell_count > chunk.tet_count || (chunk.cell_count == 0) != (chunk.tet_count == 0) {
+            return Err(ChunkError::Format("chunk cell count invalid".to_owned()));
+        }
         chunk.cells_offset = reader.u64()?;
         chunk.cells_len = reader.u32()?;
         chunk.cells_raw_len = reader.u32()?;
@@ -714,9 +848,19 @@ pub(crate) fn decode_table(raw: &[u8]) -> Result<ChunkTable, ChunkError> {
         chunks.push(chunk);
     }
     reader.finish()?;
+    let (tets, cells) = chunks.iter().fold((0u64, 0u64), |(tets, cells), chunk| {
+        (
+            tets + u64::from(chunk.tet_count),
+            cells + u64::from(chunk.cell_count),
+        )
+    });
+    if tets != tet_count || cells != cell_count {
+        return Err(ChunkError::Format("table counts mismatch".to_owned()));
+    }
     Ok(ChunkTable {
         tet_count,
         node_count,
+        cell_count,
         fields,
         surface_offset,
         surface_len,
@@ -800,7 +944,7 @@ pub(crate) fn read_index(
         for (block, field) in chunk.field_blocks.iter().zip(&table.fields) {
             let tuples = match field.association {
                 crate::FieldAssociation::Node => u64::from(chunk.node_count),
-                crate::FieldAssociation::Cell => u64::from(chunk.tet_count),
+                crate::FieldAssociation::Cell => u64::from(chunk.cell_count),
             };
             let (values_start, values_end) = block.values_range();
             let (boundary_start, boundary_end) = block.boundary_range();

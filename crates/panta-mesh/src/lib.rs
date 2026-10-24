@@ -42,7 +42,7 @@ pub use diagnostics::{
 pub use field_section::{FieldComponent, FieldSection, section_surface_field};
 pub use lod::{DEFAULT_LOD_TRIANGLE_BUDGET, SurfaceLod, build_surface_lod, simplify_surface};
 pub use progress::{PROGRESS_STRIDE, Progress};
-pub use synthetic::{SyntheticTetBlock, SyntheticTorus};
+pub use synthetic::{SyntheticMixedBlock, SyntheticTetBlock, SyntheticTorus};
 pub use volume::{
     POOR_ASPECT_RATIO, POOR_MIN_DIHEDRAL_DEGREES, TetQuality, VolumeError, VolumeStreamError,
     boundary_faces, boundary_surface, boundary_surface_streaming, cell_volumes,

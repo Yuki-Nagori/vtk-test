@@ -38,4 +38,9 @@ jobs:
         run: |
           cargo run --release --locked -p panta-mesh --example ooc_bench -- --cells 2M --chunk 65536 --budget-mib 64 --dir "${{ runner.temp }}" --reader pread --keep
           cargo run --release --locked -p panta-mesh --example ooc_bench -- --cells 2M --chunk 65536 --budget-mib 64 --dir "${{ runner.temp }}" --reader mmap --reuse
+      - name: Mixed-cell chunk benchmark (small, verify, pread + mmap)
+        shell: bash
+        run: |
+          cargo run --release --locked -p panta-mesh --example mixed_bench -- --cells 500K --chunk 65536 --budget-mib 64 --dir "${{ runner.temp }}" --reader pread --verify
+          cargo run --release --locked -p panta-mesh --example mixed_bench -- --cells 500K --chunk 65536 --budget-mib 64 --dir "${{ runner.temp }}" --reader mmap
       - uses: ./.github/actions/panta-cache-save

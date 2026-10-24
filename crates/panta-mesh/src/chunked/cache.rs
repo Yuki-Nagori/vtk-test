@@ -197,6 +197,7 @@ impl ChunkCache {
             let cells = decode_cells(&decompress(bytes, header.cells_raw_len as usize)?)?;
             if cells.tets.len() != header.tet_count as usize
                 || cells.nodes.len() != header.node_count as usize
+                || cells.cell_count() != header.cell_count as usize
             {
                 return Err(ChunkError::Format("chunk counts mismatch".to_owned()));
             }

@@ -7,8 +7,10 @@
 //! - 结果场：激活请求带 `.presult` 时先核对其摘要、绑定的网格摘要与节点 / 单元数，
 //!   通过才把字段写入派生文件；不通过则按无结果场构建（几何功能不受影响）。
 //! - 写入：临时文件写完再 rename；已存在且通过校验的文件从不重写（其他窗口可能正映射它）。
-//! - 复用：打开时校验头部、目录（`ChunkedVolume::open`）以及节点 / 四面体数与资产一致；
-//!   格式版本写在头部，版本不符即视为无效并重建。
+//! - 复用：打开时校验头部、目录（`ChunkedVolume::open`）以及节点 / 四面体 / 原始单元数与资产一致；
+//!   格式版本写在头部，版本不符即视为无效并重建（task 030 的 v3 使旧 v2 文件全部重建）。
+//! - 混合单元资产（task 030）：同样构建 `.pchunk`，块内带原始单元 ID 与布局，
+//!   切面单元场与逐类型质量都按原始单元。
 //! - 清理：保留修改时间最新的 [`KEEP_FILES`] 个文件，删除失败（Windows 上被映射的文件）忽略。
 //! - 失败不致命：缓存目录缺失、内存不足以构建、写入失败都退回 task 025 的逐次流式扫描。
 
@@ -27,15 +29,27 @@ use crate::activation::{ActivationFailure, LoadOptions, with_cancellation};
 pub(crate) const KEEP_FILES: usize = 4;
 /// 构建峰值内存估计：四面体数组 20 B、重心与排序约 28 B / 四面体，节点 24 B，边界三角 16 B。
 const BUILD_BYTES_PER_TET: u64 = 48;
+/// 混合单元资产（task 030）另驻留原始单元布局：每拆分四面体 4 B 所属单元，
+/// 每原始单元约 37 B（类型 + 区域 + 最多 8 个节点 + 偏移）加 4 B 单元→四面体起点。
+const MIXED_BYTES_PER_TET: u64 = 4;
+const MIXED_BYTES_PER_CELL: u64 = 41;
 /// 残留临时文件（进程崩溃）超过此时长后清理。
 const STALE_TEMP: Duration = Duration::from_secs(24 * 3600);
 
 /// 估计的构建峰值内存（B）。
 pub(crate) fn build_memory_estimate(counts: VolumeStreamCounts) -> u64 {
+    let mixed = if counts.cells == counts.tets {
+        0
+    } else {
+        (counts.tets as u64)
+            .saturating_mul(MIXED_BYTES_PER_TET)
+            .saturating_add((counts.cells as u64).saturating_mul(MIXED_BYTES_PER_CELL))
+    };
     (counts.tets as u64)
         .saturating_mul(BUILD_BYTES_PER_TET)
         .saturating_add((counts.nodes as u64).saturating_mul(24))
         .saturating_add((counts.boundary as u64).saturating_mul(16))
+        .saturating_add(mixed)
 }
 
 /// 构建时逐个驻留的最大字段（B）。
@@ -102,11 +116,6 @@ pub(crate) fn open_or_build(
     let Some(directory) = options.environment.derived_dir.as_deref() else {
         return Ok(None);
     };
-    // 混合单元资产（task 030）的 .pchunk 需要记录原单元号，留待 PR 3 的新版本格式；
-    // 此前一律走顺序扫描 v4 资产的回退路径（结果正确，只是每次重新读取）。
-    if counts.cells != counts.tets {
-        return Ok(None);
-    }
     let results = results
         .and_then(|source| open_results(&source, digest, counts).map(|reader| (source, reader)));
     let Some(name) = file_name(digest, results.as_ref().map(|(source, _)| source.digest)) else {
@@ -163,6 +172,7 @@ fn open_valid(
 ) -> Option<Arc<ChunkedVolume>> {
     let volume = ChunkedVolume::open_file(path, budget).ok()?;
     (volume.tet_count() == counts.tets as u64
+        && volume.cell_count() == counts.cells as u64
         && volume.node_count() == counts.nodes as u64
         && volume.fields().len() == fields)
         .then(|| Arc::new(volume))

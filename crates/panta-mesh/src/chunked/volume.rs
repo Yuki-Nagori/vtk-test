@@ -84,6 +84,7 @@ pub struct ChunkedVolume {
     surfaces: Vec<ChunkSurface>,
     tet_count: u64,
     node_count: u64,
+    cell_count: u64,
     cache: Arc<ChunkCache>,
     results: Mutex<ResultCache>,
     quality: Mutex<Vec<Option<QualityPartial>>>,
@@ -132,6 +133,7 @@ impl ChunkedVolume {
             surfaces,
             tet_count: table.tet_count,
             node_count: table.node_count,
+            cell_count: table.cell_count,
             cache,
             results: Mutex::new(ResultCache::default()),
             quality: Mutex::new(vec![None; chunk_count]),
@@ -146,6 +148,11 @@ impl ChunkedVolume {
 
     pub fn node_count(&self) -> u64 {
         self.node_count
+    }
+
+    /// 原始单元数（task 030；纯四面体等于 [`Self::tet_count`]），单元场按它计元组。
+    pub fn cell_count(&self) -> u64 {
+        self.cell_count
     }
 
     /// 文件级结果场表（task 029），与 `ChunkHeader::field_ranges` 同序。
@@ -427,7 +434,8 @@ impl ChunkedVolume {
                             &mut out,
                         ),
                         FieldAssociation::Cell => {
-                            let value = tuple(values, components, index);
+                            // 单元场按块内原始单元存值，拆分四面体取所属单元的值。
+                            let value = tuple(values, components, cells.tet_cell(index));
                             section_polygon_with(
                                 &cells.nodes,
                                 &distance,
@@ -531,11 +539,20 @@ impl ChunkedVolume {
                 return Ok(None);
             }
             let cells = self.cache.get_many(ids)?;
-            // .pchunk v2 只承载纯四面体网格（混合单元在 task 030 PR 3 前不建派生文件）。
+            // 混合块按原始单元逐类型统计（task 030），纯四面体块的原始单元即四面体。
             let computed = parallel_map(&cells, |cells| {
                 let mut quality = QualityPartial::default();
-                for tet in &cells.tets {
-                    quality.add_cell(CellType::Tetra, &tet.nodes, &cells.nodes);
+                match &cells.layout {
+                    Some(layout) => {
+                        for (cell, &kind) in layout.types.iter().enumerate() {
+                            quality.add_cell(kind, layout.cell_nodes(cell), &cells.nodes);
+                        }
+                    }
+                    None => {
+                        for tet in &cells.tets {
+                            quality.add_cell(CellType::Tetra, &tet.nodes, &cells.nodes);
+                        }
+                    }
                 }
                 quality
             });

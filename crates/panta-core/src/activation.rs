@@ -1204,6 +1204,127 @@ mod tests {
     }
 
     #[test]
+    fn mixed_assets_build_derived_chunks_with_original_cell_ids()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::project::{
+            SharedChunks, StreamedAsset, StreamedKind, section_plane_field,
+            streamed_section_plane_field, streamed_volume_quality,
+        };
+        use panta_mesh::{FieldAssociation, FieldComponent, ResultField};
+        let fixture = crate::project::temp_directory::Fixture::new()?;
+        let block = panta_mesh::SyntheticMixedBlock::with_layers(4, 2, 2);
+        let counts = block.counts();
+        assert_ne!(counts.cells, counts.tets);
+        let file = File::create(fixture.root.join("mixed.pmesh"))?;
+        let (_, digest) = panta_mesh::write_volume_asset_streaming(file, counts, &block, None)?
+            .ok_or("cancelled")?;
+        let field = ResultField {
+            name: "cell".to_owned(),
+            association: FieldAssociation::Cell,
+            components: 1,
+            units: String::new(),
+            values: (0..counts.cells).map(|cell| (cell % 97) as f64).collect(),
+        };
+        let (bytes, result_digest) = panta_mesh::encode_result_asset(&panta_mesh::ResultSet {
+            mesh_digest: digest.clone(),
+            node_count: counts.nodes as u64,
+            cell_count: counts.cells as u64,
+            fields: vec![field.clone()],
+        })?;
+        std::fs::write(fixture.root.join("mixed.presult"), bytes)?;
+        let panta_mesh::MeshAsset::Volume(mesh) =
+            panta_mesh::decode_mesh_asset(&std::fs::read(fixture.root.join("mixed.pmesh"))?)?
+        else {
+            return Err("not a volume".into());
+        };
+        let options = LoadOptions {
+            limits: ActivationLimits {
+                volume_cells: 100,
+                ..ActivationLimits::DEFAULT
+            },
+            environment: ActivationEnvironment {
+                available_memory: 0,
+                derived_dir: Some(fixture.root.join("cache")),
+            },
+        };
+        let request = ActivationRequest {
+            project_root: fixture.root.clone(),
+            relative_path: "mixed.pmesh".to_owned(),
+            expected_digest: digest.clone(),
+            results: Some(ResultRequest {
+                relative_path: "mixed.presult".to_owned(),
+                digest: result_digest,
+            }),
+        };
+        let loaded = load_asset_with(request, || false, &options)
+            .map_err(|f| f.detail)?
+            .ok_or("cancelled")?;
+        assert_eq!(loaded.streamed_volume, Some(counts));
+        // 混合资产也构建派生分块（task 030 PR 3 起），单元数为原始单元数。
+        let chunks = loaded.chunked_volume.ok_or("chunks missing")?;
+        assert_eq!(chunks.cell_count(), counts.cells as u64);
+        assert_eq!(chunks.tet_count(), counts.tets as u64);
+        assert_eq!(chunks.fields().len(), 1);
+        let chunked = StreamedAsset {
+            path: fixture.root.join("mixed.pmesh"),
+            digest,
+            kind: StreamedKind::Volume(counts),
+            chunks: Some(SharedChunks(chunks)),
+        };
+        let scanned = StreamedAsset {
+            chunks: None,
+            ..chunked.clone()
+        };
+        let progress = panta_mesh::Progress::new();
+        let from_chunks = streamed_volume_quality(&chunked, &progress)?.ok_or("cancelled")?;
+        let from_scan = streamed_volume_quality(&scanned, &progress)?.ok_or("cancelled")?;
+        assert_eq!(
+            from_chunks.by_type.map(|q| q.count as u64),
+            block.type_counts()
+        );
+        assert_eq!(from_chunks.poor_count, from_scan.poor_count);
+        for (a, b) in from_chunks.by_type.iter().zip(&from_scan.by_type) {
+            assert_eq!(a.min_scaled_jacobian, b.min_scaled_jacobian);
+            assert!((a.mean_scaled_jacobian - b.mean_scaled_jacobian).abs() < 1e-9);
+        }
+        // 单元场切面：分块（按需读块）与驻留网格的值集合一致。
+        let (normal, fraction) = ([0.3, 1.0, 0.2], 0.45);
+        let keys = |section: &panta_mesh::FieldSection| {
+            let mut keys: Vec<_> = section
+                .surface
+                .triangles
+                .iter()
+                .zip(&section.values)
+                .map(|(t, v)| (t.map(|p| p.map(f64::to_bits)), v.map(f64::to_bits)))
+                .collect();
+            keys.sort_unstable();
+            keys
+        };
+        let a = streamed_section_plane_field(
+            &chunked,
+            "cell",
+            FieldAssociation::Cell,
+            FieldComponent::Magnitude,
+            normal,
+            fraction,
+            &progress,
+        )?
+        .ok_or("cancelled")?;
+        let b = section_plane_field(
+            &mesh,
+            &field,
+            FieldComponent::Magnitude,
+            normal,
+            fraction,
+            &progress,
+        )?
+        .ok_or("cancelled")?;
+        assert!(!a.values.is_empty());
+        assert_eq!(keys(&a), keys(&b));
+        Ok(())
+    }
+
+    #[test]
     fn derived_chunks_carry_result_fields_and_serve_field_sections()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::project::{

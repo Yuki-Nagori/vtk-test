@@ -8,12 +8,17 @@
 //! - 调度（[`cache`]）：按字节预算的 LRU 块缓存，加后台预取线程。
 //! - 计算（[`volume`]）：切面粗级别只用常驻数据；精细级别按命中块并行，结果按（块，平面）缓存；
 //!   质量统计按块并行，每块结果与平面无关，只算一次。
+//! - 混合单元（task 030，格式 v3）：按原始单元整体分块，块内每个拆分四面体记录所属原始单元 ID，
+//!   非纯四面体块另存原始单元布局（类型 + 块内连接表），使逐类型质量与单元场切面都按原始单元计算；
+//!   v2 文件版本不符，派生缓存自动重建。
 
 mod build;
 mod cache;
 #[cfg(test)]
 mod field_tests;
 mod format;
+#[cfg(test)]
+mod mixed_tests;
 #[cfg(test)]
 mod tests;
 mod volume;
@@ -27,8 +32,8 @@ pub use build::{
 };
 pub use cache::{ChunkCache, Prefetcher};
 pub use format::{
-    ChunkBytes, ChunkCells, ChunkFieldInfo, ChunkHeader, ChunkReadMode, ChunkSource,
-    FileChunkSource, IoCounts, MmapChunkSource, VOXELS_PER_AXIS, open_chunk_source,
+    ChunkBytes, ChunkCellLayout, ChunkCells, ChunkFieldInfo, ChunkHeader, ChunkReadMode,
+    ChunkSource, FileChunkSource, IoCounts, MmapChunkSource, VOXELS_PER_AXIS, open_chunk_source,
 };
 pub use volume::{ChunkedVolume, SectionPlane};
 
