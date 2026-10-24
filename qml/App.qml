@@ -33,15 +33,15 @@ ApplicationWindow {
     }
     function formatPick(): string {
         if (pickedPoints.length === 0)
-            return lastPickMissed ? "未命中模型。" : "左键单击模型拾取点；连续两点显示距离。";
+            return lastPickMissed ? "未命中模型" : "左键拾取点，连续两点测距";
         const a = pickedPoints[0];
         let text = "点 A " + formatPoint(a) + " 面 #" + a.triangle;
         if (pickedPoints.length === 2) {
             const b = pickedPoints[1];
             const d = Math.sqrt((b.x - a.x) ** 2 + (b.y - a.y) ** 2 + (b.z - a.z) ** 2);
-            text += "\n点 B " + formatPoint(b) + " 面 #" + b.triangle + "\n距离 " + d.toFixed(3) + " mm";
+            text += "；点 B " + formatPoint(b) + " 面 #" + b.triangle + "；距离 " + d.toFixed(3) + " mm";
         }
-        return text + (lastPickMissed ? "\n（最近一次未命中）" : "");
+        return text + (lastPickMissed ? "（最近一次未命中）" : "");
     }
     objectName: "workbench"
     minimumWidth: Theme.windowMinimumWidth
@@ -78,6 +78,39 @@ ApplicationWindow {
     readonly property bool canDiagnose: meshActive && !busy && !projectModel.animationActive && !projectModel.sectionActive && projectModel.activeMeshLodStatus.length === 0
     // 仅当诊断报告属于活动页签时展示，切换页签后需重新诊断。
     readonly property var activeQuality: projectModel.meshQuality.documentId === projectModel.activeDocumentId ? projectModel.meshQuality : ({})
+    readonly property bool canToggleSection: meshActive && projectModel.volumeAvailable && !projectModel.animationActive
+    // 底部面板「任务」页：所有进行中的后台任务（状态栏只显示优先级最高的一项）。
+    readonly property var pendingTasks: {
+        const tasks = [];
+        if (projectModel.generationPending)
+            tasks.push({
+                "kind": "generation",
+                "name": "生成体网格",
+                "progress": projectModel.generationProgress
+            });
+        if (projectModel.importPending)
+            tasks.push({
+                "kind": "import",
+                "name": "导入",
+                "progress": projectModel.importProgress
+            });
+        if (projectModel.exportPending)
+            tasks.push({
+                "kind": "export",
+                "name": "导出",
+                "progress": projectModel.exportProgress
+            });
+        if (projectModel.diagnosticsPending)
+            tasks.push({
+                "kind": "diagnostics",
+                "name": "诊断",
+                "progress": projectModel.diagnosticsProgress
+            });
+        return tasks;
+    }
+    // task 035：错误已在打开的对话框字段旁显示时，状态栏不重复。
+    readonly property bool errorShownInDialog: newProjectDialog.visible || importDialog.visible || generateVolumeDialog.visible || largeMeshSettingsDialog.visible
+    readonly property bool showError: projectModel.error.length > 0 && !errorShownInDialog
 
     // 关闭确认（task 018）：有未保存修改或后台任务时先询问。
     property bool closeConfirmed: false
@@ -122,6 +155,20 @@ ApplicationWindow {
     function showNotice(text: string, isError: bool) {
         notice = text;
         noticeIsError = isError;
+        bottomPanel.appendMessage(text, isError);
+    }
+    function setSectionActive(active: bool) {
+        projectModel.setSection(active, projectModel.sectionNormalX, projectModel.sectionNormalY, projectModel.sectionNormalZ, projectModel.sectionFraction);
+    }
+    function cancelTask(kind: string) {
+        if (kind === "generation")
+            projectModel.cancelGeneration();
+        else if (kind === "import")
+            projectModel.cancelImport();
+        else if (kind === "export")
+            projectModel.cancelExport();
+        else
+            projectModel.cancelDiagnostics();
     }
 
     ProjectViewModel {
@@ -201,8 +248,18 @@ ApplicationWindow {
             shellWindow.showNotice(succeeded ? "已导出：" + path : "", false);
         }
         function onErrorChanged() {
-            if (projectModel.error.length > 0)
-                shellWindow.showNotice("", false);
+            if (projectModel.error.length === 0)
+                return;
+            shellWindow.showNotice("", false);
+            bottomPanel.appendMessage(projectModel.error, true);
+            // 对话框内已显示的错误不再额外弹出底部面板（task 035 同口径）。
+            if (!shellWindow.errorShownInDialog)
+                bottomPanel.reveal(1);
+        }
+        // 诊断出结果时自动展开一次「诊断」页；用户再次折叠后保持折叠，直到下一次结果。
+        function onMeshQualityChanged() {
+            if (!projectModel.diagnosticsPending && shellWindow.activeQuality.documentId !== undefined)
+                bottomPanel.reveal(0);
         }
     }
 
@@ -345,7 +402,7 @@ ApplicationWindow {
             title: "视图(&V)"
             popupType: Popup.Window
             Repeater {
-                model: [["front", "前视图"], ["back", "后视图"], ["left", "左视图"], ["right", "右视图"], ["top", "顶视图"], ["bottom", "底视图"], ["iso", "轴测图"]]
+                model: shellWindow.viewPresets
                 delegate: MenuItem {
                     required property var modelData
                     text: modelData[1]
@@ -357,6 +414,14 @@ ApplicationWindow {
                 text: "复位视图"
                 enabled: shellWindow.meshActive
                 onTriggered: viewportPane.resetView()
+            }
+            MenuSeparator {}
+            MenuItem {
+                objectName: "bottomPanelMenuItem"
+                text: "底部面板"
+                checkable: true
+                checked: !Settings.bottomPanelCollapsed
+                onTriggered: Settings.bottomPanelCollapsed = !checked
             }
         }
         Menu {
@@ -375,74 +440,29 @@ ApplicationWindow {
         }
     }
 
-    header: ToolBar {
-        RowLayout {
-            anchors.fill: parent
-            anchors.margins: Theme.spacingSmall
-            spacing: Theme.spacingSmall
+    readonly property var viewPresets: [["front", "前视图"], ["back", "后视图"], ["left", "左视图"], ["right", "右视图"], ["top", "顶视图"], ["bottom", "底视图"], ["iso", "轴测图"]]
 
-            Button {
-                objectName: "newProjectButton"
-                text: "新建工程"
-                enabled: shellWindow.canCreateOrOpen
-                ToolTip.visible: hovered
-                ToolTip.delay: 500
-                ToolTip.text: "新建工程（Ctrl+N）"
-                onClicked: newProjectDialog.open()
-            }
-            Button {
-                objectName: "openProjectButton"
-                text: "打开工程"
-                enabled: shellWindow.canCreateOrOpen
-                ToolTip.visible: hovered
-                ToolTip.delay: 500
-                ToolTip.text: "打开工程（Ctrl+O）"
-                onClicked: openProjectFileDialog.open()
-            }
-            Button {
-                objectName: "saveProjectButton"
-                text: "保存工程"
-                enabled: shellWindow.canSave
-                ToolTip.visible: hovered
-                ToolTip.delay: 500
-                ToolTip.text: "保存工程（Ctrl+S）"
-                onClicked: projectModel.saveProject()
-            }
-            Button {
-                objectName: "importStlButton"
-                text: "导入网格"
-                enabled: shellWindow.canImport
-                ToolTip.visible: hovered
-                ToolTip.delay: 500
-                ToolTip.text: "导入网格（Ctrl+I）"
-                onClicked: importDialog.open()
-            }
-            Button {
-                objectName: "exportMeshButton"
-                text: projectModel.exportPending ? "正在导出…" : "导出网格"
-                enabled: shellWindow.canExport
-                ToolTip.visible: hovered
-                ToolTip.delay: 500
-                ToolTip.text: "导出活动网格（Ctrl+E）"
-                onClicked: exportMeshFileDialog.open()
-            }
-            Button {
-                objectName: "screenshotButton"
-                text: "视口截图"
-                enabled: shellWindow.canScreenshot
-                ToolTip.visible: hovered
-                ToolTip.delay: 500
-                ToolTip.text: "保存视口 PNG 截图（Ctrl+Shift+P）"
-                onClicked: screenshotFileDialog.open()
-            }
-            Label {
-                objectName: "shellCaption"
-                Layout.fillWidth: true
-                horizontalAlignment: Text.AlignRight
-                elide: Text.ElideMiddle
-                text: shellWindow.projectOpen ? projectModel.currentName : "可视化渲染测试"
-            }
-        }
+    header: WorkbenchToolBar {
+        objectName: "mainToolBar"
+        canCreateOrOpen: shellWindow.canCreateOrOpen
+        canSave: shellWindow.canSave
+        canImport: shellWindow.canImport
+        canExport: shellWindow.canExport
+        exportPending: projectModel.exportPending
+        canScreenshot: shellWindow.canScreenshot
+        canUseView: shellWindow.meshActive
+        canToggleSection: shellWindow.canToggleSection
+        sectionActive: projectModel.sectionActive
+        viewPresets: shellWindow.viewPresets
+        onNewProjectRequested: newProjectDialog.open()
+        onOpenProjectRequested: openProjectFileDialog.open()
+        onSaveProjectRequested: projectModel.saveProject()
+        onImportRequested: importDialog.open()
+        onExportRequested: exportMeshFileDialog.open()
+        onViewPresetRequested: name => viewportPane.setViewPreset(name)
+        onResetViewRequested: viewportPane.resetView()
+        onSectionToggled: active => shellWindow.setSectionActive(active)
+        onScreenshotRequested: screenshotFileDialog.open()
     }
 
     DropArea {
@@ -804,92 +824,6 @@ ApplicationWindow {
                             }
                         }
                     }
-                    // 大网格 LOD 提示（task 019/025）：显示的是简化网格，拾取为近似值；导出流式读取源资产，表面诊断不可用。
-                    Label {
-                        objectName: "activeMeshLodStatus"
-                        Layout.fillWidth: true
-                        visible: shellWindow.meshActive && text.length > 0
-                        text: projectModel.activeMeshLodStatus
-                        color: Theme.colorTextMuted
-                        wrapMode: Text.Wrap
-                    }
-                    // 网格质量诊断面板：复用 task 006 的表面诊断，后台执行。
-                    RowLayout {
-                        Layout.fillWidth: true
-                        visible: shellWindow.meshActive
-                        Label {
-                            Layout.fillWidth: true
-                            text: "网格质量"
-                            font.bold: true
-                        }
-                        Button {
-                            objectName: "diagnoseMeshButton"
-                            text: projectModel.diagnosticsPending ? "诊断中…" : "诊断"
-                            enabled: shellWindow.canDiagnose
-                            onClicked: projectModel.beginDiagnoseActiveMesh()
-                            ToolTip.visible: hovered
-                            ToolTip.text: "检查重复顶点、退化面、开放边界、非流形边与法向一致性 (Ctrl+D)"
-                        }
-                    }
-                    ColumnLayout {
-                        objectName: "meshQualityPanel"
-                        Layout.fillWidth: true
-                        visible: shellWindow.meshActive && shellWindow.activeQuality.documentId !== undefined
-                        spacing: 2
-                        Repeater {
-                            model: [["结论", shellWindow.activeQuality.clean ? "无问题" : "存在问题", !shellWindow.activeQuality.clean], ["三角面", shellWindow.activeQuality.triangleCount, false], ["焊接后顶点", shellWindow.activeQuality.weldedVertexCount, false], ["近重复顶点", shellWindow.activeQuality.nearDuplicateVertexCount, shellWindow.activeQuality.nearDuplicateVertexCount > 0], ["退化三角面", shellWindow.activeQuality.degenerateTriangleCount, shellWindow.activeQuality.degenerateTriangleCount > 0], ["开放边界边", shellWindow.activeQuality.boundaryEdgeCount, shellWindow.activeQuality.boundaryEdgeCount > 0], ["孔洞", shellWindow.activeQuality.holeCount, shellWindow.activeQuality.holeCount > 0], ["非流形边", shellWindow.activeQuality.nonManifoldEdgeCount, shellWindow.activeQuality.nonManifoldEdgeCount > 0], ["法向不一致边", shellWindow.activeQuality.inconsistentOrientationEdgeCount, shellWindow.activeQuality.inconsistentOrientationEdgeCount > 0], ["焊接容差", Number(shellWindow.activeQuality.weldTolerance ?? 0).toExponential(2), false]].concat(shellWindow.activeQuality.volumeAvailable ? [["体网格节点", shellWindow.activeQuality.nodeCount, false], ["原生四面体", shellWindow.activeQuality.tetCount, false], ["最小二面角", Number(shellWindow.activeQuality.minDihedralDegrees ?? 0).toFixed(2) + "°", false], ["最大长宽比", Number(shellWindow.activeQuality.maxAspectRatio ?? 0).toFixed(2), false], ["平均长宽比", Number(shellWindow.activeQuality.meanAspectRatio ?? 0).toFixed(2), false], ["原始单元", shellWindow.activeQuality.cellCount ?? 0, false], ["劣质单元", shellWindow.activeQuality.poorTetCount, shellWindow.activeQuality.poorTetCount > 0], ["按类型缩放雅可比", shellWindow.activeQuality.cellQualitySummary ?? "", false]].concat(shellWindow.activeQuality.faceQualitySummary ? [["面邻接质量（checkMesh 口径）", shellWindow.activeQuality.faceQualitySummary, shellWindow.activeQuality.faceQualityWarning === true]] : []) : [])
-                            delegate: Label {
-                                required property var modelData
-                                Layout.fillWidth: true
-                                text: String(modelData[0]) + "：" + String(modelData[1])
-                                color: modelData[2] ? Theme.colorError : Theme.colorTextMuted
-                                font.pixelSize: Theme.fontSmall
-                                wrapMode: Text.Wrap
-                            }
-                        }
-                    }
-                    // 视图与测量（task 017）：原生视口覆盖 QML，工具放在侧栏而非浮层。
-                    Label {
-                        visible: shellWindow.meshActive
-                        text: "视图与测量"
-                        font.bold: true
-                    }
-                    GridLayout {
-                        objectName: "viewPresetGrid"
-                        Layout.fillWidth: true
-                        visible: shellWindow.meshActive
-                        columns: 4
-                        columnSpacing: 2
-                        rowSpacing: 2
-                        Repeater {
-                            model: [["front", "前"], ["back", "后"], ["left", "左"], ["right", "右"], ["top", "顶"], ["bottom", "底"], ["iso", "轴测"]]
-                            delegate: Button {
-                                required property var modelData
-                                objectName: "viewPreset_" + modelData[0]
-                                Layout.fillWidth: true
-                                // 同切面预设：不让 Basic 背景的 100px 隐式宽度撑宽侧栏（task 035）。
-                                implicitWidth: implicitContentWidth + leftPadding + rightPadding
-                                text: modelData[1]
-                                onClicked: viewportPane.setViewPreset(modelData[0])
-                            }
-                        }
-                        Button {
-                            objectName: "resetViewButton"
-                            Layout.fillWidth: true
-                            implicitWidth: implicitContentWidth + leftPadding + rightPadding
-                            text: "复位"
-                            onClicked: viewportPane.resetView()
-                        }
-                    }
-                    Label {
-                        objectName: "pickReadout"
-                        Layout.fillWidth: true
-                        visible: shellWindow.meshActive
-                        text: shellWindow.formatPick()
-                        color: Theme.colorTextMuted
-                        font.pixelSize: Theme.fontSmall
-                        wrapMode: Text.Wrap
-                    }
                 }
             }
         }
@@ -898,80 +832,85 @@ ApplicationWindow {
             Layout.preferredWidth: Theme.borderWidth
             color: Theme.colorPanelLine
         }
-        ColumnLayout {
+        // 视口列与底部面板纵向分割；面板高度与折叠状态写入用户设置（task 036）。
+        SplitView {
+            id: centerSplit
+            objectName: "centerSplit"
             Layout.minimumWidth: 0
             Layout.preferredWidth: 640
             Layout.fillWidth: true
             Layout.fillHeight: true
-            spacing: 0
-            ViewportPane {
-                id: viewportPane
-                objectName: "viewportPane"
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                meshSource: projectModel
-                reducedMotion: Settings.reducedMotion
-                onPointPicked: (hit, x, y, z, triangle) => shellWindow.recordPick(hit, x, y, z, triangle)
+            orientation: Qt.Vertical
+            handle: Rectangle {
+                implicitHeight: Theme.spacingXSmall
+                color: SplitHandle.pressed || SplitHandle.hovered ? Theme.colorFocus : Theme.colorChrome
             }
-            PlaybackBar {
-                objectName: "playbackBar"
-                Layout.fillWidth: true
-                model: projectModel
+            // 折叠时面板最小=最大高度，分隔条拖不动，只保留标题行。
+            onResizingChanged: {
+                if (!resizing && !Settings.bottomPanelCollapsed)
+                    Settings.bottomPanelHeight = Math.round(bottomPanel.height);
+            }
+
+            ColumnLayout {
+                SplitView.fillHeight: true
+                SplitView.minimumHeight: Theme.viewportMinimumHeight
+                spacing: 0
+                ViewportPane {
+                    id: viewportPane
+                    objectName: "viewportPane"
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    meshSource: projectModel
+                    reducedMotion: Settings.reducedMotion
+                    onPointPicked: (hit, x, y, z, triangle) => shellWindow.recordPick(hit, x, y, z, triangle)
+                }
+                PlaybackBar {
+                    objectName: "playbackBar"
+                    Layout.fillWidth: true
+                    model: projectModel
+                }
+            }
+            BottomPanel {
+                id: bottomPanel
+                objectName: "bottomPanel"
+                readonly property int expandedHeight: Settings.bottomPanelHeight
+                SplitView.preferredHeight: collapsed ? headerHeight : expandedHeight
+                SplitView.minimumHeight: collapsed ? headerHeight : Settings.bottomPanelMinimumHeight
+                SplitView.maximumHeight: collapsed ? headerHeight : Settings.bottomPanelMaximumHeight
+                projectModel: projectModel
+                collapsed: Settings.bottomPanelCollapsed
+                meshActive: shellWindow.meshActive
+                canDiagnose: shellWindow.canDiagnose
+                quality: shellWindow.activeQuality
+                tasks: shellWindow.pendingTasks
+                onCollapseToggled: value => Settings.bottomPanelCollapsed = value
+                onDiagnoseRequested: projectModel.beginDiagnoseActiveMesh()
+                onCancelTaskRequested: kind => shellWindow.cancelTask(kind)
             }
         }
     }
 
-    footer: RowLayout {
-        spacing: Theme.spacingSmall
-        BusyIndicator {
-            objectName: "busyIndicator"
-            Layout.leftMargin: Theme.spacingSmall
-            Layout.preferredWidth: 20
-            Layout.preferredHeight: 20
-            running: shellWindow.busy
-            visible: running
-        }
-        Label {
-            objectName: "statusMessage"
-            Layout.fillWidth: true
-            padding: Theme.spacingSmall
-            // task 035：错误已在打开的对话框字段旁显示时，状态栏不重复。
-            readonly property bool errorShownInDialog: newProjectDialog.visible || importDialog.visible || generateVolumeDialog.visible || largeMeshSettingsDialog.visible
-            readonly property bool showError: projectModel.error.length > 0 && !errorShownInDialog
-            text: showError ? projectModel.error : shellWindow.notice.length > 0 ? shellWindow.notice : shellWindow.busy ? "处理中…" : "就绪"
-            color: showError || shellWindow.noticeIsError ? Theme.colorError : Theme.colorTextMuted
-            elide: Text.ElideRight
-        }
-        // task 016：当前后台任务的百分比与取消；导入优先，其次导出、诊断。
-        Label {
-            objectName: "taskProgressLabel"
-            visible: shellWindow.taskProgress >= 0
-            text: shellWindow.taskName + " " + Math.round(shellWindow.taskProgress * 100) + "%"
-            color: Theme.colorTextMuted
-        }
-        ProgressBar {
-            objectName: "taskProgressBar"
-            Layout.preferredWidth: 160
-            visible: shellWindow.taskProgress >= 0
-            from: 0
-            to: 1
-            value: Math.max(0, shellWindow.taskProgress)
-        }
-        Button {
-            objectName: "taskCancelButton"
-            Layout.rightMargin: Theme.spacingSmall
-            visible: shellWindow.taskProgress >= 0
-            text: "取消"
-            onClicked: {
-                if (projectModel.generationPending)
-                    projectModel.cancelGeneration();
-                else if (projectModel.importPending)
-                    projectModel.cancelImport();
-                else if (projectModel.exportPending)
-                    projectModel.cancelExport();
-                else
-                    projectModel.cancelDiagnostics();
-            }
+    footer: WorkbenchStatusBar {
+        objectName: "statusBar"
+        busy: shellWindow.busy
+        message: shellWindow.showError ? projectModel.error : shellWindow.notice.length > 0 ? shellWindow.notice : shellWindow.busy ? "处理中…" : "就绪"
+        messageIsError: shellWindow.showError || (shellWindow.notice.length > 0 && shellWindow.noticeIsError)
+        meshActive: shellWindow.meshActive
+        pickText: shellWindow.formatPick()
+        lodStatus: projectModel.activeMeshLodStatus
+        timeStep: projectModel.playbackActive ? "时间步 " + (projectModel.playbackFrame + 1) + "/" + projectModel.playbackFrameCount : ""
+        timeStepDetail: projectModel.playbackActive ? projectModel.playbackStatus : ""
+        taskName: shellWindow.taskName
+        taskProgress: shellWindow.taskProgress
+        onCancelTaskRequested: {
+            if (projectModel.generationPending)
+                shellWindow.cancelTask("generation");
+            else if (projectModel.importPending)
+                shellWindow.cancelTask("import");
+            else if (projectModel.exportPending)
+                shellWindow.cancelTask("export");
+            else
+                shellWindow.cancelTask("diagnostics");
         }
     }
 }

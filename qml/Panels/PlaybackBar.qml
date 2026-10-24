@@ -98,10 +98,12 @@ PanelSurface {
                 onValueModified: bar.model.setPlaybackFps(value)
             }
         }
+        // 播放中的长状态文字在状态栏「时间步」字段（task 036）；此处只说明为何不可播放。
         Label {
             objectName: "playbackStatus"
             Layout.fillWidth: true
-            text: bar.active ? bar.model.playbackStatus : bar.model !== null ? bar.model.playbackUnavailable : ""
+            visible: !bar.active
+            text: !bar.active && bar.model !== null ? bar.model.playbackUnavailable : ""
             color: Theme.colorTextMuted
             font.pixelSize: Theme.fontSmall
             elide: Text.ElideRight

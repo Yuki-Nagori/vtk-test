@@ -4,7 +4,7 @@
 
 ## 当前工作台
 
-`qml/App.qml` 提供最小工具栏、模型资产列表和中央视口：新建/打开工程、保存、STL 导入与资产激活。`ProjectViewModel` 是工程快照和异步结果的 Qt 投影；QML 不维护第二份已提交工程状态。当前布局与启用条件以源码和真实窗口验收为准。
+`qml/App.qml` 组装工作台：顶部 `WorkbenchToolBar`（图标 + tooltip 分组：工程 | 导入 / 导出 | 视图预设 复位 | 切面 | 截图）、左侧模型资产与属性、中央视口列（页签、视口、播放栏）与其下可折叠的 `BottomPanel`（诊断 / 消息 / 任务），底部 `WorkbenchStatusBar` 单行显示消息、拾取读数、单位、LOD / 流式状态、时间步与后台任务进度。底部面板高度与折叠状态由 Bridge `Settings` 写入用户设置，不进工程（task 036）。`ProjectViewModel` 是工程快照和异步结果的 Qt 投影；QML 不维护第二份已提交工程状态。当前布局与启用条件以源码和真实窗口验收为准。
 
 `NewProjectDialog` 管理工程名称与目录候选，`ImportDialog` 管理文件、单位和网格类型候选及预检。确认操作经 ViewModel 进入 Rust；准入、完成和失败分别展示，失败保留已提交资产。`ViewportPane` 组合 `DocumentTabBar` 与 `CaeViewport`，页签和活动资产由 Rust 文档工作区提供，VTK 管理原生显示。初始、创建及重开工程均不创建默认文档；关闭最后一个资产页签后恢复空视口。
 
