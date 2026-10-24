@@ -20,8 +20,11 @@ pub use vtk_legacy::{parse_vtk_legacy, parse_vtk_legacy_grid};
 pub use vtk_xml::{parse_vtp, parse_vtu, parse_vtu_grid};
 
 /// 体网格导入的原始数据（task 030 起为原生混合单元）：接受线性 tet(10)、voxel(11，
-/// 按 VTK 定义重排为 hex)、hex(12)、wedge(13)、pyramid(14)；polyhedron(42，task 031 PR 3 前)、
+/// 按 VTK 定义重排为 hex)、hex(12)、wedge(13)、pyramid(14) 与 polyhedron(42，task 031)；
 /// 二次单元与二维单元整体拒绝，不做部分导入。节点顺序保持来源 VTK 局部顺序。
+/// 多面体的面流来自 VTU `faces` / `faceoffsets`、VTK 9.4 的 `polyhedron_offsets` /
+/// `polyhedron_to_faces` / `face_offsets` / `face_connectivity`，或旧版 VTK CELLS 中的序列化面流；
+/// `connectivity` 中多面体占 `[0, nFaces, n0, ids…]`，首字为中心节点占位，由领域构建补齐。
 ///
 /// `fields` 为来源中的节点 / 单元结果场（task 029），下标与 `points` / 原始单元一一对应；
 /// 不支持的数组不阻止网格导入，原因记入 `skipped_fields`。
@@ -38,13 +41,15 @@ pub struct RawGrid {
 const VOXEL_TO_HEXAHEDRON: [usize; 8] = [0, 1, 3, 2, 4, 5, 7, 6];
 
 impl RawGrid {
+    /// `faces` 为各单元的多面体面流（`None` 时多面体单元的节点表本身就是面流，即旧版 VTK）。
     pub(crate) fn new(
         points: Vec<[f64; 3]>,
         cells: CellList,
         types: Vec<u64>,
+        faces: Option<&PolyFaces>,
     ) -> FormatResult<Self> {
         const VOXEL: u64 = 11;
-        if types.len() != cells.len() {
+        if types.len() != cells.len() || faces.is_some_and(|faces| faces.len() != cells.len()) {
             return Err(FormatError::new("cell types count mismatch"));
         }
         let mut kinds = Vec::with_capacity(cells.len());
@@ -60,14 +65,17 @@ impl RawGrid {
             let Some(kind) = kind else {
                 return Err(FormatError::new(format!(
                     "cell {index} has type {code}; only linear tet (10), voxel (11), hex (12), \
-                     wedge (13) and pyramid (14) cells are supported"
+                     wedge (13), pyramid (14) and polyhedron (42) cells are supported"
                 )));
             };
-            // 多面体导入（VTU faces/faceoffsets 与 legacy 面流）随 task 031 PR 3 提供。
             let Some(node_count) = kind.fixed_node_count() else {
-                return Err(FormatError::new(format!(
-                    "cell {index} has type {code}; polyhedron import is not supported yet"
-                )));
+                let stream = match faces {
+                    Some(faces) => faces.cell(index),
+                    None => nodes,
+                };
+                push_polyhedron(index, stream, points.len(), &mut connectivity)?;
+                kinds.push(kind);
+                continue;
             };
             if nodes.len() != node_count {
                 return Err(FormatError::new(format!(
@@ -182,6 +190,115 @@ impl RawGrid {
             units: String::new(),
             values,
         });
+    }
+}
+
+/// 把一个多面体面流 `[nFaces, n0, ids…]` 校验后以 `[0, 面流…]` 追加到 `connectivity`。
+/// 闭合性与朝向由领域构建（`volume_mesh_from_cells`）检查，这里只查结构与节点范围。
+fn push_polyhedron(
+    index: usize,
+    stream: &[u64],
+    point_count: usize,
+    connectivity: &mut Vec<u32>,
+) -> FormatResult<()> {
+    let invalid = |what: &str| FormatError::new(format!("cell {index} (polyhedron) {what}"));
+    let start = connectivity.len();
+    connectivity.push(0);
+    for &word in stream {
+        connectivity.push(u32::try_from(word).map_err(|_| invalid("face stream value overflow"))?);
+    }
+    let words = &connectivity[start + 1..];
+    if words.is_empty() {
+        return Err(invalid("has no face stream"));
+    }
+    if panta_mesh::face_stream_len(words) != Some(words.len()) {
+        return Err(invalid("face stream is malformed"));
+    }
+    if words[0] < 4 {
+        return Err(invalid("has fewer than 4 faces"));
+    }
+    for face in panta_mesh::faces(words) {
+        if face.len() < 3 {
+            return Err(invalid("has a face with fewer than 3 nodes"));
+        }
+        if face.iter().any(|&node| node as usize >= point_count) {
+            return Err(invalid("references node outside the node range"));
+        }
+    }
+    Ok(())
+}
+
+/// 每个单元的多面体面流 `[nFaces, n0, ids…]`（非多面体单元为空）。
+#[derive(Debug, Default)]
+pub(crate) struct PolyFaces {
+    words: Vec<u64>,
+    ends: Vec<usize>,
+}
+
+impl PolyFaces {
+    /// VTU 旧式数组：`faces` 依次存各多面体面流，`faceoffsets[i]` 为第 i 个单元面流的结束位置，
+    /// 非多面体为 -1。
+    pub fn from_vtu_faces(faces: Vec<u64>, faceoffsets: &[f64]) -> FormatResult<Self> {
+        let mut previous = 0usize;
+        let mut ends = Vec::with_capacity(faceoffsets.len());
+        for &end in faceoffsets {
+            if end >= 0.0 {
+                if end.fract() != 0.0 || end > faces.len() as f64 || (end as usize) < previous {
+                    return Err(FormatError::new("faceoffsets out of range"));
+                }
+                previous = end as usize;
+            } else if end != -1.0 {
+                return Err(FormatError::new("faceoffsets out of range"));
+            }
+            ends.push(previous);
+        }
+        if previous != faces.len() {
+            return Err(FormatError::new("faces and faceoffsets do not match"));
+        }
+        Ok(Self { words: faces, ends })
+    }
+
+    /// VTK 9.4 数组：`polyhedron_offsets`（每单元面数前缀和，省略首个 0）索引
+    /// `polyhedron_to_faces`，其元素是 `face_offsets` / `face_connectivity` 描述的面号。
+    pub fn from_vtu_polyhedra(
+        polyhedron_offsets: &[u64],
+        polyhedron_to_faces: &[u64],
+        face_offsets: &[u64],
+        face_connectivity: &[u64],
+    ) -> FormatResult<Self> {
+        let faces = CellList::from_ends(face_connectivity.to_vec(), face_offsets)?;
+        let faces: Vec<&[u64]> = faces.iter().collect();
+        let polyhedra = CellList::from_ends(polyhedron_to_faces.to_vec(), polyhedron_offsets)?;
+        let mut words = Vec::new();
+        let mut ends = Vec::with_capacity(polyhedra.len());
+        for cell_faces in polyhedra.iter() {
+            if !cell_faces.is_empty() {
+                words.push(cell_faces.len() as u64);
+                for &face in cell_faces {
+                    let nodes = usize::try_from(face)
+                        .ok()
+                        .and_then(|face| faces.get(face))
+                        .ok_or_else(|| FormatError::new("polyhedron_to_faces out of range"))?;
+                    words.push(nodes.len() as u64);
+                    words.extend_from_slice(nodes);
+                }
+            }
+            ends.push(words.len());
+        }
+        Ok(Self { words, ends })
+    }
+
+    pub fn len(&self) -> usize {
+        self.ends.len()
+    }
+
+    pub fn cell(&self, index: usize) -> &[u64] {
+        let start = index
+            .checked_sub(1)
+            .map_or(0, |previous| self.ends[previous]);
+        self.ends
+            .get(index)
+            .map_or(&[], |&end| &self.words[start..end])
     }
 }
 

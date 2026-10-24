@@ -489,6 +489,8 @@ pub(crate) use stream::Base64Probe;
 pub use stream::{export_surface_asset_with_progress, export_volume_asset_vtu};
 
 /// 体网格导出 VTU（ASCII，原始节点与原生单元——混合网格按原单元类型与 VTK 局部节点顺序，坐标为毫米），原子替换目标（task 021）。
+/// 多面体（task 031）只写源节点（不写辅助中心节点），`connectivity` 为单元唯一节点（升序），
+/// 面流写入 `faces` / `faceoffsets`（VTKFile 1.0 布局，VTK 9.4+ 按文件版本同样读取此布局）。
 /// 按估算字节报告 0–99% 进度，原子替换后到 100%。
 /// 取消时删除临时文件并返回 [`ExportError::Cancelled`]，目标文件不变。
 pub fn export_tet_mesh_vtu(
@@ -496,12 +498,6 @@ pub fn export_tet_mesh_vtu(
     path: &Path,
     progress: &Progress,
 ) -> Result<(), ExportError> {
-    // 多面体导出（faces/faceoffsets）随 task 031 PR 3 提供；此前拒绝，避免写出中心节点与错误连接。
-    if mesh.cell_type_counts()[panta_mesh::CellType::Polyhedron.ordinal()] > 0 {
-        return Err(ExportError::UnsupportedFormat(
-            "polyhedron cells (VTU polyhedron export is not implemented yet)".to_owned(),
-        ));
-    }
     // ASCII：每节点约 3×20 字节，每单元连接/偏移/类型约 40 字节。
     let estimate = mesh.nodes.len() as u64 * 60 + mesh.cell_count() as u64 * 60 + 512;
     write_atomically(path, progress, estimate, |writer| {
@@ -564,14 +560,14 @@ pub fn write_tet_mesh_vtu(
     writeln!(
         writer,
         "<Piece NumberOfPoints=\"{}\" NumberOfCells=\"{}\">",
-        mesh.nodes.len(),
+        mesh.source_node_count(),
         mesh.cell_count()
     )?;
     writeln!(
         writer,
         "<Points><DataArray type=\"Float64\" NumberOfComponents=\"3\" format=\"ascii\">"
     )?;
-    for [x, y, z] in &mesh.nodes {
+    for [x, y, z] in &mesh.nodes[..mesh.source_node_count()] {
         writeln!(writer, "{x:?} {y:?} {z:?}")?;
     }
     writeln!(writer, "</DataArray></Points>")?;
@@ -588,7 +584,13 @@ pub fn write_tet_mesh_vtu(
         }
         Some(layout) => {
             for cell in 0..layout.cell_count() {
-                write_node_line(writer, layout.cell_nodes(cell))?;
+                let kind = layout.types[cell];
+                let nodes = layout.cell_nodes(cell);
+                if kind == panta_mesh::CellType::Polyhedron {
+                    write_node_line(writer, &panta_mesh::cell_source_nodes(kind, nodes))?;
+                } else {
+                    write_node_line(writer, nodes)?;
+                }
             }
         }
     }
@@ -603,7 +605,10 @@ pub fn write_tet_mesh_vtu(
             }
         }
         Some(layout) => {
-            for end in &layout.offsets[1..] {
+            let mut end = 0_usize;
+            for cell in 0..layout.cell_count() {
+                let kind = layout.types[cell];
+                end += panta_mesh::cell_source_nodes(kind, layout.cell_nodes(cell)).len();
                 writeln!(writer, "{end}")?;
             }
         }
@@ -624,7 +629,37 @@ pub fn write_tet_mesh_vtu(
             }
         }
     }
-    writeln!(writer, "</DataArray></Cells>")?;
+    writeln!(writer, "</DataArray>")?;
+    if let Some(layout) = mesh
+        .cells
+        .as_deref()
+        .filter(|layout| layout.polyhedron_count() > 0)
+    {
+        writeln!(
+            writer,
+            "<DataArray type=\"Int64\" Name=\"faces\" format=\"ascii\">"
+        )?;
+        for cell in 0..layout.cell_count() {
+            if layout.types[cell] == panta_mesh::CellType::Polyhedron {
+                write_node_line(writer, &layout.cell_nodes(cell)[1..])?;
+            }
+        }
+        writeln!(
+            writer,
+            "</DataArray><DataArray type=\"Int64\" Name=\"faceoffsets\" format=\"ascii\">"
+        )?;
+        let mut end = 0_usize;
+        for cell in 0..layout.cell_count() {
+            if layout.types[cell] == panta_mesh::CellType::Polyhedron {
+                end += layout.cell_nodes(cell).len() - 1;
+                writeln!(writer, "{end}")?;
+            } else {
+                writeln!(writer, "-1")?;
+            }
+        }
+        writeln!(writer, "</DataArray>")?;
+    }
+    writeln!(writer, "</Cells>")?;
     writeln!(writer, "</Piece></UnstructuredGrid></VTKFile>")?;
     Ok(())
 }

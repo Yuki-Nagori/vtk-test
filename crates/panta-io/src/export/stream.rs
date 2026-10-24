@@ -258,18 +258,15 @@ impl<W: Write> Base64Block<W> {
 }
 
 /// 流式导出体网格资产为 `.vtu`（ASCII 原生单元，与 [`super::write_tet_mesh_vtu`] 输出一致）。
-/// 单元类型逐块收集为每单元 1 B，用于随后写 offsets / types，不驻留连接表。
+/// 单元类型逐块收集为每单元 1 B，用于随后写 offsets / types，不驻留连接表。多面体（task 031）
+/// 只写源节点，另记每个多面体 8 B（唯一节点数、面流长度），并再扫描一遍单元写 `faces`。
 pub fn export_volume_asset_vtu(
     chunks: &mut VolumeAssetChunks,
     path: &Path,
     progress: &Progress,
 ) -> Result<(), ExportError> {
     let counts = chunks.counts();
-    if counts.polyhedra > 0 {
-        return Err(ExportError::UnsupportedFormat(
-            "polyhedron cells (VTU polyhedron export is not implemented yet)".to_owned(),
-        ));
-    }
+    let source_nodes = counts.source_nodes();
     let estimate = counts.nodes as u64 * 60 + counts.cells as u64 * 60 + 512;
     write_atomically(path, progress, estimate, |writer| {
         writeln!(writer, "<?xml version=\"1.0\"?>")?;
@@ -281,16 +278,19 @@ pub fn export_volume_asset_vtu(
         writeln!(
             writer,
             "<Piece NumberOfPoints=\"{}\" NumberOfCells=\"{}\">",
-            counts.nodes, counts.cells
+            source_nodes, counts.cells
         )?;
         writeln!(
             writer,
             "<Points><DataArray type=\"Float64\" NumberOfComponents=\"3\" format=\"ascii\">"
         )?;
         let mut failure = None;
+        let mut written = 0_usize;
         let finished = chunks
             .visit_nodes(None, |batch| {
-                for [x, y, z] in batch.iter().flatten() {
+                // 辅助中心节点位于末尾，不导出。
+                for [x, y, z] in batch.iter().flatten().take(source_nodes - written) {
+                    written += 1;
                     if let Err(error) = writeln!(writer, "{x:?} {y:?} {z:?}") {
                         failure = Some(error);
                         return false;
@@ -311,6 +311,10 @@ pub fn export_volume_asset_vtu(
             "<Cells><DataArray type=\"Int64\" Name=\"connectivity\" format=\"ascii\">"
         )?;
         let mut kinds: Vec<u8> = Vec::new();
+        let mut polyhedra: Vec<(u32, u32)> = Vec::new();
+        polyhedra.try_reserve_exact(counts.polyhedra).map_err(|_| {
+            ExportError::Io(io::Error::other("polyhedron buffer allocation failed"))
+        })?;
         kinds
             .try_reserve_exact(counts.cells)
             .map_err(|_| ExportError::Io(io::Error::other("cell type buffer allocation failed")))?;
@@ -318,7 +322,14 @@ pub fn export_volume_asset_vtu(
             .visit_cells(None, |batch| {
                 for (kind, _, nodes) in batch.iter().flat_map(panta_mesh::CellBlock::iter) {
                     kinds.push(kind.vtk_code());
-                    if let Err(error) = super::write_node_line(writer, nodes) {
+                    let written = if kind == panta_mesh::CellType::Polyhedron {
+                        let unique = panta_mesh::cell_source_nodes(kind, nodes);
+                        polyhedra.push((unique.len() as u32, nodes.len() as u32 - 1));
+                        super::write_node_line(writer, &unique)
+                    } else {
+                        super::write_node_line(writer, nodes)
+                    };
+                    if let Err(error) = written {
                         failure = Some(error);
                         return false;
                     }
@@ -332,7 +343,7 @@ pub fn export_volume_asset_vtu(
         if !finished {
             return Err(ExportError::Cancelled);
         }
-        if kinds.len() != counts.cells {
+        if kinds.len() != counts.cells || polyhedra.len() != counts.polyhedra {
             return Err(ExportError::Source(panta_mesh::MeshAssetError::InvalidMesh));
         }
         writeln!(
@@ -340,9 +351,16 @@ pub fn export_volume_asset_vtu(
             "</DataArray><DataArray type=\"Int64\" Name=\"offsets\" format=\"ascii\">"
         )?;
         let mut end = 0_u64;
+        let mut poly = polyhedra.iter();
         for &code in &kinds {
-            end += panta_mesh::CellType::from_vtk(code)
-                .map_or(0, |kind| kind.fixed_node_count().unwrap_or(0) as u64);
+            end += match panta_mesh::CellType::from_vtk(code) {
+                Some(panta_mesh::CellType::Polyhedron) => {
+                    poly.next().map_or(0, |&(unique, _)| u64::from(unique))
+                }
+                kind => kind
+                    .and_then(panta_mesh::CellType::fixed_node_count)
+                    .unwrap_or(0) as u64,
+            };
             writeln!(writer, "{end}")?;
         }
         writeln!(
@@ -352,7 +370,50 @@ pub fn export_volume_asset_vtu(
         for code in &kinds {
             writeln!(writer, "{code}")?;
         }
-        writeln!(writer, "</DataArray></Cells>")?;
+        writeln!(writer, "</DataArray>")?;
+        if !polyhedra.is_empty() {
+            writeln!(
+                writer,
+                "<DataArray type=\"Int64\" Name=\"faces\" format=\"ascii\">"
+            )?;
+            let finished = chunks
+                .visit_cells(None, |batch| {
+                    for (kind, _, nodes) in batch.iter().flat_map(panta_mesh::CellBlock::iter) {
+                        if kind != panta_mesh::CellType::Polyhedron {
+                            continue;
+                        }
+                        if let Err(error) = super::write_node_line(writer, &nodes[1..]) {
+                            failure = Some(error);
+                            return false;
+                        }
+                    }
+                    true
+                })
+                .map_err(ExportError::Source)?;
+            if let Some(error) = failure {
+                return Err(ExportError::Io(error));
+            }
+            if !finished {
+                return Err(ExportError::Cancelled);
+            }
+            writeln!(
+                writer,
+                "</DataArray><DataArray type=\"Int64\" Name=\"faceoffsets\" format=\"ascii\">"
+            )?;
+            let mut end = 0_u64;
+            let mut poly = polyhedra.iter();
+            let polyhedron = panta_mesh::CellType::Polyhedron.vtk_code();
+            for &code in &kinds {
+                if code == polyhedron {
+                    end += poly.next().map_or(0, |&(_, stream)| u64::from(stream));
+                    writeln!(writer, "{end}")?;
+                } else {
+                    writeln!(writer, "-1")?;
+                }
+            }
+            writeln!(writer, "</DataArray>")?;
+        }
+        writeln!(writer, "</Cells>")?;
         writeln!(writer, "</Piece></UnstructuredGrid></VTKFile>")?;
         Ok(())
     })

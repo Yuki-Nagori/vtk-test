@@ -190,43 +190,6 @@ fn tet_volume_round_trips_through_vtu_and_rejects_other_cells()
     Ok(())
 }
 
-/// 多面体导出随 task 031 PR 3 提供；此前拒绝，且不留临时文件。
-#[test]
-fn polyhedron_meshes_are_rejected_by_vtu_export_until_supported()
--> Result<(), Box<dyn std::error::Error>> {
-    let nodes: Vec<[f64; 3]> = (0..8_u32)
-        .map(|corner| {
-            let (x, y) = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)][corner as usize % 4];
-            [x, y, f64::from(corner / 4)]
-        })
-        .collect();
-    let mut connectivity = vec![u32::MAX, 6];
-    for face in [
-        [0, 3, 2, 1],
-        [4, 5, 6, 7],
-        [0, 1, 5, 4],
-        [1, 2, 6, 5],
-        [2, 3, 7, 6],
-        [3, 0, 4, 7],
-    ] {
-        connectivity.push(4);
-        connectivity.extend(face);
-    }
-    let types = vec![panta_mesh::CellType::Polyhedron];
-    let offsets =
-        panta_mesh::cell_offsets(&types, &connectivity).map_err(|cell| format!("{cell}"))?;
-    let mesh = panta_mesh::volume_mesh_from_cells(nodes, types, offsets, connectivity)?;
-    let directory = std::env::temp_dir().join(format!("panta-poly-export-{}", std::process::id()));
-    std::fs::create_dir_all(&directory)?;
-    let result = export_tet_mesh_vtu(&mesh, &directory.join("poly.vtu"), &Progress::new());
-    assert!(
-        matches!(&result, Err(ExportError::UnsupportedFormat(reason)) if reason.contains("polyhedron"))
-    );
-    assert_eq!(std::fs::read_dir(&directory)?.count(), 0);
-    std::fs::remove_dir_all(&directory)?;
-    Ok(())
-}
-
 mod streamed {
     use super::{assert_exact, sample};
     use crate::export::{
@@ -411,16 +374,13 @@ CELL_DATA 4\nSCALARS id double 1\nLOOKUP_TABLE default\n0 1 2 3\n";
     }
 
     #[test]
-    fn polyhedra_and_unknown_cells_are_rejected_with_clear_errors() {
+    fn unknown_and_mismatched_cells_are_rejected_with_clear_errors() {
+        // 四面体节点表不是合法面流，标为多面体（42）时按面流校验失败。
         let polyhedron = LEGACY.replace(
             "CELL_TYPES 4\n11\n14\n13\n10",
             "CELL_TYPES 4\n11\n14\n13\n42",
         );
-        let error = parse_vtk_legacy_grid(polyhedron.as_bytes())
-            .err()
-            .map(|error| error.to_string())
-            .unwrap_or_default();
-        assert!(error.contains("42"), "{error}");
+        assert!(parse_vtk_legacy_grid(polyhedron.as_bytes()).is_err());
         let quadratic = LEGACY.replace(
             "CELL_TYPES 4\n11\n14\n13\n10",
             "CELL_TYPES 4\n11\n14\n13\n24",
@@ -434,3 +394,7 @@ CELL_DATA 4\nSCALARS id double 1\nLOOKUP_TABLE default\n0 1 2 3\n";
         assert!(parse_vtk_legacy_grid(mismatched.as_bytes()).is_err());
     }
 }
+
+/// 多面体单元（task 031）：旧版 VTK 42、VTU 旧式 faces/faceoffsets 与 VTK 9.4 四数组导入，
+/// VTU 导出（驻留与流式）再导入，表面提取与固定类型单元共享面抵消，字段按源节点 / 原单元绑定。
+mod poly_io;
