@@ -7,5 +7,6 @@ Label {
     property int textSize: Theme.fontBody
 
     color: textColor
+    font.family: Theme.fontFamily
     font.pixelSize: textSize
 }

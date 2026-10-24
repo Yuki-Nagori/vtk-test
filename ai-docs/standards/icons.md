@@ -12,7 +12,7 @@
 
 ## 资源与调用
 
-项目自绘：`caret.svg`、`close.svg`、`open.svg` 和 `stl-file.svg`（导入资产页签）。第三方：播放栏 7 个 `playback-*.svg`（见下文来源记录）。新增资源先确认是否可复用已有概念，再登记到 QML 构建资源和实际使用点；不增加没有消费者的图标。
+项目自绘：`caret.svg`、`close.svg`、`open.svg`、`stl-file.svg`（导入资产页签），以及 CAE 专用的 `section.svg`（切面）和 `tree-field.svg`（标量场，task 039）。第三方：Lucide 图标（见下文来源记录）。新增资源先确认是否可复用已有概念，再登记到 QML 构建资源和实际使用点；不增加没有消费者的图标。
 
 `ThemedIcon.preserveSourceColors` 控制加载方式：单色资源使用 `image://panta-icons/<name>/<argb>`，彩色资源直接通过 `qrc:/qt/qml/Panta/Shell/icons/<name>.svg` 加载。provider 白名单与已打包资源保持一致，未知 ID 返回失败，不静默替换成另一个动作图标。
 
@@ -25,10 +25,11 @@
 
 项目自绘图标在资源文件中保留来源说明。新增资源记录作者 / 来源 URL、许可证、版本、修改情况与使用位置。
 
-第三方图标集按 [034](../task/034-ui-redesign.md) Q3 使用 [Lucide](https://lucide.dev/)（ISC）；Lucide 中由 Feather 派生（MIT）的图标需额外附 MIT 声明，目前未使用。引入规则：
+第三方图标集按 [034](../task/034-ui-redesign.md) Q3 使用 [Lucide](https://lucide.dev/)（ISC）；Lucide 中由 Feather 派生的图标另受 MIT 许可，以上游 `LICENSE` 列出的名单为准；本仓库使用的派生图标在下表「许可」列标为「ISC + MIT（Feather）」，SVG 注释附 MIT 版权行，`LICENSE-lucide.txt` 收录上游许可全文（含 MIT 段与名单）。task 039 复核时发现 `tree-expand.svg`（`chevron-right`）属于派生图标而原记录写作未使用，已一并更正。引入规则：
 
 - 固定上游版本，从该版本 tag 的 `icons/<name>.svg` 取原文件；不改几何，只把根属性整理为单行并加注释。
-- 每个 SVG 注释写明上游版本、原文件名、许可证与版权行，并指向 `qml/icons/LICENSE-lucide.txt`（许可全文，随源码分发）。
+- 每个 SVG 注释写明上游版本、原文件名、许可证与版权行（Feather 派生图标另写 MIT 版权行），并指向 `qml/icons/LICENSE-lucide.txt`（许可全文，随源码分发）。
+- 引入前对照上游 `LICENSE` 的 Feather 名单（含旧名，如 `alert-triangle` 对应 `triangle-alert`）。
 - 资源按用途命名（如 `playback-play`），在下表登记原名；单色图标加入 provider 白名单。
 
 | 资源 | 上游（版本 / 原名） | 许可 | 修改 | 使用位置 |
@@ -47,13 +48,30 @@
 | `mesh-export.svg` | Lucide 1.61.0 / `file-output` | ISC | 无几何修改 | `WorkbenchToolBar` 导出活动网格 |
 | `view-preset.svg` | Lucide 1.61.0 / `box` | ISC | 无几何修改 | `WorkbenchToolBar` 视图预设菜单 |
 | `view-reset.svg` | Lucide 1.61.0 / `rotate-ccw` | ISC | 无几何修改 | `WorkbenchToolBar` 复位视图 |
-| `section.svg` | Lucide 1.61.0 / `scissors` | ISC | 无几何修改 | `WorkbenchToolBar` 切面开关（临时，039 统一图标时复核；开：描边 + 强调色） |
 | `screenshot.svg` | Lucide 1.61.0 / `camera` | ISC | 无几何修改 | `WorkbenchToolBar` 视口截图 |
 | `panel-bottom.svg` | Lucide 1.61.0 / `panel-bottom` | ISC | 无几何修改 | `BottomPanel` 折叠 / 展开 |
 | `panel-left.svg` | Lucide 1.61.0 / `panel-left` | ISC | 无几何修改 | `WorkbenchSidebar` 折叠、左栏窄轨展开 |
 | `visibility-on.svg` | Lucide 1.61.0 / `eye` | ISC | 无几何修改 | `WorkbenchSidebar` 对象树可见性（显示中） |
 | `visibility-off.svg` | Lucide 1.61.0 / `eye-off` | ISC | 无几何修改 | `WorkbenchSidebar` 对象树可见性（已隐藏） |
-| `tree-expand.svg` | Lucide 1.61.0 / `chevron-right` | ISC | 无几何修改 | `WorkbenchSidebar` 对象树展开指示（展开时旋转 90°） |
+| `tree-expand.svg` | Lucide 1.61.0 / `chevron-right` | ISC + MIT（Feather） | 无几何修改 | `WorkbenchSidebar` 对象树展开指示（展开时旋转 90°） |
+| `tree-project.svg` | Lucide 1.61.0 / `folder` | ISC | 无几何修改 | `WorkbenchSidebar` 对象树「工程」节点 |
+| `tree-asset.svg` | Lucide 1.61.0 / `layers` | ISC | 无几何修改 | `WorkbenchSidebar` 对象树资产节点 |
+| `tree-time-steps.svg` | Lucide 1.61.0 / `clock` | ISC + MIT（Feather） | 无几何修改 | `WorkbenchSidebar` 对象树「时间序列」节点 |
+| `tree-quality.svg` | Lucide 1.61.0 / `activity` | ISC | 无几何修改 | `WorkbenchSidebar` 对象树「质量诊断」节点 |
+| `tree-animation.svg` | Lucide 1.61.0 / `film` | ISC | 无几何修改 | `WorkbenchSidebar` 对象树「表面序列」节点 |
+| `status-info.svg` | Lucide 1.61.0 / `info` | ISC + MIT（Feather） | 无几何修改 | `BottomPanel` 消息列表、`WorkbenchStatusBar` 状态消息（信息） |
+| `status-success.svg` | Lucide 1.61.0 / `circle-check` | ISC | 无几何修改 | 同上（完成） |
+| `status-warning.svg` | Lucide 1.61.0 / `triangle-alert` | ISC + MIT（Feather） | 无几何修改 | 同上（警告） |
+| `status-error.svg` | Lucide 1.61.0 / `circle-x` | ISC + MIT（Feather） | 无几何修改 | 同上（错误） |
+
+项目自绘 CAE 图标（task 039，24×24、2 px 描边、`currentColor`，与 Lucide 同一网格）：
+
+| 资源 | 内容 | 使用位置 |
+|---|---|---|
+| `section.svg` | 斜置切平面与法向箭头（替换原临时使用的 Lucide `scissors`） | `WorkbenchToolBar` 切面开关（开：描边 + 强调色）、对象树「切面」节点 |
+| `tree-field.svg` | 分段色标条与刻度 | 对象树「着色」节点 |
+
+暂缓（无消费者或需自绘，不预先引入）：六向视图与等轴视图图标（视图预设目前是带文字的菜单）、体网格资产图标（资产类型尚未在树上区分体 / 表面网格）。
 
 参考截图不证明第三方品牌、专有字形或图标包可复用，来源不明的素材需先核验。
 

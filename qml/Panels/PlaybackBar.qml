@@ -14,53 +14,59 @@ PanelSurface {
     readonly property bool active: model !== null && model.playbackActive
     readonly property int lastFrame: active ? Math.max(0, model.playbackFrameCount - 1) : 0
 
-    implicitHeight: content.implicitHeight + Theme.spacingSmall * 2
+    implicitHeight: content.implicitHeight + Theme.spacingXSmall * 2
     visible: model !== null
+
+    // 播放按钮 28 px、图标 16 px（034 视觉规范）。
+    component PlaybackButton: ThemedToolButton {
+        controlHeight: Theme.toolButtonSize
+        iconSize: Theme.iconSizeSmall
+    }
 
     RowLayout {
         id: content
         anchors.fill: parent
-        anchors.margins: Theme.spacingSmall
-        spacing: 2
+        anchors.margins: Theme.spacingXSmall
+        spacing: Theme.spacingTiny
 
         RowLayout {
             objectName: "playbackControls"
             Layout.fillWidth: true
             enabled: bar.active
-            spacing: 2
+            spacing: Theme.spacingTiny
             // 图标为 Lucide SVG（task 035，Q9）；不依赖系统字体里的 ⏮⏭⏸ 字形。
-            ThemedToolButton {
+            PlaybackButton {
                 objectName: "playbackFirstButton"
                 iconName: "playback-first"
                 accessibleName: "首帧"
                 onClicked: bar.model.setPlaybackFrame(0)
             }
-            ThemedToolButton {
+            PlaybackButton {
                 objectName: "playbackPreviousButton"
                 iconName: "playback-previous"
                 accessibleName: "上一帧"
                 onClicked: bar.model.stepPlayback(-1)
             }
-            ThemedToolButton {
+            PlaybackButton {
                 objectName: "playbackPlayButton"
                 iconName: bar.active && bar.model.playbackPlaying ? "playback-pause" : "playback-play"
                 accessibleName: bar.active && bar.model.playbackPlaying ? "暂停" : "播放"
                 onClicked: bar.model.setPlaybackPlaying(!bar.model.playbackPlaying)
             }
-            ThemedToolButton {
+            PlaybackButton {
                 objectName: "playbackNextButton"
                 iconName: "playback-next"
                 accessibleName: "下一帧"
                 onClicked: bar.model.stepPlayback(1)
             }
-            ThemedToolButton {
+            PlaybackButton {
                 objectName: "playbackLastButton"
                 iconName: "playback-last"
                 accessibleName: "末帧"
                 onClicked: bar.model.setPlaybackFrame(bar.lastFrame)
             }
             // 开关状态由边框（形状）、图标颜色和 tooltip 文字共同表达，不只靠颜色。
-            ThemedToolButton {
+            PlaybackButton {
                 objectName: "playbackLoopButton"
                 iconName: "playback-loop"
                 checkable: true
@@ -86,8 +92,9 @@ PanelSurface {
                 objectName: "playbackTimeLabel"
                 visible: bar.active
                 text: bar.active ? bar.model.playbackTimeLabel : ""
+                font.features: Theme.fontFeaturesNumeric
                 elide: Text.ElideRight
-                Layout.maximumWidth: 200
+                Layout.maximumWidth: Theme.playbackTimeLabelMaximumWidth
             }
             SpinBox {
                 objectName: "playbackFpsSpin"

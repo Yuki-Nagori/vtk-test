@@ -11,7 +11,8 @@ DialogWindow {
     required property ProjectViewModel projectModel
 
     width: Theme.newProjectDialogWidth
-    height: Theme.newProjectDialogHeight
+    // 与导入窗口一致（task 039）：高度随内容收紧，不以固定高度留白或裁切按钮。
+    height: Math.max(minimumHeight, largeMeshFrame.implicitHeight)
     minimumWidth: Theme.newProjectDialogMinimumWidth
     minimumHeight: Theme.newProjectDialogMinimumHeight
     title: "大网格设置"
@@ -61,15 +62,13 @@ DialogWindow {
     }
 
     DialogFrame {
+        id: largeMeshFrame
         window: dialog
 
         ColumnLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.leftMargin: Theme.spacingLarge
-            Layout.rightMargin: Theme.spacingLarge
-            Layout.topMargin: Theme.spacingMedium
-            Layout.bottomMargin: Theme.spacingMedium
+            Layout.margins: Theme.dialogContentPadding
             spacing: Theme.spacingMedium
 
             ThemedLabel {
@@ -181,7 +180,7 @@ DialogWindow {
 
             DialogButtonRow {
                 Layout.fillWidth: true
-                spacing: Theme.spacingSmall
+                spacing: Theme.spacingMedium
 
                 ThemedButton {
                     objectName: "largeMeshDefaults"

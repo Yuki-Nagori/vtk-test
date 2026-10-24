@@ -11,7 +11,8 @@ DialogWindow {
     required property ProjectViewModel projectModel
 
     width: Theme.newProjectDialogWidth
-    height: Theme.newProjectDialogHeight
+    // 与导入窗口一致（task 039）：高度随内容收紧，不以固定高度留白或裁切按钮。
+    height: Math.max(minimumHeight, volumeFrame.implicitHeight)
     minimumWidth: Theme.newProjectDialogMinimumWidth
     minimumHeight: Theme.newProjectDialogMinimumHeight
     title: "从 STEP 生成体网格"
@@ -44,15 +45,13 @@ DialogWindow {
     }
 
     DialogFrame {
+        id: volumeFrame
         window: dialog
 
         ColumnLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.leftMargin: Theme.spacingLarge
-            Layout.rightMargin: Theme.spacingLarge
-            Layout.topMargin: Theme.spacingMedium
-            Layout.bottomMargin: Theme.spacingMedium
+            Layout.margins: Theme.dialogContentPadding
             spacing: Theme.spacingMedium
 
             ThemedLabel {
@@ -75,7 +74,7 @@ DialogWindow {
                 }
                 RowLayout {
                     Layout.fillWidth: true
-                    spacing: Theme.spacingSmall
+                    spacing: Theme.spacingMedium
 
                     ThemedTextField {
                         id: stepField
@@ -92,7 +91,7 @@ DialogWindow {
                         text: "浏览"
                         iconName: "open"
                         preserveIconColors: true
-                        contentPadding: Theme.spacingSmall
+                        contentPadding: Theme.spacingMedium
                         hoverColor: Theme.colorHover
                         borderColor: Theme.colorPanelLine
                         onClicked: stepFileDialog.open()
@@ -137,7 +136,7 @@ DialogWindow {
 
             DialogButtonRow {
                 Layout.fillWidth: true
-                spacing: Theme.spacingSmall
+                spacing: Theme.spacingMedium
 
                 ThemedButton {
                     objectName: "generateVolumeAccept"

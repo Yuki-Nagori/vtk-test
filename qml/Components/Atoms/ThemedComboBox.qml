@@ -7,7 +7,7 @@ ComboBox {
     font.pixelSize: Theme.fontBody
     indicator: ThemedIcon {
         anchors.right: parent.right
-        anchors.rightMargin: Theme.spacingSmall
+        anchors.rightMargin: Theme.spacingMedium
         anchors.verticalCenter: parent.verticalCenter
         name: "caret"
         iconSize: Theme.iconSizeSmall

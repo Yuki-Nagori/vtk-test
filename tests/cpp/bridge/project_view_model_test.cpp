@@ -1458,8 +1458,10 @@ TEST(ProjectViewModelTest, ColorsSectionsByResultFieldAndShowsLegend) {
     EXPECT_EQ(fields[2].toMap().value(QStringLiteral("association")).toString(),
               QStringLiteral("cell"));
     EXPECT_TRUE(fields[0].toMap().value(QStringLiteral("sectionable")).toBool());
-    EXPECT_EQ(ProjectViewModel::fieldLegendStops().size(), 3);
-    EXPECT_EQ(ProjectViewModel::fieldMissingColor(), QStringLiteral("#ffff00"));
+    EXPECT_EQ(view_model.fieldColorMap(), 0);
+    EXPECT_EQ(ProjectViewModel::fieldColorMapLabels().size(), 4);
+    EXPECT_EQ(view_model.fieldLegendStops().size(), 3);
+    EXPECT_EQ(view_model.fieldMissingColor(), QStringLiteral("#ffff00"));
 
     // 非法选择被拒绝且不改变当前选择。
     EXPECT_FALSE(
@@ -1490,12 +1492,28 @@ TEST(ProjectViewModelTest, ColorsSectionsByResultFieldAndShowsLegend) {
     // 视口色标元数据（task 038）：单步结果不带区间口径。
     EXPECT_EQ(mesh->scalar_title, std::string("temperature"));
     EXPECT_TRUE(mesh->scalar_range_label.empty());
+    EXPECT_EQ(mesh->color_map, 0U);
+
+    // 颜色图预设（task 039）：只换查找表，同步发出新快照且标量不变；越界被拒绝。
+    const auto scalarCount = mesh->scalars.size();
+    ASSERT_TRUE(view_model.setFieldColorMap(1));
+    EXPECT_EQ(view_model.fieldColorMap(), 1);
+    EXPECT_EQ(view_model.fieldLegendStops().size(), 5);
+    EXPECT_EQ(view_model.fieldMissingColor(), QStringLiteral("#ff0000"));
+    EXPECT_EQ(view_model.mesh_snapshot()->color_map, 1U);
+    EXPECT_EQ(view_model.mesh_snapshot()->scalars.size(), scalarCount);
+    EXPECT_FALSE(view_model.setFieldColorMap(4));
+    EXPECT_EQ(view_model.errorCode(), QStringLiteral("project.command_invalid"));
+    EXPECT_FALSE(view_model.setFieldColorMap(-1));
+    EXPECT_EQ(view_model.fieldColorMap(), 1);
 
     // 换分量：重算切面，标题带分量名。
     ASSERT_TRUE(view_model.setSectionField(QStringLiteral("velocity"), QStringLiteral("node"), 1));
     ASSERT_TRUE(meshChanged.wait(10000));
     EXPECT_EQ(view_model.fieldLegendTitle(), QStringLiteral("velocity [Y]"));
     EXPECT_EQ(view_model.mesh_snapshot()->scalar_title, std::string("velocity [Y]"));
+    // 重算的切面沿用会话内颜色图选择。
+    EXPECT_EQ(view_model.mesh_snapshot()->color_map, 1U);
     EXPECT_EQ(view_model.fieldMissingVertices(), 0.0);
 
     // 清除字段：切面回到单色，色标隐藏；关闭切面同样隐藏。

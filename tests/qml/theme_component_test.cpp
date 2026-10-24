@@ -75,18 +75,18 @@ class ThemeComponentTest final : public QObject {
             engine, QStringLiteral("qrc:/qt/qml/Panta/Shell/Components/Atoms/ThemedLabel.qml"),
             owner);
         QVERIFY(label != nullptr);
-        QCOMPARE(label->property("textColor").value<QColor>(), QColor(QStringLiteral("#1c1c1c")));
+        QCOMPARE(label->property("textColor").value<QColor>(), QColor(QStringLiteral("#1f2328")));
         QCOMPARE(label->property("textSize").toInt(), 13);
 
         QObject* button = create_component(
             engine, QStringLiteral("qrc:/qt/qml/Panta/Shell/Components/Atoms/ThemedToolButton.qml"),
             owner);
         QVERIFY(button != nullptr);
-        QCOMPARE(button->property("controlHeight").toInt(), 24);
+        QCOMPARE(button->property("controlHeight").toInt(), 26);
         QCOMPARE(button->property("contentPadding").toInt(), 4);
         QCOMPARE(button->property("contentColor").value<QColor>(),
                  QColor(QStringLiteral("#4a4a4a")));
-        QCOMPARE(button->property("implicitHeight").toInt(), 24);
+        QCOMPARE(button->property("implicitHeight").toInt(), 26);
 
         QObject* surface = create_component(
             engine, QStringLiteral("qrc:/qt/qml/Panta/Shell/Components/Atoms/PanelSurface.qml"),
@@ -328,8 +328,17 @@ class ThemeComponentTest final : public QObject {
             QVERIFY2(!reader.read().isNull(), qPrintable(file));
         }
 
+        // 白名单与打包清单一致：除保留原色的彩色资源外，每个 SVG 都必须可经 provider 着色。
+        QStringList packaged_monochrome;
+        for (const QString& file : files) {
+            packaged_monochrome.append(file.chopped(4));
+        }
+        packaged_monochrome.removeAll(QStringLiteral("open"));
+        packaged_monochrome.removeAll(QStringLiteral("stl-file"));
+        packaged_monochrome.sort();
         QStringList monochrome_icons = panta::monochrome_icon_names().values();
         monochrome_icons.sort();
+        QCOMPARE(monochrome_icons, packaged_monochrome);
         for (const QString& name : monochrome_icons) {
             QImageReader reader(resource_root + name + QStringLiteral(".svg"));
             const QSize expected_size = reader.size();
@@ -393,6 +402,8 @@ class ThemeComponentTest final : public QObject {
         QVERIFY(provider->requestImage(QStringLiteral("../new/ffffffff"), nullptr, {}).isNull());
         QVERIFY(provider->requestImage(QStringLiteral("open/ffffffff"), nullptr, {}).isNull());
         QVERIFY(provider->requestImage(QStringLiteral("close/not-a-color"), nullptr, {}).isNull());
+        QVERIFY(
+            provider->requestImage(QStringLiteral("no-such-icon/ffffffff"), nullptr, {}).isNull());
     }
 
     void document_tab_connectors_and_accessibility() {

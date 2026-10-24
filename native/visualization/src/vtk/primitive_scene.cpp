@@ -67,9 +67,11 @@ void configure_field_colors(vtkPolyDataMapper* mapper, const SurfaceMeshSnapshot
     const auto [low, high] = field_display_range(mesh.scalar_min, mesh.scalar_max);
     vtkNew<vtkColorTransferFunction> colors;
     colors->SetColorSpaceToRGB();
-    for (const auto& stop : field_color_stops)
+    const auto& preset = field_color_map(mesh.color_map);
+    for (const auto& stop : preset.stops)
         colors->AddRGBPoint(low + (high - low) * stop.position, stop.red, stop.green, stop.blue);
-    colors->SetNanColor(field_missing_color[0], field_missing_color[1], field_missing_color[2]);
+    const auto& missing = preset.missing_color;
+    colors->SetNanColor(missing[0], missing[1], missing[2]);
     colors->ClampingOn();
     mapper->SetLookupTable(colors);
     mapper->SetScalarModeToUsePointData();

@@ -8,7 +8,7 @@ TextField {
     property color fieldColor: Theme.colorText
     property color placeholderColor: Theme.colorTextPlaceholder
     property color fieldBorderColor: Theme.colorPanelLine
-    property color focusBorderColor: Theme.colorIcon
+    property color focusBorderColor: Theme.colorFocus
     property bool invalid: false
 
     hoverEnabled: true
@@ -17,12 +17,12 @@ TextField {
     font.pixelSize: Theme.fontBody
     topPadding: 0
     bottomPadding: 0
-    leftPadding: Theme.spacingSmall
-    rightPadding: Theme.spacingSmall
+    leftPadding: Theme.spacingMedium
+    rightPadding: Theme.spacingMedium
 
     background: Rectangle {
         color: Theme.colorPanel
-        border.width: Theme.borderWidth
+        border.width: field.activeFocus || field.invalid ? Theme.focusBorderWidth : Theme.borderWidth
         border.color: field.invalid ? Theme.colorError : field.activeFocus ? field.focusBorderColor : field.fieldBorderColor
         radius: Theme.radiusSmall
     }

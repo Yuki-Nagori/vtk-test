@@ -13,7 +13,8 @@ DialogWindow {
     signal projectCreated(string path)
 
     width: Theme.newProjectDialogWidth
-    height: Theme.newProjectDialogHeight
+    // 与导入窗口一致（task 039）：高度随内容收紧，不以固定高度留白或裁切按钮。
+    height: Math.max(minimumHeight, newProjectFrame.implicitHeight)
     minimumWidth: Theme.newProjectDialogMinimumWidth
     minimumHeight: Theme.newProjectDialogMinimumHeight
     title: "新建工程"
@@ -89,16 +90,14 @@ DialogWindow {
     }
 
     DialogFrame {
+        id: newProjectFrame
         window: dialog
         closeEnabled: !dialog.submitting
 
         ColumnLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.leftMargin: Theme.spacingLarge
-            Layout.rightMargin: Theme.spacingLarge
-            Layout.topMargin: Theme.spacingMedium
-            Layout.bottomMargin: Theme.spacingMedium
+            Layout.margins: Theme.dialogContentPadding
             spacing: Theme.spacingMedium
 
             ThemedLabel {
@@ -137,7 +136,7 @@ DialogWindow {
                 }
                 RowLayout {
                     Layout.fillWidth: true
-                    spacing: Theme.spacingSmall
+                    spacing: Theme.spacingMedium
 
                     ThemedTextField {
                         id: locationField
@@ -153,7 +152,7 @@ DialogWindow {
                         text: "浏览"
                         iconName: "open"
                         preserveIconColors: true
-                        contentPadding: Theme.spacingSmall
+                        contentPadding: Theme.spacingMedium
                         hoverColor: Theme.colorHover
                         borderColor: Theme.colorPanelLine
                         onClicked: folderDialog.open()
@@ -186,7 +185,7 @@ DialogWindow {
 
             DialogButtonRow {
                 Layout.fillWidth: true
-                spacing: Theme.spacingSmall
+                spacing: Theme.spacingMedium
 
                 ThemedButton {
                     objectName: "newProjectAccept"

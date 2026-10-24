@@ -1,11 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg"
      width="24" height="24" viewBox="0 0 24 24" fill="none"
      stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <!-- Lucide 1.61.0 icons/scissors.svg，未修改几何。ISC License，Copyright (c) 2026 Lucide Icons and Contributors；
-       许可全文见 qml/icons/LICENSE-lucide.txt。 -->
-  <circle cx="6" cy="6" r="3"/>
-  <path d="M8.12 8.12 12 12"/>
-  <path d="M20 4 8.12 15.88"/>
-  <circle cx="6" cy="18" r="3"/>
-  <path d="M14.8 14.8 20 20"/>
+  <!-- 项目自绘（task 039）：斜置切平面与法向箭头，表示切面。 -->
+  <path d="M3 18l5-5h13l-5 5z"/>
+  <path d="M12 15.5V4"/>
+  <path d="m9 7 3-3 3 3"/>
 </svg>

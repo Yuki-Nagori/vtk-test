@@ -123,8 +123,10 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     Q_PROPERTY(bool fieldLegendHasRange READ fieldLegendHasRange NOTIFY fieldLegendChanged)
     Q_PROPERTY(double fieldMissingVertices READ fieldMissingVertices NOTIFY fieldLegendChanged)
     /// 与视口查找表同源的色标控制点：[{position, color}]，color 为 QColor。
-    Q_PROPERTY(QVariantList fieldLegendStops READ fieldLegendStops CONSTANT)
-    Q_PROPERTY(QString fieldMissingColor READ fieldMissingColor CONSTANT)
+    Q_PROPERTY(QVariantList fieldLegendStops READ fieldLegendStops NOTIFY fieldLegendChanged)
+    Q_PROPERTY(QString fieldMissingColor READ fieldMissingColor NOTIFY fieldLegendChanged)
+    Q_PROPERTY(int fieldColorMap READ fieldColorMap NOTIFY fieldLegendChanged)
+    Q_PROPERTY(QStringList fieldColorMapLabels READ fieldColorMapLabels CONSTANT)
     /// 工作台对象树（task 037）：Rust 投影的只读树模型，随工程 / 活动文档状态刷新。
     Q_PROPERTY(panta::bridge::ObjectTreeModel* objectTree READ objectTree CONSTANT)
     /// 活动文档网格是否显示；可见性是会话显示状态，不写工程、不影响 dirty。
@@ -333,9 +335,15 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     [[nodiscard]] double fieldLegendMax() const { return m_fieldLegendMax; }
     [[nodiscard]] bool fieldLegendHasRange() const { return m_fieldLegendHasRange; }
     [[nodiscard]] double fieldMissingVertices() const { return m_fieldMissingVertices; }
-    [[nodiscard]] static QVariantList fieldLegendStops();
+    /// 当前颜色图预设的控制点（`position`、`color`）。
+    [[nodiscard]] QVariantList fieldLegendStops() const;
     /// `#rrggbb`；QML 的 color 属性直接接受该字符串。
-    [[nodiscard]] static QString fieldMissingColor();
+    [[nodiscard]] QString fieldMissingColor() const;
+    /// 颜色图预设（task 039）：会话内视图状态，不写工程；切换只重配查找表，不重算切面。
+    [[nodiscard]] int fieldColorMap() const { return m_fieldColorMap; }
+    [[nodiscard]] static QStringList fieldColorMapLabels();
+    /// 越界索引返回 false 并设置 `project.command_invalid`。
+    Q_INVOKABLE bool setFieldColorMap(int index);
     [[nodiscard]] ObjectTreeModel* objectTree() const { return m_objectTree; }
     [[nodiscard]] bool activeMeshVisible() const {
         return !m_hiddenAssetIds.contains(m_activeDocumentId);
@@ -506,6 +514,7 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     QString m_timeStepsKey;
     QString m_timeStepsUnavailable;
     bool m_fieldRangeGlobal = true;
+    int m_fieldColorMap = 0;
     /// 全局色标范围缓存：键为文档 / 字段 / 关联 / 分量。
     QString m_globalRangeKey;
     bool m_globalRangeHas = false;

@@ -10,14 +10,16 @@ Rectangle {
     property bool closeEnabled: true
     signal closeRequested
 
-    implicitHeight: Theme.titlebarHeight + Theme.spacingSmall
-    color: Theme.colorChrome
+    implicitHeight: Theme.titlebarHeight + Theme.spacingMedium
+    color: Theme.colorWindow
+    topLeftRadius: Theme.radiusDialog - Theme.borderWidth
+    topRightRadius: Theme.radiusDialog - Theme.borderWidth
 
     RowLayout {
         anchors.fill: parent
         anchors.leftMargin: Theme.spacingMedium
         anchors.rightMargin: Theme.spacingXSmall
-        spacing: Theme.spacingSmall
+        spacing: Theme.spacingMedium
 
         ThemedLabel {
             Layout.fillWidth: true
@@ -51,7 +53,7 @@ Rectangle {
     MouseArea {
         id: moveArea
         anchors.fill: parent
-        anchors.rightMargin: closeButton.width + Theme.spacingSmall
+        anchors.rightMargin: closeButton.width + Theme.spacingMedium
         acceptedButtons: Qt.LeftButton
         hoverEnabled: true
 

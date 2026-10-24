@@ -32,13 +32,14 @@ PanelSurface {
             collapseToggled(false);
     }
     // 消息历史只保存在本次会话内存中，最多保留最近 200 条。
-    function appendMessage(text: string, isError: bool) {
+    // level 取值同 Theme.statusColor。
+    function appendMessage(text: string, level: string) {
         if (text.length === 0)
             return;
         messages.append({
             "time": Qt.formatTime(new Date(), "HH:mm:ss"),
             "message": text,
-            "isError": isError
+            "level": level
         });
         if (messages.count > 200)
             messages.remove(0);
@@ -76,8 +77,8 @@ PanelSurface {
             Accessible.name: "底部面板"
             Layout.fillWidth: true
             Layout.preferredHeight: panel.headerHeight - Theme.borderWidth
-            Layout.leftMargin: Theme.spacingSmall
-            Layout.rightMargin: Theme.spacingSmall
+            Layout.leftMargin: Theme.spacingMedium
+            Layout.rightMargin: Theme.spacingMedium
             spacing: Theme.spacingTiny
 
             // 页签用共用工具按钮：选中页用面板底色 + 边框表达，不只靠颜色。
@@ -167,6 +168,7 @@ PanelSurface {
                                 text: String(modelData[0]) + "：" + String(modelData[1])
                                 color: modelData[2] ? Theme.colorError : Theme.colorTextMuted
                                 font.pixelSize: Theme.fontSmall
+                                font.features: Theme.fontFeaturesNumeric
                                 elide: Text.ElideRight
                                 ToolTip.visible: truncated && hoverHandler.hovered
                                 ToolTip.text: text
@@ -186,17 +188,32 @@ PanelSurface {
                 model: messages
                 onCountChanged: positionViewAtEnd()
                 ScrollBar.vertical: ScrollBar {}
-                delegate: Label {
+                delegate: RowLayout {
+                    id: messageRow
                     required property string time
                     required property string message
-                    required property bool isError
+                    required property string level
                     width: ListView.view.width
-                    leftPadding: Theme.spacingMedium
-                    rightPadding: Theme.spacingMedium
-                    text: time + "  " + message
-                    color: isError ? Theme.colorError : Theme.colorTextMuted
-                    font.pixelSize: Theme.fontSmall
-                    wrapMode: Text.Wrap
+                    spacing: Theme.spacingXSmall
+                    ThemedIcon {
+                        Layout.leftMargin: Theme.spacingMedium
+                        Layout.alignment: Qt.AlignTop
+                        Layout.topMargin: Theme.spacingTiny
+                        // 无级别时保留占位，消息文字列对齐。
+                        opacity: messageRow.level.length > 0 ? 1 : 0
+                        name: Theme.statusIcon(messageRow.level)
+                        iconSize: Theme.iconSizeCompact
+                        color: Theme.statusColor(messageRow.level)
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        Layout.rightMargin: Theme.spacingMedium
+                        text: messageRow.time + "  " + messageRow.message
+                        color: Theme.statusColor(messageRow.level)
+                        font.pixelSize: Theme.fontSmall
+                        font.features: Theme.fontFeaturesNumeric
+                        wrapMode: Text.Wrap
+                    }
                 }
                 ThemedLabel {
                     anchors.centerIn: parent

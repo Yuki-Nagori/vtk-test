@@ -46,11 +46,14 @@ ApplicationWindow {
     objectName: "workbench"
     minimumWidth: Theme.windowMinimumWidth
     minimumHeight: Theme.windowMinimumHeight
-    width: 1280
-    height: 800
+    width: Theme.windowDefaultWidth
+    height: Theme.windowDefaultHeight
     title: projectOpen ? (projectModel.dirty ? "* " : "") + projectModel.currentName + " · 可视化渲染测试" : "可视化渲染测试"
     visible: true
     color: Theme.colorPanel
+    // 窗口内控件继承字族与正文字号（task 039）；独立对话框窗口由 Themed* 组件各自声明。
+    font.family: Theme.fontFamily
+    font.pixelSize: Theme.fontBody
 
     readonly property bool projectOpen: projectModel.currentPath.length > 0
     readonly property real taskProgress: projectModel.generationPending ? projectModel.generationProgress : projectModel.importPending ? projectModel.importProgress : projectModel.exportPending ? projectModel.exportProgress : projectModel.diagnosticsPending ? projectModel.diagnosticsProgress : -1
@@ -59,7 +62,8 @@ ApplicationWindow {
     readonly property bool meshActive: projectModel.activeDocumentId.length > 0
     // 导出 / 截图的一次性结果提示；新的错误或操作会覆盖它。
     property string notice: ""
-    property bool noticeIsError: false
+    // 提示级别，取值同 Theme.statusColor。
+    property string noticeLevel: ""
 
     // 活动文档的工作区快照条目（含状态与激活诊断）；无活动文档时为空对象。
     readonly property var activeDocument: {
@@ -137,25 +141,25 @@ ApplicationWindow {
         const kind = projectModel.classifyDroppedUrl(urls[0]);
         if (kind === "project") {
             if (!canCreateOrOpen)
-                showNotice("后台任务进行中，稍后再打开工程。", true);
+                showNotice("后台任务进行中，稍后再打开工程。", "warning");
             else
                 projectModel.openProjectUrl(urls[0]);
         } else if (kind === "mesh") {
             if (!canImport)
-                showNotice(projectOpen ? "后台任务进行中，稍后再导入。" : "请先新建或打开工程，再拖入网格。", true);
+                showNotice(projectOpen ? "后台任务进行中，稍后再导入。" : "请先新建或打开工程，再拖入网格。", "warning");
             else
                 importDialog.openWithFile(projectModel.localPath(urls[0]));
         } else {
-            showNotice("不支持的文件类型：仅支持 .panta 工程与 STL/VTU/VTP/VTK/PVD/OBJ/PLY 网格、OpenFOAM 算例（.foam / controlDict）及 CGNS（.cgns）。", true);
+            showNotice("不支持的文件类型：仅支持 .panta 工程与 STL/VTU/VTP/VTK/PVD/OBJ/PLY 网格、OpenFOAM 算例（.foam / controlDict）及 CGNS（.cgns）。", "error");
         }
         if (urls.length > 1)
-            showNotice("一次只处理一个文件，已使用第一个。", false);
+            showNotice("一次只处理一个文件，已使用第一个。", "warning");
     }
 
-    function showNotice(text: string, isError: bool) {
+    function showNotice(text: string, level: string) {
         notice = text;
-        noticeIsError = isError;
-        bottomPanel.appendMessage(text, isError);
+        noticeLevel = level;
+        bottomPanel.appendMessage(text, level);
     }
     function setSectionActive(active: bool) {
         projectModel.setSection(active, projectModel.sectionNormalX, projectModel.sectionNormalY, projectModel.sectionNormalZ, projectModel.sectionFraction);
@@ -245,13 +249,13 @@ ApplicationWindow {
                 shellWindow.confirmClose();
         }
         function onExportFinished(path: string, succeeded: bool) {
-            shellWindow.showNotice(succeeded ? "已导出：" + path : "", false);
+            shellWindow.showNotice(succeeded ? "已导出：" + path : "", "success");
         }
         function onErrorChanged() {
             if (projectModel.error.length === 0)
                 return;
-            shellWindow.showNotice("", false);
-            bottomPanel.appendMessage(projectModel.error, true);
+            shellWindow.showNotice("", "");
+            bottomPanel.appendMessage(projectModel.error, "error");
             // 对话框内已显示的错误不再额外弹出底部面板（task 035 同口径）。
             if (!shellWindow.errorShownInDialog)
                 bottomPanel.reveal(1);
@@ -272,7 +276,7 @@ ApplicationWindow {
         defaultSuffix: "stl"
         nameFilters: ["STL 网格 (*.stl)", "VTK XML 非结构网格 (*.vtu)", "VTK XML 多边形数据 (*.vtp)", "VTK 旧版格式 (*.vtk)", "Wavefront OBJ (*.obj)", "PLY 网格 (*.ply)"]
         onAccepted: {
-            shellWindow.showNotice("", false);
+            shellWindow.showNotice("", "");
             projectModel.beginExportActiveMeshUrl(selectedFile);
         }
     }
@@ -287,7 +291,7 @@ ApplicationWindow {
         nameFilters: ["PNG 图像 (*.png)"]
         onAccepted: {
             const failure = viewportPane.saveScreenshot(selectedFile);
-            shellWindow.showNotice(failure.length > 0 ? failure : "已保存截图：" + projectModel.localPath(selectedFile), failure.length > 0);
+            shellWindow.showNotice(failure.length > 0 ? failure : "已保存截图：" + projectModel.localPath(selectedFile), failure.length > 0 ? "error" : "success");
         }
     }
 
@@ -496,7 +500,7 @@ ApplicationWindow {
         orientation: Qt.Horizontal
         handle: Rectangle {
             implicitWidth: Theme.spacingXSmall
-            color: SplitHandle.pressed || SplitHandle.hovered ? Theme.colorFocus : Theme.colorChrome
+            color: SplitHandle.pressed || SplitHandle.hovered ? Theme.colorFocus : Theme.colorWindow
         }
         onResizingChanged: {
             if (!resizing && !Settings.sidebarCollapsed)
@@ -545,7 +549,7 @@ ApplicationWindow {
             orientation: Qt.Vertical
             handle: Rectangle {
                 implicitHeight: Theme.spacingXSmall
-                color: SplitHandle.pressed || SplitHandle.hovered ? Theme.colorFocus : Theme.colorChrome
+                color: SplitHandle.pressed || SplitHandle.hovered ? Theme.colorFocus : Theme.colorWindow
             }
             // 折叠时面板最小=最大高度，分隔条拖不动，只保留标题行。
             onResizingChanged: {
@@ -604,7 +608,7 @@ ApplicationWindow {
         objectName: "statusBar"
         busy: shellWindow.busy
         message: shellWindow.showError ? projectModel.error : shellWindow.notice.length > 0 ? shellWindow.notice : shellWindow.busy ? "处理中…" : "就绪"
-        messageIsError: shellWindow.showError || (shellWindow.notice.length > 0 && shellWindow.noticeIsError)
+        messageLevel: shellWindow.showError ? "error" : shellWindow.notice.length > 0 ? shellWindow.noticeLevel : ""
         meshActive: shellWindow.meshActive
         pickText: shellWindow.formatPick()
         lodStatus: projectModel.activeMeshLodStatus

@@ -122,11 +122,8 @@ DialogWindow {
         ColumnLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.leftMargin: Theme.spacingLarge
-            Layout.rightMargin: Theme.spacingLarge
-            Layout.topMargin: Theme.spacingMedium
-            Layout.bottomMargin: Theme.spacingLarge
-            spacing: Theme.spacingSmall
+            Layout.margins: Theme.dialogContentPadding
+            spacing: Theme.spacingMedium
 
             ThemedLabel {
                 Layout.fillWidth: true
@@ -140,7 +137,7 @@ DialogWindow {
                 Layout.fillWidth: true
                 columns: 2
                 columnSpacing: Theme.spacingMedium
-                rowSpacing: Theme.spacingSmall
+                rowSpacing: Theme.spacingMedium
 
                 ThemedLabel {
                     text: "文件"
@@ -148,7 +145,7 @@ DialogWindow {
                 }
                 RowLayout {
                     Layout.fillWidth: true
-                    spacing: Theme.spacingSmall
+                    spacing: Theme.spacingMedium
 
                     ThemedTextField {
                         id: sourceField
@@ -164,7 +161,7 @@ DialogWindow {
                         enabled: !dialog.projectModel.importPending
                         iconName: "open"
                         preserveIconColors: true
-                        contentPadding: Theme.spacingSmall
+                        contentPadding: Theme.spacingMedium
                         hoverColor: Theme.colorHover
                         borderColor: Theme.colorPanelLine
                         onClicked: dialog.chooseFile()
@@ -189,7 +186,7 @@ DialogWindow {
                 }
                 RowLayout {
                     Layout.fillWidth: true
-                    spacing: Theme.spacingSmall
+                    spacing: Theme.spacingMedium
 
                     ThemedComboBox {
                         id: unitsCombo
@@ -253,7 +250,7 @@ DialogWindow {
 
             RowLayout {
                 Layout.fillWidth: true
-                spacing: Theme.spacingSmall
+                spacing: Theme.spacingMedium
 
                 Item {
                     Layout.fillWidth: true

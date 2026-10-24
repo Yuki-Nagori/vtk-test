@@ -52,6 +52,19 @@ PanelSurface {
         if ((node.assetId ?? "").length > 0)
             sidebar.projectModel.openImportRecord(node.assetId);
     }
+    // 节点类型 → 单色图标；未知类型不显示图标（kind 常量见 panta-ffi object_tree）。
+    function treeKindIcon(kind: string): string {
+        const icons = {
+            "project": "tree-project",
+            "asset": "tree-asset",
+            "section": "section",
+            "field": "tree-field",
+            "timeSteps": "tree-time-steps",
+            "quality": "tree-quality",
+            "animation": "tree-animation"
+        };
+        return icons[kind] ?? "";
+    }
     function toggleNodeVisible(nodeId: string) {
         const node = sidebar.treeModel.node(nodeId);
         if (node.kind === "asset")
@@ -92,12 +105,13 @@ PanelSurface {
         property string label: ""
         default property alias content: propertyContent.data
         Layout.fillWidth: true
-        spacing: Theme.spacingSmall
+        spacing: Theme.spacingMedium
         ThemedLabel {
             Layout.preferredWidth: Theme.propertyLabelWidth
             Layout.alignment: Qt.AlignTop
             text: propertyRow.label
             textColor: Theme.colorTextMuted
+            textSize: Theme.fontSmall
             elide: Text.ElideRight
         }
         RowLayout {
@@ -124,11 +138,12 @@ PanelSurface {
             Layout.preferredHeight: Theme.panelHeaderHeight
             Layout.leftMargin: Theme.spacingMedium
             Layout.rightMargin: Theme.spacingXSmall
-            spacing: Theme.spacingSmall
-            Label {
+            spacing: Theme.spacingMedium
+            ThemedLabel {
                 Layout.fillWidth: true
                 text: "对象"
-                font.bold: true
+                textSize: Theme.fontHeading
+                font.weight: Font.DemiBold
                 elide: Text.ElideRight
             }
             ThemedToolButton {
@@ -147,7 +162,7 @@ PanelSurface {
             orientation: Qt.Vertical
             handle: Rectangle {
                 implicitHeight: Theme.spacingXSmall
-                color: SplitHandle.pressed || SplitHandle.hovered ? Theme.colorFocus : Theme.colorChrome
+                color: SplitHandle.pressed || SplitHandle.hovered ? Theme.colorFocus : Theme.colorWindow
             }
 
             Item {
@@ -215,7 +230,7 @@ PanelSurface {
                         objectName: "objectTreeRow_" + nodeId
                         implicitWidth: treeRow.treeView.width
                         implicitHeight: Theme.treeRowHeight
-                        color: isSelected ? Theme.colorSelection : rowHover.hovered ? Theme.colorHover : Theme.colorTransparent
+                        color: isSelected ? Theme.colorSelectionBg : rowHover.hovered ? Theme.colorHover : Theme.colorTransparent
                         border.width: isSelected && objectTree.activeFocus ? Theme.borderWidth : 0
                         border.color: Theme.colorFocus
                         Accessible.role: Accessible.TreeItem
@@ -251,6 +266,13 @@ PanelSurface {
                                 accessibleName: treeRow.expanded ? "折叠" : "展开"
                                 onClicked: treeRow.treeView.toggleExpanded(treeRow.row)
                             }
+                            // 节点类型图标（task 039）：与文字同时表达类型，不单靠图标区分。
+                            ThemedIcon {
+                                objectName: "objectTreeKindIcon"
+                                name: sidebar.treeKindIcon(treeRow.kind)
+                                iconSize: Theme.iconSizeSmall
+                                color: treeRow.nodeVisible ? Theme.colorIcon : Theme.colorTextMuted
+                            }
                             ThemedLabel {
                                 Layout.fillWidth: true
                                 text: treeRow.display
@@ -282,19 +304,25 @@ PanelSurface {
                 SplitView.minimumHeight: Theme.panelHeaderHeight * 2
                 spacing: Theme.spacingXSmall
 
+                // 分组标题：上 12 px、下 4 px，交替底色区分标题带与内容（034 视觉规范）。
                 ThemedLabel {
                     objectName: "propertiesTitle"
                     Layout.fillWidth: true
-                    Layout.topMargin: Theme.spacingSmall
-                    Layout.leftMargin: Theme.spacingMedium
-                    Layout.rightMargin: Theme.spacingMedium
+                    topPadding: Theme.spacingLarge
+                    bottomPadding: Theme.spacingXSmall
+                    leftPadding: Theme.spacingMedium
+                    rightPadding: Theme.spacingMedium
                     text: sidebar.selectedNode.label ?? "属性"
-                    font.bold: true
+                    textSize: Theme.fontHeading
+                    font.weight: Font.DemiBold
                     elide: Text.ElideRight
+                    background: Rectangle {
+                        color: Theme.colorPanelAlt
+                    }
                 }
                 RowLayout {
                     objectName: "propertiesTabs"
-                    Layout.leftMargin: Theme.spacingSmall
+                    Layout.leftMargin: Theme.spacingMedium
                     spacing: Theme.spacingTiny
                     visible: sidebar.selectedKind.length > 0
                     Accessible.role: Accessible.PageTabList
@@ -345,7 +373,7 @@ PanelSurface {
                         id: sidebarDetails
                         objectName: "sidebarDetails"
                         width: sidebarDetailsScroll.availableWidth
-                        spacing: Theme.spacingSmall
+                        spacing: Theme.spacingMedium
 
                         // ── 工程 · 属性 ──
                         ColumnLayout {
@@ -596,6 +624,19 @@ PanelSurface {
                                     onActivated: index => sidebar.projectModel.setSectionField(sidebar.projectModel.sectionFieldName, sidebar.projectModel.sectionFieldAssociation, index - 1)
                                 }
                             }
+                            // 颜色图预设（task 039）：会话内视图状态，不写工程。
+                            PropertyRow {
+                                label: "颜色图"
+                                ThemedComboBox {
+                                    objectName: "fieldColorMapCombo"
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                    model: sidebar.projectModel.fieldColorMapLabels
+                                    currentIndex: sidebar.projectModel.fieldColorMap
+                                    Accessible.name: "颜色图"
+                                    onActivated: index => sidebar.projectModel.setFieldColorMap(index)
+                                }
+                            }
                             // 时间步结果（task 033）：默认全部时间步的全局范围，播放时色标不跳变。
                             PropertyRow {
                                 objectName: "fieldRangeModeRow"
@@ -612,7 +653,7 @@ PanelSurface {
                                 }
                             }
                         }
-                        // ── 着色 · 显示 ── 小型数值图例：与视口查找表共用 Cool to Warm 控制点；位于视口之外。
+                        // ── 着色 · 显示 ── 小型数值图例：与视口查找表共用当前颜色图的控制点；位于视口之外。
                         ColumnLayout {
                             objectName: "fieldLegend"
                             Layout.fillWidth: true
@@ -633,30 +674,49 @@ PanelSurface {
                                     text: sidebar.projectModel.fieldLegendTitle + (sidebar.projectModel.fieldLegendUnits.length > 0 ? " (" + sidebar.projectModel.fieldLegendUnits + ")" : "")
                                     elide: Text.ElideRight
                                 }
+                                // 控制点数随颜色图变化：按相邻控制点分段，每段两端线性渐变。
                                 Rectangle {
+                                    id: legendBar
+                                    objectName: "fieldLegendBar"
+                                    readonly property var stops: sidebar.projectModel.fieldLegendStops
                                     Layout.fillWidth: true
                                     implicitHeight: Theme.spacingLarge
-                                    border.color: Theme.colorTextMuted
-                                    gradient: Gradient {
-                                        orientation: Gradient.Horizontal
-                                        GradientStop {
-                                            position: sidebar.projectModel.fieldLegendStops[0].position
-                                            color: sidebar.projectModel.fieldLegendStops[0].color
+                                    color: "transparent"
+                                    Repeater {
+                                        model: Math.max(0, legendBar.stops.length - 1)
+                                        Rectangle {
+                                            id: segment
+                                            required property int index
+                                            readonly property var from: legendBar.stops[segment.index]
+                                            readonly property var to: legendBar.stops[segment.index + 1]
+                                            x: segment.from.position * legendBar.width
+                                            width: (segment.to.position - segment.from.position) * legendBar.width
+                                            height: legendBar.height
+                                            gradient: Gradient {
+                                                orientation: Gradient.Horizontal
+                                                GradientStop {
+                                                    position: 0
+                                                    color: segment.from.color
+                                                }
+                                                GradientStop {
+                                                    position: 1
+                                                    color: segment.to.color
+                                                }
+                                            }
                                         }
-                                        GradientStop {
-                                            position: sidebar.projectModel.fieldLegendStops[1].position
-                                            color: sidebar.projectModel.fieldLegendStops[1].color
-                                        }
-                                        GradientStop {
-                                            position: sidebar.projectModel.fieldLegendStops[2].position
-                                            color: sidebar.projectModel.fieldLegendStops[2].color
-                                        }
+                                    }
+                                    // 边框盖在分段之上。
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        color: "transparent"
+                                        border.color: Theme.colorTextMuted
                                     }
                                 }
                                 RowLayout {
                                     Layout.fillWidth: true
                                     ThemedLabel {
                                         text: sidebar.projectModel.fieldLegendHasRange ? Number(sidebar.projectModel.fieldLegendMin).toPrecision(4) : "无有限值"
+                                        font.features: Theme.fontFeaturesNumeric
                                         textColor: Theme.colorTextMuted
                                     }
                                     Item {
@@ -665,6 +725,7 @@ PanelSurface {
                                     ThemedLabel {
                                         visible: sidebar.projectModel.fieldLegendHasRange
                                         text: Number(sidebar.projectModel.fieldLegendMax).toPrecision(4)
+                                        font.features: Theme.fontFeaturesNumeric
                                         textColor: Theme.colorTextMuted
                                     }
                                 }
