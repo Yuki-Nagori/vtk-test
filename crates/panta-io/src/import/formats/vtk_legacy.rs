@@ -206,7 +206,7 @@ pub(crate) fn read_vtk_legacy(
         }
         let cells = cells.ok_or_else(|| FormatError::new("missing CELLS"))?;
         let types = cell_types.ok_or_else(|| FormatError::new("missing CELL_TYPES"))?;
-        *grid = RawGrid::new(points, cells, types)?;
+        *grid = RawGrid::new(points, cells, types, None)?;
         if let Some(keyword) = attributes {
             read_attributes(&mut reader, &keyword, grid);
         }

@@ -23,6 +23,7 @@ const QUADRATIC_TRIANGLE: u8 = 22;
 const QUADRATIC_QUAD: u8 = 23;
 const QUADRATIC_TETRA: u8 = 24;
 const QUADRATIC_HEXAHEDRON: u8 = 25;
+const POLYHEDRON: u8 = 42;
 
 const TETRA_FACES: &[&[usize]] = &[&[0, 1, 3], &[1, 2, 3], &[2, 0, 3], &[0, 2, 1]];
 const HEXAHEDRON_FACES: &[&[usize]] = &[
@@ -53,6 +54,12 @@ const VOXEL_TO_HEXAHEDRON: [usize; 8] = [0, 1, 3, 2, 4, 5, 7, 6];
 /// 体单元面最多 4 个节点；不足 4 个的位置用 `u64::MAX` 填充。
 type FaceNodes = [u64; 4];
 
+/// 未配对的外表面：固定类型单元面或多面体的多边形面。
+enum BoundaryFace {
+    Fixed(FaceNodes),
+    Polygon(Vec<u64>),
+}
+
 /// 二维单元直接输出；体单元面按排序后的节点集合做奇偶配对：第二次出现即为内部面并移除，
 /// `finish` 只输出剩余（出现奇数次）的外表面。配对后移除让常驻内存只与未配对面
 /// （外表面和遍历前沿）成正比，而不是与全部体单元面成正比。
@@ -60,6 +67,8 @@ pub(crate) struct CellSurface<'a> {
     points: IndexedPoints<'a>,
     next_sequence: u64,
     open_faces: HashMap<FaceNodes, (u64, FaceNodes)>,
+    /// 多面体中超过 4 个节点的面（task 031），同样按排序节点集合配对。
+    open_polygons: HashMap<Vec<u64>, (u64, Vec<u64>)>,
 }
 
 impl<'a> CellSurface<'a> {
@@ -68,11 +77,60 @@ impl<'a> CellSurface<'a> {
             points: IndexedPoints { points },
             next_sequence: 0,
             open_faces: HashMap::new(),
+            open_polygons: HashMap::new(),
         }
     }
 
     pub fn points(&self) -> &IndexedPoints<'a> {
         &self.points
+    }
+
+    /// 多面体面流 `[nFaces, n0, ids…]`：≤ 4 节点的面与固定类型单元的面共用配对表，
+    /// 因此与相邻六面体 / 楔形 / 金字塔 / 四面体的共享面能正确抵消。
+    pub fn add_polyhedron(&mut self, stream: &[u64]) -> FormatResult<()> {
+        let invalid = || FormatError::new("polyhedron face stream is malformed");
+        let count = usize::try_from(*stream.first().ok_or_else(invalid)?).map_err(|_| invalid())?;
+        let mut cursor = 1usize;
+        for _ in 0..count {
+            let length =
+                usize::try_from(*stream.get(cursor).ok_or_else(invalid)?).map_err(|_| invalid())?;
+            let face = stream
+                .get(cursor + 1..cursor.saturating_add(1 + length))
+                .ok_or_else(invalid)?;
+            cursor += 1 + length;
+            if face.len() < 3 {
+                return Err(invalid());
+            }
+            for &node in face {
+                self.points.point(node)?;
+            }
+            if face.len() <= 4 {
+                let mut ordered = [u64::MAX; 4];
+                ordered[..face.len()].copy_from_slice(face);
+                self.toggle(ordered);
+            } else {
+                let mut key = face.to_vec();
+                key.sort_unstable();
+                if self.open_polygons.remove(&key).is_none() {
+                    self.open_polygons
+                        .insert(key, (self.next_sequence, face.to_vec()));
+                    self.next_sequence += 1;
+                }
+            }
+        }
+        if cursor != stream.len() {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+
+    fn toggle(&mut self, ordered: FaceNodes) {
+        let mut key = ordered;
+        key.sort_unstable();
+        if self.open_faces.remove(&key).is_none() {
+            self.open_faces.insert(key, (self.next_sequence, ordered));
+            self.next_sequence += 1;
+        }
     }
 
     pub fn add(
@@ -107,6 +165,7 @@ impl<'a> CellSurface<'a> {
             }
             WEDGE => self.add_volume(corners(6)?, WEDGE_FACES),
             PYRAMID => self.add_volume(corners(5)?, PYRAMID_FACES),
+            POLYHEDRON => self.add_polyhedron(nodes),
             other => Err(FormatError::new(format!(
                 "unsupported VTK cell type {other}"
             ))),
@@ -119,23 +178,32 @@ impl<'a> CellSurface<'a> {
             for (slot, &local) in ordered.iter_mut().zip(face.iter()) {
                 *slot = nodes[local];
             }
-            let mut key = ordered;
-            key.sort_unstable();
-            if self.open_faces.remove(&key).is_none() {
-                self.open_faces.insert(key, (self.next_sequence, ordered));
-                self.next_sequence += 1;
-            }
+            self.toggle(ordered);
         }
         Ok(())
     }
 
     /// 按首次出现顺序输出外表面，保证结果与哈希顺序无关。
     pub fn finish(self, sink: &mut impl TriangleSink) -> FormatResult<()> {
-        let mut boundary: Vec<(u64, FaceNodes)> = self.open_faces.into_values().collect();
+        let mut boundary: Vec<(u64, BoundaryFace)> = self
+            .open_faces
+            .into_values()
+            .map(|(sequence, face)| (sequence, BoundaryFace::Fixed(face)))
+            .chain(
+                self.open_polygons
+                    .into_values()
+                    .map(|(sequence, face)| (sequence, BoundaryFace::Polygon(face))),
+            )
+            .collect();
         boundary.sort_unstable_by_key(|(sequence, _)| *sequence);
-        for (_, face) in boundary {
-            let length = face.iter().take_while(|&&node| node != u64::MAX).count();
-            self.points.polygon(&face[..length], sink)?;
+        for (_, face) in &boundary {
+            let nodes = match face {
+                BoundaryFace::Fixed(face) => {
+                    &face[..face.iter().take_while(|&&node| node != u64::MAX).count()]
+                }
+                BoundaryFace::Polygon(face) => face.as_slice(),
+            };
+            self.points.polygon(nodes, sink)?;
         }
         Ok(())
     }

@@ -34,7 +34,7 @@
 | 028 | [out-of-core 铺开：只读映射块读取、接入应用与大网格设置](task/028-out-of-core-rollout.md) | done |
 | 029 | [结果场：导入、存储、分块携带、切面插值与视口上色](task/029-result-fields.md) | done |
 | 030 | [原生混合单元：类型 / offset 布局、拆分、资产 v4、导入导出与质量](task/030-mixed-cells.md) | done |
-| 031 | [多面体单元（VTK_POLYHEDRON 42）：面流布局、拆分、资产 v5、`.pchunk` v4、导入导出与质量](task/031-polyhedron-cells.md) | in-progress |
+| 031 | [多面体单元（VTK_POLYHEDRON 42）：面流布局、拆分、资产 v5、`.pchunk` v4、导入导出与质量](task/031-polyhedron-cells.md) | done |
 
 任务先登记范围与验收，实际验证后同步状态。历史编号不再代表本仓库的待办或已交付能力。
 

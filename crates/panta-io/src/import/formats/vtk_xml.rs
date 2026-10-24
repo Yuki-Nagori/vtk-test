@@ -1,7 +1,7 @@
 //! VTK XML `UnstructuredGrid`（.vtu）与 `PolyData`（.vtp）。支持 ascii、inline binary
 //! （base64）和 appended（raw / base64）数据，UInt32 / UInt64 头，zlib 压缩。
 //!
-//! 只解析几何所需的 Points、Cells / Polys / Strips；`AppendedData` 可能包含任意字节，
+//! 只解析几何所需的 Points、Cells（含多面体面数组）/ Polys / Strips；`AppendedData` 可能包含任意字节，
 //! 因此不交给通用 XML 解析器，而是先定位其起点，只扫描之前的标签。
 
 use std::collections::HashMap;
@@ -11,7 +11,7 @@ use panta_mesh::SurfaceMesh;
 
 use super::cells::CellSurface;
 use super::text::{Scalar, decode_f64_array, decode_index_array, points_from_flat};
-use super::{CellList, FormatError, FormatResult, RawGrid, TriangleSink, finish_mesh};
+use super::{CellList, FormatError, FormatResult, PolyFaces, RawGrid, TriangleSink, finish_mesh};
 
 pub fn parse_vtu(bytes: &[u8]) -> FormatResult<SurfaceMesh> {
     parse_xml(bytes, "UnstructuredGrid")
@@ -244,7 +244,8 @@ pub(crate) fn read_vtk_xml(
         let types = context.indices(
             array("Cells", Some("types")).ok_or_else(|| FormatError::new("missing Cells types"))?,
         )?;
-        *grid = RawGrid::new(points, cells, types)?;
+        let faces = poly_faces(&context, &array)?;
+        *grid = RawGrid::new(points, cells, types, faces.as_ref())?;
         for (section, tag) in &arrays {
             let association = match section.as_str() {
                 "PointData" => panta_mesh::FieldAssociation::Node,
@@ -278,13 +279,20 @@ pub(crate) fn read_vtk_xml(
                 array("Cells", Some("types"))
                     .ok_or_else(|| FormatError::new("missing Cells types"))?,
             )?;
-            if types.len() != cells.len() {
+            let faces = poly_faces(&context, &array)?;
+            if types.len() != cells.len() || faces.as_ref().is_some_and(|f| f.len() != cells.len())
+            {
                 return Err(FormatError::new("Cells types count mismatch"));
             }
-            for (kind, nodes) in types.iter().zip(cells.iter()) {
+            for (index, (kind, nodes)) in types.iter().zip(cells.iter()).enumerate() {
                 let kind =
                     u8::try_from(*kind).map_err(|_| FormatError::new("invalid cell type"))?;
-                surface.add(kind, nodes, sink)?;
+                if kind == panta_mesh::VTK_POLYHEDRON {
+                    let faces = faces.as_ref().ok_or_else(missing_faces)?;
+                    surface.add_polyhedron(faces.cell(index))?;
+                } else {
+                    surface.add(kind, nodes, sink)?;
+                }
             }
         }
     } else {
@@ -304,6 +312,36 @@ pub(crate) fn read_vtk_xml(
         }
     }
     surface.finish(sink)
+}
+
+fn missing_faces() -> FormatError {
+    FormatError::new(
+        "polyhedron cells need faces/faceoffsets or VTK 9.4 polyhedron_offsets/polyhedron_to_faces/face_offsets/face_connectivity arrays",
+    )
+}
+
+/// 读取 Cells 中的多面体面数组（task 031）：优先 VTK 9.4 的四个数组，其次旧式
+/// `faces` / `faceoffsets`；都没有时返回 `None`，此时出现多面体单元即报错。
+fn poly_faces<'t>(
+    context: &Context<'_>,
+    array: &impl Fn(&str, Option<&str>) -> Option<&'t Tag>,
+) -> FormatResult<Option<PolyFaces>> {
+    let named = |name: &str| array("Cells", Some(name));
+    if let Some(polyhedron_offsets) = named("polyhedron_offsets") {
+        let required = |name: &str| named(name).ok_or_else(missing_faces);
+        return PolyFaces::from_vtu_polyhedra(
+            &context.indices(polyhedron_offsets)?,
+            &context.indices(required("polyhedron_to_faces")?)?,
+            &context.indices(required("face_offsets")?)?,
+            &context.indices(required("face_connectivity")?)?,
+        )
+        .map(Some);
+    }
+    let Some(faces) = named("faces") else {
+        return Ok(None);
+    };
+    let offsets = named("faceoffsets").ok_or_else(missing_faces)?;
+    PolyFaces::from_vtu_faces(context.indices(faces)?, &context.floats(offsets)?).map(Some)
 }
 
 fn scalar(name: &str) -> FormatResult<Scalar> {

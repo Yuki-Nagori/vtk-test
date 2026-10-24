@@ -37,7 +37,7 @@ Netgen API 依据：[v6.2.2604 `nglib.h`](https://github.com/NGSolve/netgen/blob
 
 ## 原生混合单元（task 030）
 
-- IR：`TetMesh.cells: Option<Arc<CellLayout>>`。`None` 为纯四面体（单元 ID = 四面体下标）；`Some` 时 `CellLayout` 为 VTK 风格的 `types`（VTK 单元编码）、`offsets`（n + 1 项，首项 0，单调递增）与 `connectivity`（u32 节点下标），另附 `tet_cells`（每个拆分四面体所属原始单元，非递减）。支持 tet(10)、hex(12)、wedge(13)、pyramid(14)；polyhedron(42) 编码已预留，当前显式拒绝（需要面流布局，另立任务）。
+- IR：`TetMesh.cells: Option<Arc<CellLayout>>`。`None` 为纯四面体（单元 ID = 四面体下标）；`Some` 时 `CellLayout` 为 VTK 风格的 `types`（VTK 单元编码）、`offsets`（n + 1 项，首项 0，单调递增）与 `connectivity`（u32 节点下标），另附 `tet_cells`（每个拆分四面体所属原始单元，非递减）。支持 tet(10)、hex(12)、wedge(13)、pyramid(14) 与 polyhedron(42，面流布局见下文“多面体单元”)。
 - 局部节点顺序（与 VTK 9.x `vtkTetra` / `vtkHexahedron` / `vtkWedge` / `vtkPyramid` 一致，参考坐标下体积为正）：
   - tet `0 1 2 3`：`(0,1,2)` 的右手法向指向 3。
   - hex `0–7`：底面 `0 1 2 3` 右手法向指向顶面，`4 5 6 7` 分别位于 `0 1 2 3` 正上方。
@@ -45,7 +45,7 @@ Netgen API 依据：[v6.2.2604 `nglib.h`](https://github.com/NGSolve/netgen/blob
   - pyramid `0–4`：底面 `0 1 2 3` 右手法向指向顶点 4。
 - 拆分：切面、体积、质量与外表面在加载时把单元临时拆成四面体（不落盘）。四边形面对角线取全局最小节点下标所在的对角线（Dompierre 等的最小下标规则），因此相邻单元共享面拆分一致、结果共形；hex 按 64 种面对角线组合查表（实际可达 42 种，每种 5–6 个四面体），wedge 3 个，pyramid 2 个。输入方向整体为负的单元先镜像（tet `0 1 3 2`、hex `0 3 2 1 4 7 6 5`、wedge `0 2 1 3 5 4`、pyramid `0 3 2 1 4`）再拆分；正负混合（扭曲）或节点重复的单元拒绝。区域按单元记录，校验要求同一单元的四面体区域一致，并重算拆分与 `tet_cells` 比对。
 - 资产 v4：纯四面体资产块布局与 v3 完全相同（仅头部版本为 4，目录摘要不变）。混合资产不写 `VolumeTets` 流，改写 `VolumeCells`（流 8，每单元 40 B：u32 VTK 编码、u32 区域、8 × u32 节点，不足补 `u32::MAX`）与 `VolumeCellSummary`（流 9，恰好 1 条 8 B 记录：拆分四面体数，供流式读取预估）。这两个流只允许出现在 v4 头部下，且与 `VolumeTets` 互斥。`.presult` 容器版本仍为 3，结果场单元数按原始单元计。`VolumeAssetChunks::visit_cell_tets` 逐块读取单元、就地拆分并给出所属单元 ID。
-- 导入导出（030 PR 2）：VTU 与旧版 VTK 读取 tet(10)、voxel(11，按 `0 1 3 2 4 5 7 6` 改写为 hex)、hex(12)、wedge(13)、pyramid(14)；polyhedron(42) 与其他类型（含二次单元）以明确错误拒绝。纯四面体输入仍得到 `cells = None`。VTU 导出按原始单元写 `connectivity` / `offsets` / `types`（纯四面体输出逐字节不变）；单元未驻留时由 `VolumeAssetChunks::visit_cells` 流式写出，内存每单元额外 1 B（类型），与驻留导出逐字节一致。
+- 导入导出（030 PR 2）：VTU 与旧版 VTK 读取 tet(10)、voxel(11，按 `0 1 3 2 4 5 7 6` 改写为 hex)、hex(12)、wedge(13)、pyramid(14) 与 polyhedron(42，task 031)；其他类型（含二次单元）以明确错误拒绝。纯四面体输入仍得到 `cells = None`。VTU 导出按原始单元写 `connectivity` / `offsets` / `types`（纯四面体输出逐字节不变）；单元未驻留时由 `VolumeAssetChunks::visit_cells` 流式写出，内存每单元额外 1 B（类型），与驻留导出逐字节一致。
 - 单元对应：单元场长度、场剖面单元值、外表面所属单元、校验消息（`cell N (类型) sub-tetrahedron K ...`）都按原始单元号；拆分四面体只是内部计算单位。
 - 质量（030 PR 2）：每类单元给 Verdict 风格缩放雅可比（tet `√2·6V/max 角点边长积`；hex 8 角点 + 中心主轴；wedge 6 角点 × `2/√3`；pyramid 4 个底角 × `√2`；理想单元为 1，≤ 0 为反转或退化），统计最小值、平均值与低于 0.2 的劣质数。最小二面角与长宽比只统计原生四面体（拆分出的四面体不计）。劣质单元总数 = 四面体按二面角 / 长宽比规则 + 其他类型按缩放雅可比规则。驻留、流式（逐原始单元）与分块路径共用同一累加器。
 - 分块（PR 3，`.pchunk` v3）：混合资产同样生成派生分块文件。k-d 划分以原始单元为单位（按单元节点质心），一个单元的全部拆分四面体落在同一块；块表与块头加原始单元数。块内 `global_cells` 记每个拆分四面体所属的原始单元 ID（非降序），非纯四面体块在单元段末尾追加块内单元布局（u32 单元数、每单元 1 B VTK 编码、块内局部节点连接；纯四面体块写 0）。单元场的块内值、外表面值与场范围都按原始单元；逐类型质量在块内按原始单元计算。v2 文件因版本不符被拒绝，应用派生缓存自动重建；复用时另核对原始单元数。构建内存估算对混合资产另加每拆分四面体 4 B、每原始单元 41 B。流式写出 `write_volume_asset_streaming` 在 `cells != tets` 时写 `VolumeCells` / `VolumeCellSummary`，逐条校验区域、节点范围与可拆分性，并核对拆分四面体总数。
@@ -58,7 +58,7 @@ Netgen API 依据：[v6.2.2604 `nglib.h`](https://github.com/NGSolve/netgen/blob
 - 资产 v5：新写一律 v5，v3 / v4 继续可读。多面体的 `VolumeCells` 记录为 `[42, region, apex, 面流字数, u32::MAX × 6]`；面流（去掉 apex 的 `[nFaces, n0, ids…]`）写入新流 `VolumePolyFaces`（流 10，u32 记录），第 i 个面流块存第 i 个单元块中多面体的面流（按单元顺序，可为 0 条记录），任一单元块可独立解码。目录要求流号非降序，面流块写在 `VolumeCellSummary` 之后。v5 的 `VolumeCellSummary` 有 2 条记录（拆分四面体数、多面体数），v4 为 1 条。含多面体的资产单元块固定 16384 单元。`VolumeAssetChunks::visit_cells` 以 `CellBlock`（类型、区域、扁平连接、偏移）按块给出原始单元。
 - 质量：ParaView / Verdict 的 Mesh Quality 不支持多面体。逐单元计算 Fluent 定义的正交质量（各面面积向量与“单元中心→面中心”向量夹角余弦的最小值，不含邻接项），劣质阈值 0.15；邻接相关的非正交性 / 偏斜度留待 OpenFOAM 导入用 owner / neighbour 计算。
 - 分块（031 PR 2，`.pchunk` v4）：块内单元布局改为 `u32 单元数 | 每单元 1 B VTK 编码 | u32 连接字数 | 连接`（v3 无连接字数，多面体变长连接需要显式长度），偏移读入后由类型重建。多面体在块内连接中保持 `[apex, nFaces, n0, ids…]`，apex 与面节点换成块内局部节点号、面数与每面节点数原样保留；局部编号按全局号单调分配，块内拆分与全局拆分一致。块内节点场值包含中心节点（构建时按驻留路径同一函数补齐中心值），因此分块切面 / 节点场切面 / 单元场切面 / 逐类型质量与驻留结果逐位一致。含多面体时 k-d 划分另要求每块拆分四面体数 ≤ 6 × 单元上限（与纯六面体块同量级）。v3 文件因版本不符被拒绝，应用派生缓存自动重建。基准 `mixed_bench --mesh poly`（细六面体 + 24 面粗多面体的加密界面块 `SyntheticPolyBlock`）。
-- 过渡限制（031 PR 1）：VTU 导出与 VTU / 旧版 VTK 导入暂时拒绝多面体并给出明确错误，在 PR 3 支持。
+- 导入导出（031 PR 3）：旧版 VTK 的多面体 `CELLS` 条目即序列化面流 `[nFaces, n0, ids…]`（VTK 写出端 `GetSerializedCellFaces` 的约定）。VTU 读取两种布局：VTKFile < 2.3 的 `faces`（各多面体面流串接）/ `faceoffsets`（逐单元结束偏移，非多面体 -1），与 VTK 9.4（VTKFile ≥ 2.3）的 `polyhedron_offsets` / `polyhedron_to_faces` / `face_offsets` / `face_connectivity`（偏移省略首个 0）；两者都存在时取 9.4 数组，多面体缺面数组时报错。导入校验面流长度、面数 ≥ 4、每面节点 ≥ 3 与节点范围，闭合 / 定向 / 凸性由 `volume_mesh_from_cells` 校验。表面导入（`.vtu` / `.vtk` 作表面）中多面体的 ≤ 4 节点面与固定类型单元共用同一配对表，更多节点的多边形面另表配对，共享面互相抵消。VTU 导出写 VTKFile 1.0 的 `faces` / `faceoffsets`（ParaView 5.x 与 VTK 9.4+ 均按文件版本读取此布局）；`Points` 只写源节点，多面体 `connectivity` 为单元唯一节点（升序），因此导出 → 再导入得到相同的节点与 `CellLayout`。流式导出另记每个多面体 8 B，并再扫描一遍单元块写 `faces`，与驻留导出逐字节一致。结果场随导入按源节点 / 原单元绑定；VTU 导出不写结果场（与 030 相同）。
 
 
 ## 生成流程
