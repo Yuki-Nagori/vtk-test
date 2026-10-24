@@ -66,6 +66,8 @@ use animation::{
     AnimationSequence, animation_cached_frames, animation_frame, animation_frame_count,
     animation_frame_name, animation_open, animation_request,
 };
+mod object_tree;
+use object_tree::object_tree_nodes;
 mod mesh;
 use mesh::{mesh_coordinates, mesh_tet_export_vtu, mesh_tet_quality, mesh_validate_tet};
 
@@ -122,6 +124,54 @@ pub mod bridge {
     pub struct WorkspaceSnapshot {
         pub documents: Vec<WorkspaceDocument>,
         pub active_document_id: String,
+    }
+
+    /// 对象树（task 037）输入：ViewModel 汇总的工程记录与活动文档显示状态。
+    /// 切面 / 着色 / 时间步只描述 `active_asset_id`；`hidden_asset_ids` 是会话显示状态。
+    #[derive(Default, Clone)]
+    pub struct ObjectTreeInput {
+        pub project_open: bool,
+        pub project_name: String,
+        pub project_path: String,
+        pub assets: Vec<ProjectImport>,
+        pub active_asset_id: String,
+        pub hidden_asset_ids: Vec<String>,
+        pub lod_status: String,
+        pub volume_available: bool,
+        pub volume_info: String,
+        pub section_active: bool,
+        /// 可用于切面着色的字段数；0 表示不出现「字段着色」节点。
+        pub field_count: u32,
+        /// 当前着色字段的显示名；空表示未着色。
+        pub field_label: String,
+        /// 活动文档的结果时间步数；不少于 2 时出现「时间序列」节点。
+        pub time_step_count: u32,
+        /// 最近一次质量诊断所属资产；空表示没有诊断结果。
+        pub quality_asset_id: String,
+        /// 已打开的表面序列名；空表示未打开。
+        pub animation_name: String,
+        pub animation_frame_count: u32,
+    }
+
+    /// 属性面板「信息」页的一行只读标签 / 值。
+    #[derive(Default, Clone, PartialEq)]
+    pub struct ObjectTreeInfo {
+        pub label: String,
+        pub value: String,
+    }
+
+    /// 先序扁平对象树节点；`parent` 为父节点下标（根为 -1），`id` 由稳定资产 ID 派生。
+    #[derive(Default, Clone, PartialEq)]
+    pub struct ObjectTreeNode {
+        pub id: String,
+        pub kind: String,
+        pub label: String,
+        pub asset_id: String,
+        pub parent: i32,
+        pub depth: u32,
+        pub visible: bool,
+        pub can_toggle_visibility: bool,
+        pub info: Vec<ObjectTreeInfo>,
     }
 
     struct ChoiceDefinition {
@@ -524,6 +574,8 @@ pub mod bridge {
         #[rust_name = "project_service_imports_response"]
         fn project_service_imports(service: &ProjectService) -> ProjectImportsResult;
         fn project_service_workspace_snapshot(service: &ProjectService) -> WorkspaceSnapshot;
+        /// 对象树投影（task 037）：纯函数，不访问工程服务。
+        fn object_tree_nodes(input: &ObjectTreeInput) -> Vec<ObjectTreeNode>;
         fn project_service_workspace_reset(service: &mut ProjectService);
         fn project_service_workspace_open_import(
             service: &mut ProjectService,
