@@ -45,6 +45,9 @@ pub struct RawGrid {
     /// [`RawGrid::take_mesh`] 之后 `boundary_group_names` 为实际使用的组名（按组下标）。
     pub boundary: Option<BoundaryFaces>,
     pub boundary_group_names: Vec<String>,
+    /// 按来源面邻接（owner / neighbour）计算的面质量（checkMesh 口径，task 032 PR 2）；
+    /// 只有带面邻接的来源（OpenFOAM）填写。
+    pub face_quality: Option<panta_mesh::FaceQuality>,
 }
 
 /// 来源边界面：扁平节点表 + 结束偏移，每面一个组下标。

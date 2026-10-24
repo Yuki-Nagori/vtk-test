@@ -66,6 +66,7 @@ Netgen API 依据：[v6.2.2604 `nglib.h`](https://github.com/NGSolve/netgen/blob
 - 选择 `*.foam` / `*.openfoam` 占位文件或 `system/controlDict`；快照是算例所需文件的内存包（`PANTA-FOAM-CASE 1`），摘要 / 「源已变化」覆盖全部文件。读取 `constant[/<区域>]/polyMesh` 的 points / faces / owner / neighbour / boundary（ASCII / binary、faceList / faceCompactList、`.gz`），有 `constant/<区域>/polyMesh` 时导入全部区域并忽略默认区域。
 - 单元按面拓扑识别为 tet / pyramid / wedge / hex（VTK 局部顺序），其余为多面体；含共线节点、最小节点扇形退化的面在导入侧改写为显式三角形子面（起点只由面节点号与坐标决定，两侧一致），`panta-mesh` 的拓扑拆分规则不变。
 - 区域 → `TetMesh` region（名称写入 ImportRecord `region_names`）；非空 patch → 边界组（`boundary_group_names`，多区域为 `区域/patch`，未覆盖三角形归 `unassigned`）。最新时间步的 volScalar / volVector internalField → 单元结果场，单位由 `dimensions` 推出；单位按「米」导入。
+- 面邻接质量（PR 2，`panta_mesh::poly_mesh_face_quality`）：导入时按各区域原始 polyMesh（多边形面、owner / neighbour，非改写后的三角形）计算，口径同 OpenFOAM checkMesh——面中心 / 面积向量按顶点平均点扇形加权，单元中心按棱锥体积加权；非正交角最大值 = 最小余弦的反余弦、平均值 = 余弦平均的反余弦，> 70° 记严重；偏斜度内部面归一化系数 0.2、边界面 0.4，> 4 记偏高；另给 Fluent 正交质量（逐单元取面积向量 vs 中心→面中心、中心→邻居中心余弦的最小值，< 0.15 记劣质）。跨区域合并后写入 ImportRecord `face_quality`（可选字段），诊断面板直接展示，不重算；任一计数非 0 时结论为「存在问题」。VTU / VTK 等无面邻接的来源不计算（候选后续：按排序面节点哈希建邻接）。
 
 ## 生成流程
 

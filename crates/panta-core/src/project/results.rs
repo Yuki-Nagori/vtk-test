@@ -371,6 +371,10 @@ mod tests {
         assert_eq!(record.display_name, "multi");
         assert_eq!(record.units, "meters");
         assert_eq!(record.region_names, ["fluid", "solid"]);
+        // 正交 blockMesh：两区域合并后无非正交（task 032 PR 2）。
+        let face = record.face_quality.ok_or("face quality")?;
+        assert!(face.internal_faces > 0 && face.max_non_orthogonality_degrees < 1e-6);
+        assert_eq!(face.severe_non_orthogonal_faces + face.high_skew_faces, 0);
         assert!(
             record
                 .boundary_group_names

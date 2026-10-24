@@ -14,6 +14,8 @@ pub struct MeshDisplayInput {
     /// 结果 sidecar 句柄（task 029）：驻留体网格场剖面在后台读取字段（单字段缓存）。
     /// `Arc` 保持输入体积小（与其他快照字段同为共享句柄）。
     results: Option<Arc<panta_core::project::ResultFieldSource>>,
+    /// 导入记录中的面邻接质量（task 032 PR 2）；`None` 表示来源没有面邻接。
+    face_quality: Option<panta_core::project::FaceQualityRecord>,
 }
 
 impl MeshDisplayInput {
@@ -77,12 +79,19 @@ pub(super) fn project_service_mesh_display_input(
         .ok()
         .flatten()
         .map(Arc::new);
+    let face_quality = service.service.imports().ok().and_then(|records| {
+        records
+            .into_iter()
+            .find(|record| record.id == import_id)
+            .and_then(|record| record.face_quality)
+    });
     Box::new(MeshDisplayInput {
         mesh,
         lod_source_triangles,
         volume,
         streamed: streamed.map(Arc::new),
         results,
+        face_quality,
     })
 }
 
@@ -175,6 +184,7 @@ pub(super) fn diagnose_mesh_display(
     };
     let volume = input.volume.clone();
     let streamed_volume = input.streamed_volume().cloned();
+    let face_quality = input.face_quality;
     let volume_counts = match (&volume, &streamed_volume) {
         (Some(volume), _) => Some(volume.nodes.len() as u64),
         (None, Some(asset)) => match asset.kind {
@@ -233,6 +243,11 @@ pub(super) fn diagnose_mesh_display(
             value.poor_count = quality.poor_count as u64;
             value.cell_count = quality.by_type.iter().map(|kind| kind.count as u64).sum();
             value.cell_quality_summary = crate::volume::cell_quality_summary(&quality);
+            if let Some(face) = &face_quality {
+                value.face_quality_summary = crate::volume::face_quality_summary(face);
+                value.face_quality_warning = crate::volume::face_quality_warning(face);
+                value.clean = value.clean && !value.face_quality_warning;
+            }
             value.clean = value.clean && quality.poor_count == 0;
         }
         Ok(value)
@@ -407,6 +422,7 @@ mod tests {
                 volume: None,
                 streamed: None,
                 results: None,
+                face_quality: None,
             }),
             &crate::TaskProgress::default(),
         );
@@ -419,6 +435,7 @@ mod tests {
                 volume: None,
                 streamed: None,
                 results: None,
+                face_quality: None,
             }),
             &cancelled,
         );
@@ -440,6 +457,7 @@ mod tests {
                 volume: None,
                 streamed: None,
                 results: None,
+                face_quality: None,
             }),
             &crate::TaskProgress::default(),
         );
@@ -452,6 +470,7 @@ mod tests {
                 volume: None,
                 streamed: None,
                 results: None,
+                face_quality: None,
             }),
             &crate::TaskProgress::default(),
         );
@@ -474,6 +493,7 @@ mod tests {
             volume: Some(Arc::new(volume)),
             streamed: None,
             results: None,
+            face_quality: None,
         }))
     }
 
@@ -488,6 +508,29 @@ mod tests {
         assert_eq!(report.value.node_count, 5);
         assert_eq!(report.value.triangle_count, 6);
         assert_eq!(progress.0.fraction(), 1.0);
+        assert!(report.value.face_quality_summary.is_empty());
+
+        // 导入记录带面邻接质量时追加摘要；严重非正交面使结论变为有问题（task 032 PR 2）。
+        let mut input = volume_input()?;
+        input.face_quality = Some(panta_core::project::FaceQualityRecord {
+            internal_faces: 46,
+            boundary_faces: 52,
+            max_non_orthogonality_degrees: 75.0,
+            mean_non_orthogonality_degrees: 21.6,
+            severe_non_orthogonal_faces: 1,
+            max_skewness: 1.42,
+            high_skew_faces: 0,
+            min_orthogonal_quality: 0.3,
+            poor_orthogonal_cells: 0,
+        });
+        let face = diagnose_mesh_display(input, &Default::default()).value;
+        assert!(face.face_quality_warning && !face.clean);
+        assert!(
+            face.face_quality_summary
+                .contains("非正交角 最大 75.00° / 平均 21.60°，超过 70° 1"),
+            "{}",
+            face.face_quality_summary
+        );
 
         let section =
             section_mesh_display(volume_input()?, 1.0, 0.0, 0.0, 0.5, &Default::default());
@@ -550,6 +593,7 @@ mod tests {
                     chunks: None,
                 })),
                 results: None,
+                face_quality: None,
             })
         };
         let report = diagnose_mesh_display(volume_input(), &Default::default());
@@ -592,6 +636,7 @@ mod tests {
                     chunks: None,
                 })),
                 results: None,
+                face_quality: None,
             })
         };
         let stl = directory.join("full.stl");
@@ -710,6 +755,7 @@ mod tests {
                 volume: None,
                 streamed: None,
                 results: None,
+                face_quality: None,
             }),
             &request("velocity", "node", -1),
             &progress,

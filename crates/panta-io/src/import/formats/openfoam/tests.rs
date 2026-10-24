@@ -266,3 +266,53 @@ fn snapshot_decoding_rejects_trailing_or_truncated_bytes() {
     assert!(bundle::decode(&bytes).is_err());
     assert!(bundle::decode(&bytes[..bundle::MAGIC.len() + 2]).is_err());
 }
+
+/// 面邻接质量与 OpenFOAM v1912 checkMesh 报告对照（相对误差 1e-6）：
+/// `skew` 为扰动后的 4×3×2 blockMesh，`skewdual` 为其 polyDualMesh，`poly` 为未扰动对偶网格。
+/// checkMesh 不报告正交质量，这里只检查其落在 (0, 1]（对偶网格边界单元约 0.15，与逐单元
+/// 正交质量同一量级）。
+#[test]
+fn face_quality_matches_check_mesh() -> TestResult {
+    let close =
+        |actual: f64, expected: f64| (actual - expected).abs() <= 1e-6 * expected.abs().max(1.0);
+    // (算例, 内部面, 最大非正交角, 平均非正交角, 最大偏斜度)
+    let cases = [
+        ("skew", 46, 32.663972, 21.620442, 1.4240861),
+        ("skewdual", 133, 41.626226, 21.297343, 2.4449241),
+        ("poly", 104, 0.0, 0.0, 1.0000001),
+    ];
+    for (case, internal, max_angle, mean_angle, max_skew) in cases {
+        let grid = parse_openfoam_grid(&snapshot(&fixture(case, &format!("{case}.foam")))?)?;
+        let quality = grid.face_quality.ok_or("face quality")?;
+        let summary = format!(
+            "{case}: internal {} max {} mean {} skew {}",
+            quality.internal_faces,
+            quality.max_non_orthogonality_degrees(),
+            quality.mean_non_orthogonality_degrees(),
+            quality.max_skewness
+        );
+        assert_eq!(quality.internal_faces, internal, "{summary}");
+        assert!(
+            close(quality.max_non_orthogonality_degrees(), max_angle)
+                || max_angle == 0.0 && quality.max_non_orthogonality_degrees() < 1e-4,
+            "{summary}"
+        );
+        assert!(
+            close(quality.mean_non_orthogonality_degrees(), mean_angle)
+                || mean_angle == 0.0 && quality.mean_non_orthogonality_degrees() < 1e-4,
+            "{summary}"
+        );
+        assert!(close(quality.max_skewness, max_skew), "{summary}");
+        assert_eq!(
+            (quality.severe_non_orthogonal_faces, quality.high_skew_faces),
+            (0, 0),
+            "{summary}"
+        );
+        assert!(
+            quality.min_orthogonal_quality > 0.0 && quality.min_orthogonal_quality <= 1.0,
+            "{summary} orthogonal {}",
+            quality.min_orthogonal_quality
+        );
+    }
+    Ok(())
+}

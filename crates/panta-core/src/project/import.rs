@@ -237,6 +237,7 @@ fn commit_import(
             record.skipped_result_fields = imported.skipped_fields;
             record.region_names = imported.region_names;
             record.boundary_group_names = imported.boundary_group_names;
+            record.face_quality = imported.face_quality;
             (Some(imported.mesh), imported.fields)
         }
         None => (None, Vec::new()),
@@ -349,6 +350,7 @@ struct ImportedVolume {
     skipped_fields: Vec<String>,
     region_names: Vec<String>,
     boundary_group_names: Vec<String>,
+    face_quality: Option<panta_io::import::FaceQualityRecord>,
 }
 
 fn volume_from_prepared(
@@ -395,6 +397,7 @@ fn volume_from_prepared(
         skipped_fields: grid.skipped_fields,
         region_names: grid.region_names,
         boundary_group_names: grid.boundary_group_names,
+        face_quality: grid.face_quality.as_ref().map(Into::into),
     }))
 }
 

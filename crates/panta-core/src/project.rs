@@ -18,8 +18,8 @@ use mesh_cache::SurfaceMeshCache;
 pub use model::{ProjectCommand, ProjectSnapshot};
 use model::{ProjectManifest, ProjectState};
 pub use panta_io::import::{
-    DEFAULT_MESH_TYPE, IMPORT_RECORD_VERSION, ImportRecord, MESH_TYPES, STL_IMPORT_PARSER_VERSION,
-    StlImportPreview, VolumeGeneration, default_display_name,
+    DEFAULT_MESH_TYPE, FaceQualityRecord, IMPORT_RECORD_VERSION, ImportRecord, MESH_TYPES,
+    STL_IMPORT_PARSER_VERSION, StlImportPreview, VolumeGeneration, default_display_name,
 };
 pub use panta_mesh::{DEFAULT_RELATIVE_WELD_TOLERANCE, DiagnosticOptions, SurfaceDiagnostics};
 pub(crate) use service::resolve_asset_path;
@@ -311,6 +311,7 @@ mod tests {
             skipped_result_fields: Vec::new(),
             region_names: Vec::new(),
             boundary_group_names: Vec::new(),
+            face_quality: None,
         });
         state.mesh_assets.insert(
             "mesh-overflow".to_owned(),
@@ -400,6 +401,7 @@ mod tests {
                 skipped_result_fields: Vec::new(),
                 region_names: Vec::new(),
                 boundary_group_names: Vec::new(),
+                face_quality: None,
             });
         }
         assert!(service.workspace.open_import("import-2", "model_a"));
@@ -445,6 +447,7 @@ mod tests {
             skipped_result_fields: Vec::new(),
             region_names: Vec::new(),
             boundary_group_names: Vec::new(),
+            face_quality: None,
         });
         state.mesh_assets.insert(
             "mesh-saved-import".to_owned(),
@@ -506,6 +509,7 @@ mod tests {
             skipped_result_fields: Vec::new(),
             region_names: Vec::new(),
             boundary_group_names: Vec::new(),
+            face_quality: None,
         });
         state.mesh_assets.insert(
             "mesh-invalid-saved-import".to_owned(),

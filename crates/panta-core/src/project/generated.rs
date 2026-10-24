@@ -174,6 +174,7 @@ fn commit_generated(
         skipped_result_fields: Vec::new(),
         region_names: Vec::new(),
         boundary_group_names: Vec::new(),
+        face_quality: None,
     };
     if phase.load(Ordering::Acquire) != IMPORT_RUNNING {
         return Err(import_cancelled());
