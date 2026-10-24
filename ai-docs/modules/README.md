@@ -9,7 +9,7 @@
 | 方向 | 设计说明 | 能力边界 / 源码入口 |
 |---|---|---|
 | 复用组件与固定界面样式 | [组件与固定界面样式](qml-components-and-theme.md) | 实际控件与少量 QML 颜色 / 字号 / 尺寸常量 |
-| 中文提示、系统动态效果偏好 | [中文界面](chinese-interface.md)、[应用与存储架构](../architecture/application-and-storage.md) | 中文直接声明，Settings 适配系统 reducedMotion |
+| 中文提示、系统动态效果偏好 | [中文界面](chinese-interface.md)、[应用与存储架构](../architecture/application-and-storage.md) | 中文直接声明，Settings 适配系统 reducedMotion 与界面布局偏好 |
 | 界面文案与技术标识边界 | [中文界面](chinese-interface.md) | UTF-8 中文提示、稳定错误码和原始诊断 |
 | 跨平台路径、逻辑资源地址与运行上下文 | [路径与运行时](paths-and-runtime.md) | `panta-core` 路径授权与工程会话相关性 |
 | 静态库、QML 注册与状态重载 | [模块与热重载](qml-modules-and-reload.md) | 当前静态注册；热重载为候选设计 |

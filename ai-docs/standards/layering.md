@@ -76,10 +76,10 @@ Rust 资产 / 显示快照 → CXX → C++ RenderScene / ViewportBackend → VTK
 
 - `qml/Themes/Theme.qml` 只集中固定界面常量；工程数据由 Rust 服务校验和提交，不通过界面样式文件配置。
 - `native/qt-adapter` 集中 Qt 封装的系统服务与操作系统 API（例如标准目录发现、系统偏好）；Bridge/ViewModel 消费稳定的 Qt 值/属性并对接 QML 或 Rust DTO，不直接承载 AppKit、Win32、D-Bus 等平台查询。该 target 不依赖 Rust、Bridge 或 VTK。
-- 界面与提示直接使用中文；稳定错误码和 DTO 保持技术契约。Bridge `Settings` 仅暴露系统减少动态效果偏好，Qt adapter 负责平台查询，不引入语言目录或翻译安装服务。
+- 界面与提示直接使用中文；稳定错误码和 DTO 保持技术契约。Bridge `Settings` 暴露系统减少动态效果偏好与界面布局偏好，Qt adapter 负责平台查询，不引入语言目录或翻译安装服务。
 - surface 坐标、窗口尺寸、设备像素以及 Wayland/Win32/Cocoa 对象归 C++ 平台适配层，不搬入主题 token 或 Rust 逐帧路径。
 - Qt Quick 与 VTK hardware window 生命周期紧密耦合的原生 surface 代码归 `native/visualization`，不得为了平台 API 归类而让通用 Qt adapter 反向依赖 VTK。
-- 当前 Settings 只适配系统减少动态效果偏好；未来实际新增的可持久化设置需先明确 schema、校验和平台存取职责，QML 不直接读写平台设置。
+- 当前 Settings 适配系统减少动态效果偏好与界面布局（task 036）：左栏宽度 / 折叠、底部面板高度 / 折叠，写入用户配置目录独立的 `workbench-layout.ini`，越界值夹到允许范围，非法值回落默认，不进入工程文件、不影响 dirty；未来实际新增的可持久化设置需先明确 schema、校验和平台存取职责，QML 不直接读写平台设置。
 - 手写 unsafe 仅在登记的边界模块（当前 `panta-foundation::crash`），逐块说明安全前提；CXX 的 unsafe 声明与生成胶水按 FFI 规则审查，不扩散到业务调用方。
 
 ## 例外登记
