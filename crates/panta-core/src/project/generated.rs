@@ -171,12 +171,24 @@ fn commit_generated(
             source_step_digest: digest,
             max_length_mm,
         }),
+        skipped_result_fields: Vec::new(),
     };
     if phase.load(Ordering::Acquire) != IMPORT_RUNNING {
         return Err(import_cancelled());
     }
     progress.set_fraction(0.2);
-    commit_mesh_record(candidate, record, mesh, Some(volume), phase, progress, 0.2)
+    commit_mesh_record(
+        candidate,
+        record,
+        mesh,
+        super::import::MeshPayload {
+            volume: Some(volume),
+            fields: Vec::new(),
+        },
+        phase,
+        progress,
+        0.2,
+    )
 }
 
 /// 默认资产名去掉 `.step` / `.stp` 扩展名（大小写不敏感）。

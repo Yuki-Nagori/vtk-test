@@ -578,6 +578,14 @@ pub(super) fn validate_schema_four_mesh_assets(
             || !is_sha256_digest(&asset.digest)
             || asset.units != "millimeters"
             || !matches!(asset.kind.as_str(), "surface" | "volume")
+            || asset.results.as_ref().is_some_and(|results| {
+                asset.kind != "volume"
+                    || results.format_version != panta_mesh::RESULT_ASSET_FORMAT_VERSION
+                    || results.field_count == 0
+                    || !is_sha256_digest(&results.digest)
+                    || !results.relative_path.starts_with("assets/results/")
+                    || !results.relative_path.ends_with(".presult")
+            })
         {
             return Err(ProjectError::ManifestInvalid(
                 "schema 4 mesh asset index contains an invalid entry".to_owned(),

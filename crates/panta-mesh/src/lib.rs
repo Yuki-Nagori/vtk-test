@@ -17,11 +17,12 @@ mod progress;
 mod synthetic;
 mod volume;
 pub use asset::{
-    MESH_ASSET_FORMAT_VERSION, MeshAsset, MeshAssetError, MeshAssetReader, MeshAssetRef,
-    SurfaceAssetChunks, Triangle, VolumeAssetChunks, VolumeSource, VolumeStreamCounts,
+    FieldAssociation, FieldSummary, MESH_ASSET_FORMAT_VERSION, MeshAsset, MeshAssetError,
+    MeshAssetReader, MeshAssetRef, RESULT_ASSET_FORMAT_VERSION, ResultAssetReader, ResultField,
+    ResultSet, SurfaceAssetChunks, Triangle, VolumeAssetChunks, VolumeSource, VolumeStreamCounts,
     decode_mesh_asset, decode_mesh_asset_with_digest, encode_mesh_asset, encode_mesh_asset_ref,
-    is_readable_mesh_asset_version, mesh_asset_encoded_len, surface_mesh_expanded_bytes,
-    write_surface_asset_streaming, write_volume_asset_streaming,
+    encode_result_asset, is_readable_mesh_asset_version, mesh_asset_encoded_len,
+    surface_mesh_expanded_bytes, write_surface_asset_streaming, write_volume_asset_streaming,
 };
 pub use diagnostics::{
     DEFAULT_RELATIVE_WELD_TOLERANCE, DiagnosticError, DiagnosticOptions, SurfaceDiagnostics,

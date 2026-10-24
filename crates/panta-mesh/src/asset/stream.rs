@@ -3,9 +3,10 @@
 
 use super::{
     CHUNK_ALIGNMENT, ChunkEntry, HEADER_SIZE, Layout, MAGIC, MESH_ASSET_FORMAT_VERSION,
-    MILLIMETERS, MeshAssetError, SURFACE_KIND, Stream, TET_KIND, TOC_ENTRY_BYTES, TOC_PREFIX_BYTES,
-    align_up, chunk_jobs, chunk_raw, decode_surface_records, encode_chunks, mesh_asset_encoded_len,
-    parallel_map, parse_layout, read_exact_io, toc_len, worker_count,
+    MILLIMETERS, MeshAssetError, RESULT_KIND, SURFACE_KIND, Stream, TET_KIND, TOC_ENTRY_BYTES,
+    TOC_PREFIX_BYTES, align_up, chunk_jobs, chunk_raw, container_encoded_len,
+    decode_surface_records, encode_chunks, parallel_map, parse_layout, read_exact_io, toc_len,
+    worker_count,
 };
 use crate::{Progress, SurfaceTriangle, Tetrahedron};
 use sha2::{Digest, Sha256};
@@ -148,7 +149,7 @@ pub fn write_volume_asset_streaming<W: Write + Seek>(
                     raw.extend_from_slice(&face.group.to_le_bytes());
                 }
             }
-            Stream::SurfaceTriangles => {}
+            Stream::SurfaceTriangles | Stream::ResultTable | Stream::ResultValues => {}
         },
         progress,
     )
@@ -227,13 +228,13 @@ where
 }
 
 /// 打开 v3 资产并校验头部与目录；`kind` 不符或 v2 资产返回 `UnsupportedLayout`。
-fn open_layout(path: &Path, kind: u8) -> Result<(File, Layout), MeshAssetError> {
+pub(super) fn open_layout(path: &Path, kind: u8) -> Result<(File, Layout), MeshAssetError> {
     let io = |error: std::io::Error| MeshAssetError::Io(error.kind());
     let mut file = File::open(path).map_err(io)?;
     let file_len = file.metadata().map_err(io)?.len();
     let mut header = vec![0; HEADER_SIZE];
     read_exact_io(&mut file, &mut header)?;
-    if mesh_asset_encoded_len(&header)? as u64 != file_len {
+    if container_encoded_len(&header, kind == RESULT_KIND)? as u64 != file_len {
         return Err(MeshAssetError::InvalidLength);
     }
     if u32::from_le_bytes([header[8], header[9], header[10], header[11]])
@@ -253,7 +254,7 @@ fn open_layout(path: &Path, kind: u8) -> Result<(File, Layout), MeshAssetError> 
 
 /// 按目录顺序批量读取 `chunks`，并行解压校验并用 `decode` 解码，每批调用一次 `visit`；
 /// `visit` 返回 `false` 或进度被取消时停止并返回 `Ok(false)`。
-fn visit_chunks<T: Send>(
+pub(super) fn visit_chunks<T: Send>(
     file: &mut File,
     chunks: &[ChunkEntry],
     progress: Option<(&Progress, f64, f64)>,

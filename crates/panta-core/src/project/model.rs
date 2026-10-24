@@ -69,6 +69,18 @@ pub(super) struct MeshAssetRef {
     pub(super) units: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) source_revision: Option<String>,
+    /// 体网格导入时来源携带的结果场 sidecar（task 029）；可选字段，旧清单与无结果场时省略。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) results: Option<ResultAssetRef>,
+}
+
+/// 结果场 sidecar 引用：与所属 Mesh 资产同一不可变发布规则，按网格摘要绑定。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct ResultAssetRef {
+    pub(super) format_version: u32,
+    pub(super) relative_path: String,
+    pub(super) digest: String,
+    pub(super) field_count: u32,
 }
 
 pub(super) fn validate_name(name: &str) -> Result<(), ProjectError> {
