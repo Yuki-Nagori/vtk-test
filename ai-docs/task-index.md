@@ -25,6 +25,11 @@
 | 019 | [大网格：流式资产读写、显示 LOD 与规模基准](task/019-large-mesh-lod.md) | implemented |
 | 020 | [时序动画：序列加载、预取缓存与播放](task/020-time-series-animation.md) | done |
 | 021 | [体网格：导入、显示/切片、导出、质量诊断、与 Netgen 体网格打通](task/021-volume-mesh.md) | done |
+| 022 | [体网格质量统计、切面与 VTU 导出后台化](task/022-volume-background-tasks.md) | planned |
+| 023 | [工作台命令：STEP → Netgen 生成体网格](task/023-step-netgen-volume-command.md) | planned |
+| 024 | [任意平面切面](task/024-arbitrary-section-plane.md) | planned |
+| 025 | [LOD 状态下对完整资产流式诊断与导出](task/025-lod-streaming-diagnostics-export.md) | planned |
+| 026 | [LOD 触发阈值与输出预算设为用户设置](task/026-lod-user-settings.md) | planned |
 
 任务先登记范围与验收，实际验证后同步状态。历史编号不再代表本仓库的待办或已交付能力。
 
