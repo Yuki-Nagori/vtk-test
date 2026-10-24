@@ -10,6 +10,8 @@ QtObject {
     readonly property color colorPanelLine: "#c9c9c9"
     readonly property color colorText: "#1c1c1c"
     readonly property color colorTextMuted: "#5a5a5a"
+    // 占位文字与已填写内容明显区分（task 035 / 034 Q 节）；对白色面板对比度约 3:1。
+    readonly property color colorTextPlaceholder: "#8c959f"
     readonly property color colorIcon: "#4a4a4a"
     readonly property color colorHover: "#e5f1fb"
     readonly property color colorFocus: "#2e7ce0"
@@ -60,7 +62,6 @@ QtObject {
     readonly property int newProjectDialogMinimumWidth: 520
     readonly property int newProjectDialogMinimumHeight: 320
     readonly property int importDialogWidth: 680
-    readonly property int importDialogHeight: 430
     readonly property int importDialogMinimumWidth: 580
-    readonly property int importDialogMinimumHeight: 360
+    readonly property int importDialogMinimumHeight: 240
 }

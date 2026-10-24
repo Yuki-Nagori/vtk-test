@@ -13,13 +13,16 @@ DialogWindow {
     property var pendingImportRequestId: 0
 
     width: Theme.importDialogWidth
-    height: Theme.importDialogHeight
+    // task 035：高度随内容收紧，警告/错误出现时自动增高，不留大片空白也不裁切按钮。
+    height: Math.max(minimumHeight, importFrame.implicitHeight)
     minimumWidth: Theme.importDialogMinimumWidth
     minimumHeight: Theme.importDialogMinimumHeight
     title: "导入"
 
     readonly property var meshTypes: projectModel.meshTypes
     readonly property var unitValues: ["millimeters", "centimeters", "meters", "inches"]
+    // 单位来源（task 035）："default" 默认值 / "cfd" CFD 结果按 SI 米制 / "user" 用户选择。
+    property string unitSource: "default"
 
     onVisibleChanged: {
         if (!visible) {
@@ -35,6 +38,7 @@ DialogWindow {
         sourcePath = "";
         meshTypeCombo.currentIndex = meshTypes.findIndex(entry => entry.id === projectModel.defaultMeshType);
         unitsCombo.currentIndex = 0;
+        unitSource = "default";
     }
 
     function open() {
@@ -56,8 +60,14 @@ DialogWindow {
     function selectSource(path: string) {
         sourcePath = path;
         const cfd = isCfdPath(path);
-        if (cfd)
+        if (cfd) {
             unitsCombo.currentIndex = unitValues.indexOf("meters");
+            unitSource = "cfd";
+        } else if (unitSource === "cfd") {
+            // 由 CFD 换成普通网格时，回到默认单位，避免沿用自动设置的米制而来源标注失真。
+            unitsCombo.currentIndex = 0;
+            unitSource = "default";
+        }
         if (cfd || path.toLowerCase().endsWith(".pvd")) {
             const solid = meshTypes.findIndex(entry => entry.id === "solid-3d");
             if (solid >= 0)
@@ -96,7 +106,16 @@ DialogWindow {
         return "导入操作无法完成。";
     }
 
+    function unitSourceText(): string {
+        if (unitSource === "cfd")
+            return "CFD 结果按 SI 米制";
+        if (unitSource === "user")
+            return "用户选择";
+        return "默认";
+    }
+
     DialogFrame {
+        id: importFrame
         window: dialog
         closeEnabled: true
 
@@ -106,8 +125,8 @@ DialogWindow {
             Layout.leftMargin: Theme.spacingLarge
             Layout.rightMargin: Theme.spacingLarge
             Layout.topMargin: Theme.spacingMedium
-            Layout.bottomMargin: Theme.spacingMedium
-            spacing: Theme.spacingMedium
+            Layout.bottomMargin: Theme.spacingLarge
+            spacing: Theme.spacingSmall
 
             ThemedLabel {
                 Layout.fillWidth: true
@@ -121,7 +140,7 @@ DialogWindow {
                 Layout.fillWidth: true
                 columns: 2
                 columnSpacing: Theme.spacingMedium
-                rowSpacing: Theme.spacingMedium
+                rowSpacing: Theme.spacingSmall
 
                 ThemedLabel {
                     text: "文件"
@@ -168,12 +187,24 @@ DialogWindow {
                     text: "单位"
                     textSize: Theme.fontBody
                 }
-                ThemedComboBox {
-                    id: unitsCombo
+                RowLayout {
                     Layout.fillWidth: true
-                    enabled: !dialog.projectModel.importPending
-                    model: ["毫米", "厘米", "米", "英寸"]
-                    Accessible.name: "单位"
+                    spacing: Theme.spacingSmall
+
+                    ThemedComboBox {
+                        id: unitsCombo
+                        Layout.fillWidth: true
+                        enabled: !dialog.projectModel.importPending
+                        model: ["毫米", "厘米", "米", "英寸"]
+                        Accessible.name: "单位"
+                        onActivated: dialog.unitSource = "user"
+                    }
+                    ThemedLabel {
+                        objectName: "importUnitSource"
+                        text: "来源：" + dialog.unitSourceText()
+                        textSize: Theme.fontSmall
+                        textColor: Theme.colorTextMuted
+                    }
                 }
 
                 ThemedLabel {

@@ -1,5 +1,6 @@
 // 最小工作台的工程、导入、资产列表与文档接线回归。
 #include "../../support/qml/quick_item_helpers.hpp"
+#include <QByteArray>
 #include <QColor>
 #include <QDir>
 #include <QFile>
@@ -507,6 +508,88 @@ class ShellModuleLoadTest final : public QObject {
                                                           .arg(window->devicePixelRatio()))));
             }
         }
+    }
+
+    // task 035：错误只在对话框内出现一次；占位文字用独立灰；导入单位来源可见；
+    // 文件选择器优先使用系统原生对话框（不带 DontUseNativeDialog）。
+    void dialogs_show_errors_once_and_prefer_native_file_pickers() {
+        QQmlApplicationEngine engine;
+        panta::install_icon_provider(engine);
+        engine.loadFromModule(QStringLiteral("Panta.Shell"), QStringLiteral("App"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto* root = engine.rootObjects().constFirst();
+        auto* model =
+            root->findChild<panta::bridge::ProjectViewModel*>(QStringLiteral("projectModel"));
+        auto* newDialog = root->findChild<QObject*>(QStringLiteral("newProjectDialog"));
+        auto* importDialog = root->findChild<QObject*>(QStringLiteral("importDialog"));
+        auto* status = root->findChild<QObject*>(QStringLiteral("statusMessage"));
+        QVERIFY(model && newDialog && importDialog && status);
+
+        auto* nameField = newDialog->findChild<QObject*>(QStringLiteral("projectNameField"));
+        auto* errorLabel = newDialog->findChild<QObject*>(QStringLiteral("newProjectError"));
+        QVERIFY(nameField && errorLabel);
+        QCOMPARE(nameField->property("placeholderTextColor").value<QColor>(),
+                 QColor(QStringLiteral("#8c959f")));
+
+        QVERIFY(QMetaObject::invokeMethod(newDialog, "open"));
+        QTRY_VERIFY(newDialog->property("visible").toBool());
+        nameField->setProperty("text", QString());
+        QVERIFY(QMetaObject::invokeMethod(newDialog, "submit"));
+        QTRY_VERIFY(!model->error().isEmpty());
+        QTRY_VERIFY(errorLabel->property("visible").toBool());
+        QVERIFY(!status->property("text").toString().contains(model->error()));
+        if (const QString dir = qEnvironmentVariable("PANTA_SHELL_SCREENSHOT_DIR");
+            !dir.isEmpty()) {
+            auto* newWindow = qobject_cast<QQuickWindow*>(newDialog);
+            QVERIFY(newWindow);
+            QTest::qWait(100);
+            QVERIFY(newWindow->grabWindow().save(
+                QDir(dir).filePath(QStringLiteral("new-project-error.png"))));
+        }
+        QVERIFY(QMetaObject::invokeMethod(newDialog, "close"));
+        QTRY_VERIFY(!newDialog->property("visible").toBool());
+        if (!model->error().isEmpty())
+            QCOMPARE(status->property("text").toString(), model->error());
+
+        auto* unitSource = importDialog->findChild<QObject*>(QStringLiteral("importUnitSource"));
+        QVERIFY(unitSource);
+        QVERIFY(QMetaObject::invokeMethod(importDialog, "openWithFile",
+                                          Q_ARG(QString, QStringLiteral("/missing/case.foam"))));
+        QTRY_VERIFY(importDialog->property("visible").toBool());
+        QVERIFY(unitSource->property("text").toString().contains(QStringLiteral("SI 米制")));
+        QVERIFY(QMetaObject::invokeMethod(importDialog, "selectSource",
+                                          Q_ARG(QString, QStringLiteral("/missing/part.stl"))));
+        QVERIFY(unitSource->property("text").toString().contains(QStringLiteral("默认")));
+        // 高度随内容收紧：确定按钮完整落在窗口内，底部不留大片空白。
+        auto* accept = importDialog->findChild<QQuickItem*>(QStringLiteral("importAccept"));
+        QVERIFY(accept);
+        const qreal windowHeight = importDialog->property("height").toReal();
+        QTRY_VERIFY(accept->mapToScene(QPointF(0, accept->height())).y() <= windowHeight + 0.5);
+        QVERIFY(windowHeight - accept->mapToScene(QPointF(0, accept->height())).y() < 40);
+        if (const QString dir = qEnvironmentVariable("PANTA_SHELL_SCREENSHOT_DIR");
+            !dir.isEmpty()) {
+            auto* importWindow = qobject_cast<QQuickWindow*>(importDialog);
+            QVERIFY(importWindow);
+            QTest::qWait(100);
+            QVERIFY(importWindow->grabWindow().save(
+                QDir(dir).filePath(QStringLiteral("import-dialog.png"))));
+        }
+        QVERIFY(QMetaObject::invokeMethod(importDialog, "close"));
+
+        int fileDialogs = 0;
+        const auto objects = root->findChildren<QObject*>();
+        for (auto* object : objects) {
+            if (!QByteArray(object->metaObject()->className()).contains("FileDialog") &&
+                !QByteArray(object->metaObject()->className()).contains("FolderDialog"))
+                continue;
+            const int index = object->metaObject()->indexOfProperty("options");
+            if (index < 0)
+                continue;
+            ++fileDialogs;
+            QVERIFY2(object->property("options").toInt() == 0,
+                     qPrintable(object->objectName() + QStringLiteral(" 不应禁用原生对话框")));
+        }
+        QVERIFY(fileDialogs >= 5);
     }
 
 #endif

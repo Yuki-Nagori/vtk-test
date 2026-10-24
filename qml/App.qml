@@ -935,8 +935,11 @@ ApplicationWindow {
             objectName: "statusMessage"
             Layout.fillWidth: true
             padding: Theme.spacingSmall
-            text: projectModel.error.length > 0 ? projectModel.error : shellWindow.notice.length > 0 ? shellWindow.notice : shellWindow.busy ? "处理中…" : "就绪"
-            color: projectModel.error.length > 0 || shellWindow.noticeIsError ? Theme.colorError : Theme.colorTextMuted
+            // task 035：错误已在打开的对话框字段旁显示时，状态栏不重复。
+            readonly property bool errorShownInDialog: newProjectDialog.visible || importDialog.visible || generateVolumeDialog.visible || largeMeshSettingsDialog.visible
+            readonly property bool showError: projectModel.error.length > 0 && !errorShownInDialog
+            text: showError ? projectModel.error : shellWindow.notice.length > 0 ? shellWindow.notice : shellWindow.busy ? "处理中…" : "就绪"
+            color: showError || shellWindow.noticeIsError ? Theme.colorError : Theme.colorTextMuted
             elide: Text.ElideRight
         }
         // task 016：当前后台任务的百分比与取消；导入优先，其次导出、诊断。
