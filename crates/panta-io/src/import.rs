@@ -54,6 +54,43 @@ impl ImportFormat {
     pub fn is_surface_mesh(self) -> bool {
         !matches!(self, Self::Step | Self::Iges)
     }
+
+    /// 导入窗口「格式」行的中文显示名（task 040）。
+    pub fn source_text(self) -> &'static str {
+        match self {
+            Self::Stl => "STL 表面网格",
+            Self::Vtu => "VTK XML 非结构网格（.vtu）",
+            Self::Vtp => "VTK XML 多边形数据（.vtp）",
+            Self::VtkLegacy => "VTK 旧版格式（.vtk）",
+            Self::Obj => "Wavefront OBJ",
+            Self::Ply => "PLY 网格",
+            Self::OpenFoam => "OpenFOAM 算例",
+            Self::Cgns => "CGNS",
+            Self::Pvd => "ParaView 时间序列（.pvd）",
+            Self::Step => "STEP 几何",
+            Self::Iges => "IGES 几何",
+        }
+    }
+}
+
+/// 导入窗口「格式」行（task 040）：按路径识别可走网格导入的格式；
+/// 无法识别或属于几何格式（STEP / IGES 走「从 STEP 生成体网格」）时返回 None。
+pub fn import_format_text(path: &Path) -> Option<&'static str> {
+    detect_format(path)
+        .ok()
+        .filter(|format| format.is_surface_mesh())
+        .map(ImportFormat::source_text)
+}
+
+/// 按预检包围盒的最大边长推测来源单位（task 040），只作提示，不自动改选。
+/// 最大边长低于 2 时多为按米存储的 CAE / CFD 数据；其余情况沿用导入窗口当前选择，不给建议。
+pub fn suggest_import_units(dimensions: [f64; 3]) -> Option<&'static str> {
+    const METERS_MAX_EXTENT: f64 = 2.0;
+    if !dimensions.iter().all(|value| value.is_finite()) {
+        return None;
+    }
+    let extent = dimensions.iter().copied().fold(0.0_f64, f64::max);
+    (extent > 0.0 && extent < METERS_MAX_EXTENT).then(|| LengthUnit::Meters.label())
 }
 
 #[derive(Debug)]
@@ -903,6 +940,35 @@ fn scale_mesh_mm(mesh: &mut SurfaceMesh, units: LengthUnit) -> Result<(), Import
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn import_format_text_names_mesh_formats_and_rejects_geometry_and_unknown() {
+        assert_eq!(
+            import_format_text(Path::new("/data/part.STL")),
+            Some("STL 表面网格")
+        );
+        assert_eq!(
+            import_format_text(Path::new("/case/system/controlDict")),
+            Some("OpenFOAM 算例")
+        );
+        assert_eq!(
+            import_format_text(Path::new("run.pvd")),
+            Some("ParaView 时间序列（.pvd）")
+        );
+        assert_eq!(import_format_text(Path::new("body.step")), None);
+        assert_eq!(import_format_text(Path::new("notes.txt")), None);
+        assert_eq!(import_format_text(Path::new("")), None);
+    }
+
+    #[test]
+    fn suggest_import_units_flags_meter_scale_extents_only() {
+        assert_eq!(suggest_import_units([0.4, 0.1, 1.2]), Some("meters"));
+        assert_eq!(suggest_import_units([120.0, 40.0, 3.0]), None);
+        assert_eq!(suggest_import_units([2.0, 0.0, 0.0]), None);
+        assert_eq!(suggest_import_units([0.0, 0.0, 0.0]), None);
+        assert_eq!(suggest_import_units([f64::NAN, 0.5, 0.5]), None);
+        assert_eq!(suggest_import_units([f64::INFINITY, 0.5, 0.5]), None);
+    }
 
     struct Fixture {
         root: PathBuf,

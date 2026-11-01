@@ -17,8 +17,8 @@ PanelSurface {
     readonly property bool hasDocuments: meshSource !== null && meshSource.openDocuments.length > 0
 
     // 截图由原生视口读回当前帧；返回中文错误文案，空串表示成功。
-    function saveScreenshot(url: url): string {
-        return viewport.saveScreenshot(url);
+    function saveScreenshot(url: url, scale: int, includeLegend: bool): string {
+        return viewport.saveScreenshot(url, scale, includeLegend);
     }
     // 视图工具（task 017）：预设视角与复位转发到原生视口。
     function setViewPreset(name: string): bool {

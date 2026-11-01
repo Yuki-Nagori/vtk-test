@@ -33,7 +33,7 @@ ApplicationWindow {
     }
     function formatPick(): string {
         if (pickedPoints.length === 0)
-            return lastPickMissed ? "未命中模型" : "左键拾取点，连续两点测距";
+            return lastPickMissed ? "未命中模型" : "左键拾取点（连续两点测距）· 右键拖动旋转 · 滚轮缩放 · 快捷键见「帮助」";
         const a = pickedPoints[0];
         let text = "点 A " + formatPoint(a) + " 面 #" + a.triangle;
         if (pickedPoints.length === 2) {
@@ -281,55 +281,264 @@ ApplicationWindow {
         }
     }
 
-    FileDialog {
-        id: screenshotFileDialog
-        objectName: "screenshotFileDialog"
-        title: "保存视口截图"
-        currentFolder: projectModel.defaultLocationUrl
-        fileMode: FileDialog.SaveFile
-        defaultSuffix: "png"
-        nameFilters: ["PNG 图像 (*.png)"]
-        onAccepted: {
-            const failure = viewportPane.saveScreenshot(selectedFile);
-            shellWindow.showNotice(failure.length > 0 ? failure : "已保存截图：" + projectModel.localPath(selectedFile), failure.length > 0 ? "error" : "success");
+    ScreenshotDialog {
+        id: screenshotDialog
+        ownerWindow: shellWindow
+        projectModel: projectModel
+        onSaveRequested: (fileUrl, scale, includeLegend) => {
+            const failure = viewportPane.saveScreenshot(fileUrl, scale, includeLegend);
+            shellWindow.showNotice(failure.length > 0 ? failure : "已保存截图：" + projectModel.localPath(fileUrl), failure.length > 0 ? "error" : "success");
         }
     }
 
-    // 全局快捷键；启用条件与工具栏按钮一致，忙碌时不触发。
-    Shortcut {
-        sequences: [StandardKey.New]
-        enabled: shellWindow.canCreateOrOpen
-        onActivated: newProjectDialog.open()
+    ShortcutHelpDialog {
+        id: shortcutHelpDialog
+        ownerWindow: shellWindow
+        mouseActions: shellWindow.mouseTable
+        treeKeys: shellWindow.treeKeyTable
+        onVisibleChanged: {
+            if (visible)
+                shortcuts = shellWindow.shortcutTable.map(entry => ({
+                            "group": entry.group,
+                            "label": entry.label,
+                            "keys": shellWindow.shortcutText(entry.id)
+                        }));
+        }
     }
-    Shortcut {
-        sequences: [StandardKey.Open]
-        enabled: shellWindow.canCreateOrOpen
-        onActivated: openProjectFileDialog.open()
+
+    // 全局快捷键（task 040）：一张表同时驱动 Shortcut 与「帮助 → 快捷键与鼠标操作」，避免两处漂移。
+    // 启用条件与工具栏 / 菜单一致，忙碌时不触发。选键避开系统保留组合（见
+    // ai-docs/modules/keyboard-shortcuts.md）：不用 Ctrl+Space、Ctrl+Alt+方向键、Alt+Tab 等，单键只用 F1。
+    readonly property var shortcutTable: [
+        {
+            "id": "new",
+            "group": "工程",
+            "label": "新建工程",
+            "sequence": StandardKey.New
+        },
+        {
+            "id": "open",
+            "group": "工程",
+            "label": "打开工程",
+            "sequence": StandardKey.Open
+        },
+        {
+            "id": "save",
+            "group": "工程",
+            "label": "保存工程",
+            "sequence": StandardKey.Save
+        },
+        {
+            "id": "import",
+            "group": "导入 / 导出",
+            "label": "导入网格",
+            "sequence": "Ctrl+I"
+        },
+        {
+            "id": "export",
+            "group": "导入 / 导出",
+            "label": "导出网格",
+            "sequence": "Ctrl+E"
+        },
+        {
+            "id": "screenshot",
+            "group": "导入 / 导出",
+            "label": "视口截图",
+            "sequence": "Ctrl+Shift+P"
+        },
+        {
+            "id": "diagnose",
+            "group": "网格",
+            "label": "质量诊断",
+            "sequence": "Ctrl+D"
+        },
+        {
+            "id": "section",
+            "group": "网格",
+            "label": "显示 / 隐藏切面",
+            "sequence": "Ctrl+Shift+X"
+        },
+        {
+            "id": "view-front",
+            "group": "视图",
+            "label": "前视图",
+            "sequence": "Ctrl+1"
+        },
+        {
+            "id": "view-back",
+            "group": "视图",
+            "label": "后视图",
+            "sequence": "Ctrl+2"
+        },
+        {
+            "id": "view-left",
+            "group": "视图",
+            "label": "左视图",
+            "sequence": "Ctrl+3"
+        },
+        {
+            "id": "view-right",
+            "group": "视图",
+            "label": "右视图",
+            "sequence": "Ctrl+4"
+        },
+        {
+            "id": "view-top",
+            "group": "视图",
+            "label": "顶视图",
+            "sequence": "Ctrl+5"
+        },
+        {
+            "id": "view-bottom",
+            "group": "视图",
+            "label": "底视图",
+            "sequence": "Ctrl+6"
+        },
+        {
+            "id": "view-iso",
+            "group": "视图",
+            "label": "轴测图",
+            "sequence": "Ctrl+7"
+        },
+        {
+            "id": "view-reset",
+            "group": "视图",
+            "label": "复位视图",
+            "sequence": "Ctrl+0"
+        },
+        {
+            "id": "sidebar",
+            "group": "视图",
+            "label": "显示 / 隐藏左栏",
+            "sequence": "Ctrl+B"
+        },
+        {
+            "id": "bottom-panel",
+            "group": "视图",
+            "label": "显示 / 隐藏底部面板",
+            "sequence": "Ctrl+J"
+        },
+        {
+            "id": "play",
+            "group": "播放",
+            "label": "播放 / 暂停",
+            "sequence": "Ctrl+Alt+P"
+        },
+        {
+            "id": "frame-previous",
+            "group": "播放",
+            "label": "上一帧",
+            "sequence": "Ctrl+Shift+Left"
+        },
+        {
+            "id": "frame-next",
+            "group": "播放",
+            "label": "下一帧",
+            "sequence": "Ctrl+Shift+Right"
+        },
+        {
+            "id": "frame-first",
+            "group": "播放",
+            "label": "首帧",
+            "sequence": "Ctrl+Shift+Home"
+        },
+        {
+            "id": "frame-last",
+            "group": "播放",
+            "label": "末帧",
+            "sequence": "Ctrl+Shift+End"
+        },
+        {
+            "id": "help",
+            "group": "帮助",
+            "label": "快捷键与鼠标操作",
+            "sequence": StandardKey.HelpContents
+        }
+    ]
+    // 视口鼠标映射保持现状（034 Q7），在帮助与状态栏中说明。
+    readonly property var mouseTable: [["左键单击", "拾取点，连续两点测距；点方向立方体切换到对应视图"], ["右键拖动", "旋转视图"], ["滚轮", "缩放"]]
+    // 对象树：右键 / Shift+F10 / 菜单键打开节点菜单（task 040）。
+    readonly property var treeKeyTable: [["↑ / ↓", "选择上一个 / 下一个节点"], ["← / →", "折叠 / 展开"], ["Enter", "打开节点所属页签"], ["Shift+F10 / 菜单键", "节点右键菜单"], ["Tab / Shift+Tab", "在左栏、页签、播放栏与底部面板之间移动焦点"]]
+    function shortcutEnabled(id: string): bool {
+        if (id === "new" || id === "open")
+            return canCreateOrOpen;
+        if (id === "save")
+            return canSave;
+        if (id === "import")
+            return canImport;
+        if (id === "export")
+            return canExport;
+        if (id === "screenshot")
+            return canScreenshot;
+        if (id === "diagnose")
+            return canDiagnose;
+        if (id === "section")
+            return canToggleSection && !projectModel.playbackPlaying;
+        if (id.startsWith("view-"))
+            return meshActive;
+        if (id === "play" || id.startsWith("frame-"))
+            return projectModel.playbackActive;
+        return true;
     }
-    Shortcut {
-        sequences: [StandardKey.Save]
-        enabled: shellWindow.canSave
-        onActivated: projectModel.saveProject()
+    function runShortcut(id: string) {
+        if (id === "new")
+            newProjectDialog.open();
+        else if (id === "open")
+            openProjectFileDialog.open();
+        else if (id === "save")
+            projectModel.saveProject();
+        else if (id === "import")
+            importDialog.open();
+        else if (id === "export")
+            exportMeshFileDialog.open();
+        else if (id === "screenshot")
+            screenshotDialog.open();
+        else if (id === "diagnose")
+            projectModel.beginDiagnoseActiveMesh();
+        else if (id === "section")
+            setSectionActive(!projectModel.sectionActive);
+        else if (id === "view-reset")
+            viewportPane.resetView();
+        else if (id.startsWith("view-"))
+            viewportPane.setViewPreset(id.slice(5));
+        else if (id === "sidebar")
+            Settings.sidebarCollapsed = !Settings.sidebarCollapsed;
+        else if (id === "bottom-panel")
+            Settings.bottomPanelCollapsed = !Settings.bottomPanelCollapsed;
+        else if (id === "play")
+            projectModel.setPlaybackPlaying(!projectModel.playbackPlaying);
+        else if (id === "frame-previous")
+            projectModel.stepPlayback(-1);
+        else if (id === "frame-next")
+            projectModel.stepPlayback(1);
+        else if (id === "frame-first")
+            projectModel.setPlaybackFrame(0);
+        else if (id === "frame-last")
+            projectModel.setPlaybackFrame(projectModel.playbackFrameCount - 1);
+        else if (id === "help")
+            shortcutHelpDialog.open();
     }
-    Shortcut {
-        sequence: "Ctrl+D"
-        enabled: shellWindow.canDiagnose
-        onActivated: projectModel.beginDiagnoseActiveMesh()
+    // 平台显示文字（macOS 为 ⌘ 等符号），供帮助窗口与菜单提示使用。
+    function shortcutText(id: string): string {
+        for (let i = 0; i < shortcutInstantiator.count; ++i) {
+            const shortcut = shortcutInstantiator.objectAt(i) as Shortcut;
+            if (shortcut && shortcut.objectName === "shortcut_" + id)
+                return shortcut.nativeText;
+        }
+        return "";
     }
-    Shortcut {
-        sequence: "Ctrl+I"
-        enabled: shellWindow.canImport
-        onActivated: importDialog.open()
-    }
-    Shortcut {
-        sequence: "Ctrl+E"
-        enabled: shellWindow.canExport
-        onActivated: exportMeshFileDialog.open()
-    }
-    Shortcut {
-        sequence: "Ctrl+Shift+P"
-        enabled: shellWindow.canScreenshot
-        onActivated: screenshotFileDialog.open()
+    Instantiator {
+        id: shortcutInstantiator
+        objectName: "shortcutInstantiator"
+        model: shellWindow.shortcutTable
+        delegate: Shortcut {
+            required property var modelData
+            readonly property string actionId: modelData.id
+            objectName: "shortcut_" + modelData.id
+            sequences: [modelData.sequence]
+            enabled: shellWindow.shortcutEnabled(modelData.id)
+            onActivated: shellWindow.runShortcut(modelData.id)
+        }
     }
 
     // 菜单栏（task 018）：Menu 使用独立窗口弹出，避免被原生视口表面遮挡。
@@ -398,7 +607,7 @@ ApplicationWindow {
             Action {
                 text: "视口截图…"
                 enabled: shellWindow.canScreenshot
-                onTriggered: screenshotFileDialog.open()
+                onTriggered: screenshotDialog.open()
             }
             MenuSeparator {}
             Action {
@@ -453,6 +662,15 @@ ApplicationWindow {
                 onTriggered: largeMeshSettingsDialog.open()
             }
         }
+        Menu {
+            objectName: "helpMenu"
+            title: "帮助(&H)"
+            popupType: Popup.Window
+            Action {
+                text: "快捷键与鼠标操作…"
+                onTriggered: shortcutHelpDialog.open()
+            }
+        }
     }
 
     readonly property var viewPresets: [["front", "前视图"], ["back", "后视图"], ["left", "左视图"], ["right", "右视图"], ["top", "顶视图"], ["bottom", "底视图"], ["iso", "轴测图"]]
@@ -477,7 +695,7 @@ ApplicationWindow {
         onViewPresetRequested: name => viewportPane.setViewPreset(name)
         onResetViewRequested: viewportPane.resetView()
         onSectionToggled: active => shellWindow.setSectionActive(active)
-        onScreenshotRequested: screenshotFileDialog.open()
+        onScreenshotRequested: screenshotDialog.open()
     }
 
     DropArea {
@@ -521,6 +739,14 @@ ApplicationWindow {
             onOpenAnimationRequested: openAnimationFileDialog.open()
             onCollapseRequested: Settings.sidebarCollapsed = true
             onQualityRevealRequested: bottomPanel.reveal(0)
+            canImport: shellWindow.canImport
+            canSave: shellWindow.canSave
+            canExport: shellWindow.canExport
+            canDiagnose: shellWindow.canDiagnose
+            onImportRequested: importDialog.open()
+            onSaveRequested: projectModel.saveProject()
+            onExportRequested: exportMeshFileDialog.open()
+            onDiagnoseRequested: projectModel.beginDiagnoseActiveMesh()
         }
         // 左栏折叠后只留一条窄轨，放展开按钮；宽度固定，不可拖动。
         PanelSurface {

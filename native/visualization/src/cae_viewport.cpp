@@ -68,13 +68,16 @@ void CaeViewport::setMeshSource(QObject* source) {
     emit meshSourceChanged();
 }
 
-QString CaeViewport::saveScreenshot(const QUrl& url) {
+QString CaeViewport::saveScreenshot(const QUrl& url, int scale, bool includeLegend) {
+    if (scale < 1 || scale > kMaxCaptureScale)
+        return QStringLiteral("截图倍率须为 1–%1 倍。").arg(kMaxCaptureScale);
     if (!url.isLocalFile())
         return QStringLiteral("请选择此设备上的保存位置。");
     const QString path = url.toLocalFile();
     if (QFileInfo(path).suffix().compare(QStringLiteral("png"), Qt::CaseInsensitive) != 0)
         return QStringLiteral("视口截图仅支持 PNG 格式。");
-    const QImage image = impl_->backend->capture_image();
+    const QImage image = impl_->backend->capture_image(
+        CaptureOptions{.scale = scale, .include_legend = includeLegend});
     if (image.isNull())
         return QStringLiteral("视口尚未就绪，无法截图。");
     QSaveFile file(path);

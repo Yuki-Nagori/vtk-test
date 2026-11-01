@@ -28,6 +28,7 @@
 #include <QtCore/qtmetamacros.h>
 #include <QtGlobal>
 #include <QtLogging>
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -199,18 +200,34 @@ VtkViewport::~VtkViewport() {
 
 QQuickItem* VtkViewport::item() { return this; }
 
-QImage VtkViewport::capture_image() {
+QImage VtkViewport::capture_image(const CaptureOptions& options) {
     if (!impl_->render_window || !impl_->applied_pixel_size.isValid() ||
         impl_->applied_pixel_size.isEmpty())
         return {};
-    const int width = impl_->applied_pixel_size.width();
-    const int height = impl_->applied_pixel_size.height();
+    const int scale = std::clamp(options.scale, 1, kMaxCaptureScale);
+    const int width = impl_->applied_pixel_size.width() * scale;
+    const int height = impl_->applied_pixel_size.height() * scale;
+    // 倍率截图临时放大渲染尺寸，色标按视口比例布局，字号随之放大；读回后恢复原尺寸。
+    const bool legend_was_visible =
+        impl_->scalar_bar != nullptr && impl_->scalar_bar->GetVisibility() != 0;
+    if (legend_was_visible && !options.include_legend)
+        impl_->scalar_bar->SetVisibility(false);
+    if (scale != 1)
+        impl_->render_window->SetSize(width, height);
     impl_->render_window->Render();
     vtkNew<vtkUnsignedCharArray> pixels;
     // front=0 读离屏颜色附件；VTK 行序自下而上，转换后垂直翻转。
     // WebGPU 实现成功时返回值个数，数据已按组件映射转换为 RGBA。
     const int values =
         impl_->render_window->GetRGBACharPixelData(0, 0, width - 1, height - 1, 0, pixels);
+    const bool restore_size = scale != 1;
+    if (restore_size)
+        impl_->render_window->SetSize(impl_->applied_pixel_size.width(),
+                                      impl_->applied_pixel_size.height());
+    if (legend_was_visible && !options.include_legend)
+        impl_->scalar_bar->SetVisibility(true);
+    if (restore_size || !options.include_legend)
+        impl_->render_window->Render();
     if (values != width * height * 4 || pixels->GetPointer(0) == nullptr ||
         pixels->GetNumberOfTuples() != static_cast<vtkIdType>(width) * height ||
         pixels->GetNumberOfComponents() != 4) {

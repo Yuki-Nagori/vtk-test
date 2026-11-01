@@ -228,6 +228,10 @@ const QString& ProjectViewModel::importPreviewDimensions() const {
     return m_importPreviewDimensions;
 }
 
+const QString& ProjectViewModel::importPreviewSuggestedUnits() const {
+    return m_importPreviewSuggestedUnits;
+}
+
 quint64 ProjectViewModel::importPreviewTriangleCount() const {
     return m_importPreviewTriangleCount;
 }
@@ -964,6 +968,7 @@ void ProjectViewModel::cancelImportPreview() {
     m_importPreviewReady = false;
     m_importPreviewName.clear();
     m_importPreviewDimensions.clear();
+    m_importPreviewSuggestedUnits.clear();
     m_importPreviewTriangleCount = 0;
     m_importPreviewLargeMeshWarning = false;
     m_importPreviewExpandedBytes = 0;
@@ -1004,6 +1009,8 @@ void ProjectViewModel::finish_import_preview() {
         m_importPreviewName = QString::fromUtf8(result.value.source_name);
         m_importPreviewDimensions = QString::fromUtf8(panta::ffi::format_project_dimensions(
             result.value.size_x, result.value.size_y, result.value.size_z, ""));
+        m_importPreviewSuggestedUnits = QString::fromUtf8(panta::ffi::suggest_import_units(
+            result.value.size_x, result.value.size_y, result.value.size_z));
         m_importPreviewTriangleCount = result.value.triangle_count;
         m_importPreviewLargeMeshWarning = result.value.large_mesh_warning;
         m_importPreviewExpandedBytes = result.value.expanded_mesh_bytes;
@@ -1085,6 +1092,11 @@ void ProjectViewModel::clearRecentProjects() {
     settings.remove(QStringLiteral("recent"));
     settings.sync();
     emit recentProjectsChanged();
+}
+
+QString ProjectViewModel::importFormatText(const QString& path) const {
+    const std::string utf8 = path.toStdString();
+    return QString::fromUtf8(panta::ffi::import_format_text(utf8));
 }
 
 QString ProjectViewModel::classifyDroppedUrl(const QUrl& url) const {

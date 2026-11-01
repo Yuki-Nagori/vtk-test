@@ -36,6 +36,7 @@ DialogWindow {
         projectModel.cancelImportPreview();
         projectModel.clearError();
         sourcePath = "";
+        sourceField.text = "";
         meshTypeCombo.currentIndex = meshTypes.findIndex(entry => entry.id === projectModel.defaultMeshType);
         unitsCombo.currentIndex = 0;
         unitSource = "default";
@@ -59,6 +60,7 @@ DialogWindow {
     // ParaView 集合 .pvd（task 033）：只有体导入保留时间步，默认实体 3D；单位不推断，沿用当前选择。
     function selectSource(path: string) {
         sourcePath = path;
+        sourceField.text = path;
         const cfd = isCfdPath(path);
         if (cfd) {
             unitsCombo.currentIndex = unitValues.indexOf("meters");
@@ -106,6 +108,35 @@ DialogWindow {
         return "导入操作无法完成。";
     }
 
+    // 手动输入路径（task 040）：编辑完成后按新路径重新预检；清空则回到未选择状态。
+    function editSource(text: string) {
+        const path = text.trim();
+        if (path === sourcePath)
+            return;
+        if (path.length === 0) {
+            projectModel.cancelImportPreview();
+            projectModel.clearError();
+            sourcePath = "";
+            return;
+        }
+        selectSource(path);
+    }
+
+    function formatText(): string {
+        if (sourcePath.length === 0)
+            return "—";
+        const text = projectModel.importFormatText(sourcePath);
+        return text.length > 0 ? text : "无法识别的扩展名";
+    }
+
+    // 单位推测只作提示（task 040）：与当前选择不同才显示，CFD 来源已按米制设置时不重复提示。
+    function unitHintText(): string {
+        const suggested = projectModel.importPreviewSuggestedUnits;
+        if (!projectModel.importPreviewReady || suggested.length === 0 || unitValues[unitsCombo.currentIndex] === suggested)
+            return "";
+        return "最大边长数值较小，来源可能按" + unitsCombo.model[unitValues.indexOf(suggested)] + "存储；请确认单位，未自动更改。";
+    }
+
     function unitSourceText(): string {
         if (unitSource === "cfd")
             return "CFD 结果按 SI 米制";
@@ -151,10 +182,12 @@ DialogWindow {
                         id: sourceField
                         Layout.fillWidth: true
                         Layout.preferredHeight: Theme.controlHeight
-                        text: dialog.sourcePath
-                        readOnly: true
-                        placeholderText: "选择网格文件"
+                        objectName: "importSourceField"
+                        enabled: !dialog.projectModel.importPending
+                        selectByMouse: true
+                        placeholderText: "选择或输入网格文件路径"
                         Accessible.name: "网格文件"
+                        onEditingFinished: dialog.editSource(text)
                     }
                     ThemedButton {
                         text: "浏览"
@@ -166,6 +199,19 @@ DialogWindow {
                         borderColor: Theme.colorPanelLine
                         onClicked: dialog.chooseFile()
                     }
+                }
+
+                ThemedLabel {
+                    text: "格式"
+                    textSize: Theme.fontBody
+                }
+                ThemedLabel {
+                    objectName: "importFormatText"
+                    Layout.fillWidth: true
+                    text: dialog.formatText()
+                    textSize: Theme.fontBody
+                    textColor: Theme.colorTextMuted
+                    elide: Text.ElideRight
                 }
 
                 ThemedLabel {
@@ -190,6 +236,7 @@ DialogWindow {
 
                     ThemedComboBox {
                         id: unitsCombo
+                        objectName: "importUnitsCombo"
                         Layout.fillWidth: true
                         enabled: !dialog.projectModel.importPending
                         model: ["毫米", "厘米", "米", "英寸"]
@@ -214,6 +261,16 @@ DialogWindow {
                     textSize: Theme.fontBody
                     textColor: Theme.colorTextMuted
                 }
+            }
+
+            ThemedLabel {
+                objectName: "importUnitHint"
+                Layout.fillWidth: true
+                visible: text.length > 0
+                text: dialog.unitHintText()
+                textSize: Theme.fontSmall
+                textColor: Theme.colorWarning
+                wrapMode: Text.Wrap
             }
 
             ThemedLabel {
@@ -289,6 +346,12 @@ DialogWindow {
                 return;
             dialog.selectSource(selectedPath);
         }
+    }
+
+    Shortcut {
+        enabled: dialog.visible
+        sequence: "Esc"
+        onActivated: dialog.close()
     }
 
     Connections {
