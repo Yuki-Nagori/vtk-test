@@ -20,6 +20,7 @@ use model::{ProjectManifest, ProjectState};
 pub use panta_io::import::{
     DEFAULT_MESH_TYPE, FaceQualityRecord, IMPORT_RECORD_VERSION, ImportRecord, MESH_TYPES,
     STL_IMPORT_PARSER_VERSION, StlImportPreview, VolumeGeneration, default_display_name,
+    import_format_text, suggest_import_units,
 };
 pub use panta_mesh::{DEFAULT_RELATIVE_WELD_TOLERANCE, DiagnosticOptions, SurfaceDiagnostics};
 pub(crate) use service::resolve_asset_path;

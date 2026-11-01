@@ -19,6 +19,18 @@ namespace panta::visualization {
 
 struct RenderScene;
 
+/// 视口截图选项（task 040，034「导出」）：分辨率倍率与是否包含色标。
+/// 透明背景未提供：WebGPU 后端的背景 alpha 读回能力尚未在目标平台确认。
+struct CaptureOptions {
+    /// 相对视口物理像素的整数倍率，取值 1..kMaxCaptureScale。
+    int scale = 1;
+    /// 色标由 VTK 绘制，默认随截图导出。
+    bool include_legend = true;
+};
+
+/// 截图倍率上限：3 倍时 4K 视口约 1 亿像素，再大易超出 GPU 纹理上限。
+inline constexpr int kMaxCaptureScale = 3;
+
 class ViewportBackend {
   public:
     virtual ~ViewportBackend() = default;
@@ -31,7 +43,8 @@ class ViewportBackend {
 
     /// GUI 线程：渲染当前帧并读回像素（原生 surface 不在 scenegraph 中，
     /// 不能用 QQuickWindow::grabWindow）；尚无可用帧时返回空图像。
-    virtual QImage capture_image() = 0;
+    /// options 只影响本次截图（task 040），截图后视口恢复原尺寸与色标可见性。
+    virtual QImage capture_image(const CaptureOptions& options) = 0;
 
     /// GUI 线程：平滑切换到预设视角（front/back/left/right/top/bottom/iso）；
     /// 未知名称或尚无场景时返回 false（task 017）。

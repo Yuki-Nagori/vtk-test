@@ -6,12 +6,14 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
+#include <QKeySequence>
 #include <QMetaEnum>
 #include <QMetaProperty>
 #include <QPointF>
 #include <QQmlApplicationEngine>
 #include <QQuickItem>
 #include <QQuickWindow>
+#include <QSet>
 #include <QSignalSpy>
 #include <QSize>
 #include <QStandardPaths>
@@ -881,6 +883,317 @@ class ShellModuleLoadTest final : public QObject {
                      qPrintable(object->objectName() + QStringLiteral(" 不应禁用原生对话框")));
         }
         QVERIFY(fileDialogs >= 5);
+    }
+
+    // task 040：快捷键表无重复、避开系统保留组合；按键驱动布局开关与帮助窗口。
+    void keyboard_shortcuts_are_unique_and_open_help() {
+        QQmlApplicationEngine engine;
+        panta::install_icon_provider(engine);
+        engine.loadFromModule(QStringLiteral("Panta.Shell"), QStringLiteral("App"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().constFirst());
+        auto* settings = engine.singletonInstance<panta::bridge::Settings*>(
+            QStringLiteral("Panta.Bridge"), QStringLiteral("Settings"));
+        auto* instantiator = window->findChild<QObject*>(QStringLiteral("shortcutInstantiator"));
+        QVERIFY(window && settings && instantiator);
+        const QVariantList table = window->property("shortcutTable").toList();
+        QCOMPARE(instantiator->property("count").toInt(), table.size());
+        // 桌面环境 / 输入法 / 窗口管理器占用的组合（Linux、Windows、macOS 上 Ctrl 映射为 ⌘）。
+        const QList<QKeySequence> reserved{QKeySequence(QStringLiteral("Ctrl+Space")),
+                                           QKeySequence(QStringLiteral("Alt+Tab")),
+                                           QKeySequence(QStringLiteral("Alt+F4")),
+                                           QKeySequence(QStringLiteral("Ctrl+Esc")),
+                                           QKeySequence(QStringLiteral("Ctrl+Alt+Del")),
+                                           QKeySequence(QStringLiteral("Ctrl+Alt+T")),
+                                           QKeySequence(QStringLiteral("Ctrl+Alt+Left")),
+                                           QKeySequence(QStringLiteral("Ctrl+Alt+Right")),
+                                           QKeySequence(QStringLiteral("Ctrl+Alt+Up")),
+                                           QKeySequence(QStringLiteral("Ctrl+Alt+Down")),
+                                           QKeySequence(QStringLiteral("Ctrl+H")),
+                                           QKeySequence(QStringLiteral("Ctrl+M")),
+                                           QKeySequence(QStringLiteral("Ctrl+Q")),
+                                           QKeySequence(QStringLiteral("Ctrl+Tab")),
+                                           QKeySequence(QStringLiteral("Ctrl+Shift+3")),
+                                           QKeySequence(QStringLiteral("Ctrl+Shift+4")),
+                                           QKeySequence(QStringLiteral("Ctrl+Shift+5")),
+                                           QKeySequence(QStringLiteral("Ctrl+W"))};
+        QSet<QString> seen;
+        for (int i = 0; i < instantiator->property("count").toInt(); ++i) {
+            QObject* shortcut = nullptr;
+            QVERIFY(QMetaObject::invokeMethod(instantiator, "objectAt",
+                                              Q_RETURN_ARG(QObject*, shortcut), Q_ARG(int, i)));
+            QVERIFY(shortcut);
+            const QString id = shortcut->property("actionId").toString();
+            const QString text = shortcut->property("nativeText").toString();
+            QVERIFY2(!text.isEmpty(), qPrintable(id));
+            QVERIFY2(!seen.contains(text), qPrintable(id + QStringLiteral(" 重复：") + text));
+            seen.insert(text);
+            const QKeySequence sequence = QKeySequence::fromString(text, QKeySequence::NativeText);
+            QCOMPARE(sequence.count(), 1);
+            const auto combination = sequence[0];
+            QVERIFY2(!combination.keyboardModifiers().testFlag(Qt::MetaModifier), qPrintable(id));
+            // 单键只允许 F1（帮助）。
+            if (combination.keyboardModifiers() == Qt::NoModifier)
+                QCOMPARE(combination.key(), Qt::Key_F1);
+            for (const auto& blocked : reserved)
+                QVERIFY2(sequence != blocked,
+                         qPrintable(id + QStringLiteral(" 占用系统组合 ") + text));
+        }
+
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QVERIFY(!settings->sidebarCollapsed());
+        QTest::keyClick(window, Qt::Key_B, Qt::ControlModifier);
+        QTRY_VERIFY(settings->sidebarCollapsed());
+        QTest::keyClick(window, Qt::Key_B, Qt::ControlModifier);
+        QTRY_VERIFY(!settings->sidebarCollapsed());
+        QVERIFY(settings->bottomPanelCollapsed());
+        QTest::keyClick(window, Qt::Key_J, Qt::ControlModifier);
+        QTRY_VERIFY(!settings->bottomPanelCollapsed());
+        QTest::keyClick(window, Qt::Key_J, Qt::ControlModifier);
+        QTRY_VERIFY(settings->bottomPanelCollapsed());
+        // 无工程时导出 / 诊断 / 视图快捷键不触发。
+        auto* exportShortcut = window->findChild<QObject*>(QStringLiteral("shortcut_export"));
+        QVERIFY(exportShortcut && !exportShortcut->property("enabled").toBool());
+
+        auto* help = window->findChild<QQuickWindow*>(QStringLiteral("shortcutHelpDialog"));
+        QVERIFY(help);
+        QTest::keyClick(window, Qt::Key_F1);
+        QTRY_VERIFY(help->isVisible());
+        auto* rows = help->findChild<QObject*>(QStringLiteral("shortcutHelpRows"));
+        QVERIFY(rows);
+        QCOMPARE(rows->property("count").toInt(), table.size());
+        const QVariantList listed = help->property("shortcuts").toList();
+        for (const auto& entry : listed)
+            QVERIFY(!entry.toMap().value(QStringLiteral("keys")).toString().isEmpty());
+        if (const auto dir = qEnvironmentVariable("PANTA_SHELL_SCREENSHOT_DIR"); !dir.isEmpty()) {
+            QTest::qWait(100);
+            QVERIFY(
+                help->grabWindow().save(QDir(dir).filePath(QStringLiteral("shortcut-help.png"))));
+        }
+        QVERIFY(QMetaObject::invokeMethod(help, "close"));
+        QTRY_VERIFY(!help->isVisible());
+    }
+
+    // task 040：拖入不支持的文件只给中文错误，不打开导入窗口，工程保持未修改。
+    void dropping_unsupported_file_reports_error_and_keeps_project_clean() {
+        QTemporaryDir fixture;
+        QVERIFY(fixture.isValid());
+        const QString notes = fixture.filePath(QStringLiteral("notes.txt"));
+        QFile file(notes);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QVERIFY(file.write("not a mesh") > 0);
+        file.close();
+        QQmlApplicationEngine engine;
+        panta::install_icon_provider(engine);
+        engine.loadFromModule(QStringLiteral("Panta.Shell"), QStringLiteral("App"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto* root = engine.rootObjects().constFirst();
+        auto* project =
+            root->findChild<panta::bridge::ProjectViewModel*>(QStringLiteral("projectModel"));
+        auto* importDialog = root->findChild<QObject*>(QStringLiteral("importDialog"));
+        auto* status = root->findChild<QObject*>(QStringLiteral("statusMessage"));
+        QVERIFY(project && importDialog && status);
+        QVERIFY(project->createProject(QStringLiteral("Drop"), fixture.path()));
+        QTRY_VERIFY(!project->projectOperationPending());
+        QVERIFY(!project->dirty());
+        const QString path = project->currentPath();
+        QVERIFY(QMetaObject::invokeMethod(
+            root, "handleDrop", Q_ARG(QList<QUrl>, QList<QUrl>{QUrl::fromLocalFile(notes)})));
+        QTRY_VERIFY(
+            status->property("text").toString().startsWith(QStringLiteral("不支持的文件类型")));
+        QCOMPARE(root->property("noticeLevel").toString(), QStringLiteral("error"));
+        QVERIFY(!importDialog->property("visible").toBool());
+        QVERIFY(!project->dirty());
+        QCOMPARE(project->currentPath(), path);
+        QCOMPARE(project->objectTree()->nodeCount(), 1);
+    }
+
+    // task 040：导入窗口显示识别格式；预检尺寸偏小时提示可能按米存储，但不自动改选单位。
+    void import_dialog_shows_format_and_unit_hint() {
+        QTemporaryDir fixture;
+        QVERIFY(fixture.isValid());
+        const QString stlPath = fixture.filePath(QStringLiteral("small.stl"));
+        QFile stl(stlPath);
+        QVERIFY(stl.open(QIODevice::WriteOnly));
+        QVERIFY(stl.write("vertex 0 0 0\nvertex 0.5 0 0\nvertex 0 0.25 0\n") > 0);
+        stl.close();
+        QQmlApplicationEngine engine;
+        panta::install_icon_provider(engine);
+        engine.loadFromModule(QStringLiteral("Panta.Shell"), QStringLiteral("App"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto* root = engine.rootObjects().constFirst();
+        auto* project =
+            root->findChild<panta::bridge::ProjectViewModel*>(QStringLiteral("projectModel"));
+        auto* dialog = root->findChild<QObject*>(QStringLiteral("importDialog"));
+        QVERIFY(project && dialog);
+        auto* format = dialog->findChild<QObject*>(QStringLiteral("importFormatText"));
+        auto* hint = dialog->findChild<QObject*>(QStringLiteral("importUnitHint"));
+        auto* field = dialog->findChild<QObject*>(QStringLiteral("importSourceField"));
+        auto* units = dialog->findChild<QObject*>(QStringLiteral("importUnitsCombo"));
+        QVERIFY(format && hint && field && units);
+        QCOMPARE(project->importFormatText(QStringLiteral("/a/b.vtu")),
+                 QStringLiteral("VTK XML 非结构网格（.vtu）"));
+        QVERIFY(project->importFormatText(QStringLiteral("/a/b.step")).isEmpty());
+
+        QVERIFY(QMetaObject::invokeMethod(dialog, "open"));
+        QCOMPARE(format->property("text").toString(), QStringLiteral("—"));
+        QVERIFY(QMetaObject::invokeMethod(dialog, "openWithFile", Q_ARG(QString, stlPath)));
+        QCOMPARE(field->property("text").toString(), stlPath);
+        QCOMPARE(format->property("text").toString(), QStringLiteral("STL 表面网格"));
+        QTRY_VERIFY(project->importPreviewReady());
+        QCOMPARE(project->importPreviewSuggestedUnits(), QStringLiteral("meters"));
+        QTRY_VERIFY(hint->property("visible").toBool());
+        QVERIFY(hint->property("text").toString().contains(QStringLiteral("米")));
+        // 只提示：当前选择仍为默认毫米。
+        QCOMPARE(units->property("currentIndex").toInt(), 0);
+        if (const auto dir = qEnvironmentVariable("PANTA_SHELL_SCREENSHOT_DIR"); !dir.isEmpty()) {
+            QTest::qWait(100);
+            QVERIFY(qobject_cast<QQuickWindow*>(dialog)->grabWindow().save(
+                QDir(dir).filePath(QStringLiteral("import-unit-hint.png"))));
+        }
+        units->setProperty("currentIndex", 2);
+        QTRY_VERIFY(!hint->property("visible").toBool());
+        // 手动输入路径：编辑完成后按新路径识别。
+        QVERIFY(QMetaObject::invokeMethod(
+            dialog, "editSource", Q_ARG(QString, fixture.filePath(QStringLiteral("x.txt")))));
+        QCOMPARE(format->property("text").toString(), QStringLiteral("无法识别的扩展名"));
+        QVERIFY(QMetaObject::invokeMethod(dialog, "editSource", Q_ARG(QString, QString())));
+        QCOMPARE(format->property("text").toString(), QStringLiteral("—"));
+        QVERIFY(QMetaObject::invokeMethod(dialog, "close"));
+    }
+
+    // task 040：有活动体网格时，诊断 / 切面 / 播放 /
+    // 截图快捷键与对象树键盘菜单都可用；截图倍率越界被拒。
+    void workflow_shortcuts_and_tree_menu_drive_active_mesh() {
+        QTemporaryDir fixture;
+        QVERIFY(fixture.isValid());
+        const QString pvdPath =
+            QDir::cleanPath(QDir(QString::fromUtf8(PANTA_STRINGIFY(PANTA_SHELL_MESH_FIXTURE_DIR)))
+                                .filePath(QStringLiteral("pvd/flow.pvd")));
+        QQmlApplicationEngine engine;
+        panta::install_icon_provider(engine);
+        engine.loadFromModule(QStringLiteral("Panta.Shell"), QStringLiteral("App"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().constFirst());
+        QVERIFY(window);
+        auto* model =
+            window->findChild<panta::bridge::ProjectViewModel*>(QStringLiteral("projectModel"));
+        auto* sidebar = window->findChild<QQuickItem*>(QStringLiteral("assetSidebar"));
+        auto* treeView = window->findChild<QQuickItem*>(QStringLiteral("objectTree"));
+        auto* viewport = window->findChild<QObject*>(QStringLiteral("caeViewport"));
+        auto* screenshot = window->findChild<QQuickWindow*>(QStringLiteral("screenshotDialog"));
+        auto* menu = window->findChild<QObject*>(QStringLiteral("objectTreeMenu"));
+        QVERIFY(model && sidebar && treeView && viewport && screenshot && menu);
+        QVERIFY(model->createProject(QStringLiteral("Keys"), fixture.path()));
+        QTRY_VERIFY(!model->projectOperationPending());
+        QVERIFY(
+            model->importStl(pvdPath, QStringLiteral("solid-3d"), QStringLiteral("meters"), false));
+        QTRY_VERIFY_WITH_TIMEOUT(model->volumeAvailable(), 15000);
+        QTRY_VERIFY(model->playbackActive());
+        QVERIFY(model->playbackFrameCount() > 1);
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+
+        auto* quality = window->findChild<QQuickItem*>(QStringLiteral("meshQualityPanel"));
+        QVERIFY(quality);
+        QTest::keyClick(window, Qt::Key_D, Qt::ControlModifier);
+        QTRY_VERIFY_WITH_TIMEOUT(quality->isVisible(), 15000);
+
+        QVERIFY(!model->sectionActive());
+        QTest::keyClick(window, Qt::Key_X, Qt::ControlModifier | Qt::ShiftModifier);
+        QTRY_VERIFY(model->sectionActive());
+        QTest::keyClick(window, Qt::Key_X, Qt::ControlModifier | Qt::ShiftModifier);
+        QTRY_VERIFY(!model->sectionActive());
+
+        // 导入后默认显示末帧；先回首帧，再逐帧前进，避免循环回绕影响断言。
+        QTest::keyClick(window, Qt::Key_Home, Qt::ControlModifier | Qt::ShiftModifier);
+        QTRY_COMPARE(model->playbackFrame(), 0);
+        QTest::keyClick(window, Qt::Key_Right, Qt::ControlModifier | Qt::ShiftModifier);
+        QTRY_COMPARE(model->playbackFrame(), 1);
+        QTest::keyClick(window, Qt::Key_Left, Qt::ControlModifier | Qt::ShiftModifier);
+        QTRY_COMPARE(model->playbackFrame(), 0);
+        QTest::keyClick(window, Qt::Key_End, Qt::ControlModifier | Qt::ShiftModifier);
+        QTRY_COMPARE(model->playbackFrame(), model->playbackFrameCount() - 1);
+
+        QTest::keyClick(window, Qt::Key_P, Qt::ControlModifier | Qt::ShiftModifier);
+        QTRY_VERIFY(screenshot->isVisible());
+        QCOMPARE(screenshot->property("scale").toInt(), 1);
+        QVERIFY(screenshot->property("includeLegend").toBool());
+        if (const auto dir = qEnvironmentVariable("PANTA_SHELL_SCREENSHOT_DIR"); !dir.isEmpty()) {
+            QTest::qWait(100);
+            QVERIFY(screenshot->grabWindow().save(
+                QDir(dir).filePath(QStringLiteral("screenshot-options.png"))));
+        }
+        QVERIFY(QMetaObject::invokeMethod(screenshot, "close"));
+        const QUrl png = QUrl::fromLocalFile(fixture.filePath(QStringLiteral("view.png")));
+        const auto save = [&](const QUrl& url, int scale) {
+            QString failure;
+            [&] {
+                QVERIFY(QMetaObject::invokeMethod(viewport, "saveScreenshot",
+                                                  Q_RETURN_ARG(QString, failure), Q_ARG(QUrl, url),
+                                                  Q_ARG(int, scale), Q_ARG(bool, false)));
+            }();
+            return failure;
+        };
+        QCOMPARE(save(png, 0), QStringLiteral("截图倍率须为 1–3 倍。"));
+        QCOMPARE(save(png, 4), QStringLiteral("截图倍率须为 1–3 倍。"));
+        QCOMPARE(save(QUrl::fromLocalFile(fixture.filePath(QStringLiteral("view.jpg"))), 2),
+                 QStringLiteral("视口截图仅支持 PNG 格式。"));
+        // offscreen 没有原生 surface，合法倍率也只能得到「未就绪」；真实读回需目标平台 GPU 验证。
+        QCOMPARE(save(png, 2), QStringLiteral("视口尚未就绪，无法截图。"));
+
+        // 对象树：选中资产节点后 Shift+F10 打开节点菜单，命令随节点类型与活动状态启用。
+        const QString assetNode = QStringLiteral("asset:") + model->activeDocumentId();
+        treeView->forceActiveFocus();
+        QVERIFY(QMetaObject::invokeMethod(sidebar, "selectNode", Q_ARG(QString, assetNode)));
+        QTest::keyClick(window, Qt::Key_F10, Qt::ShiftModifier);
+        QTRY_VERIFY(menu->property("opened").toBool());
+        QCOMPARE(menu->property("nodeId").toString(), assetNode);
+        const QVariantList entries = menu->property("entries").toList();
+        QStringList commands;
+        for (const auto& entry : entries)
+            commands.append(entry.toList().constFirst().toString());
+        QCOMPARE(commands, (QStringList{QStringLiteral("activate"), QStringLiteral("visibility"),
+                                        QStringLiteral("diagnose"), QStringLiteral("export")}));
+        QVERIFY(entries.at(3).toList().at(2).toBool());
+        QVERIFY(QMetaObject::invokeMethod(menu, "close"));
+        QTRY_VERIFY(!menu->property("opened").toBool());
+        // 「隐藏」只改显示，工程不变脏（与 037 眼睛按钮同一路径）。
+        const bool wasDirty = model->dirty();
+        QVERIFY(QMetaObject::invokeMethod(sidebar, "runNodeCommand", Q_ARG(QString, assetNode),
+                                          Q_ARG(QString, QStringLiteral("visibility"))));
+        QTRY_VERIFY(!model->activeMeshVisible());
+        QCOMPARE(model->dirty(), wasDirty);
+        QVERIFY(QMetaObject::invokeMethod(sidebar, "runNodeCommand", Q_ARG(QString, assetNode),
+                                          Q_ARG(QString, QStringLiteral("visibility"))));
+        QTRY_VERIFY(model->activeMeshVisible());
+        // 上色：属性面板的字段 / 颜色图下拉框可经 Tab 到达，方向键即切换（ComboBox activated）。
+        auto* fieldCombo = window->findChild<QQuickItem*>(QStringLiteral("sectionField"));
+        auto* colorMapCombo = window->findChild<QQuickItem*>(QStringLiteral("fieldColorMapCombo"));
+        QVERIFY(fieldCombo);
+        QVERIFY(colorMapCombo);
+        QVERIFY(QMetaObject::invokeMethod(
+            sidebar, "selectNode",
+            Q_ARG(QString, QStringLiteral("field:") + model->activeDocumentId())));
+        sidebar->setProperty("propertiesTab", 0);
+        QVERIFY(fieldCombo->activeFocusOnTab());
+        QVERIFY(colorMapCombo->activeFocusOnTab());
+        QTRY_VERIFY(colorMapCombo->isVisible());
+        const int colorMap = model->property("fieldColorMap").toInt();
+        colorMapCombo->forceActiveFocus(Qt::TabFocusReason);
+        QTest::keyClick(window, Qt::Key_Down);
+        QTRY_COMPARE(model->property("fieldColorMap").toInt(), colorMap + 1);
+        QTest::keyClick(window, Qt::Key_Up);
+        QTRY_COMPARE(model->property("fieldColorMap").toInt(), colorMap);
+        // 工程节点：导入 / 保存。焦点回到对象树后用 Menu 键打开。
+        treeView->forceActiveFocus();
+        QVERIFY(QMetaObject::invokeMethod(sidebar, "selectNode",
+                                          Q_ARG(QString, QStringLiteral("project"))));
+        QTest::keyClick(window, Qt::Key_Menu);
+        QTRY_VERIFY(menu->property("opened").toBool());
+        QCOMPARE(menu->property("entries").toList().size(), 2);
+        QVERIFY(QMetaObject::invokeMethod(menu, "close"));
     }
 
 #endif

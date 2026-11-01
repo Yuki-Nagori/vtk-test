@@ -27,7 +27,7 @@ class VtkViewport final : public QQuickItem, public ViewportBackend {
 
     QQuickItem* item() override;
     void apply_state(const RenderScene& state) override;
-    QImage capture_image() override;
+    QImage capture_image(const CaptureOptions& options) override;
     bool set_view_preset(const QString& name) override;
     void reset_view() override;
 

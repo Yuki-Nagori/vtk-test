@@ -20,15 +20,15 @@ use support::{finish_background_writes, install_crash_handler};
 mod project;
 pub use project::ProjectService;
 use project::{
-    default_mesh_type, format_project_dimensions, mesh_type_catalog, project_error_message,
-    project_service_begin_stl_import as begin_stl_import,
+    default_mesh_type, format_project_dimensions, import_format_text, mesh_type_catalog,
+    project_error_message, project_service_begin_stl_import as begin_stl_import,
     project_service_cancel_stl_import as cancel_stl_import, project_service_current,
     project_service_drain_workspace_activations, project_service_execute,
     project_service_finish_stl_import, project_service_import_stl, project_service_imports,
     project_service_new, project_service_workspace_activate, project_service_workspace_close,
     project_service_workspace_move, project_service_workspace_open_import,
     project_service_workspace_publish_import, project_service_workspace_reset,
-    project_service_workspace_snapshot, stl_import_preview,
+    project_service_workspace_snapshot, stl_import_preview, suggest_import_units,
 };
 mod project_operation;
 pub use project_operation::{ProjectOperationCompletion, ProjectOperationRequest};
@@ -603,6 +603,8 @@ pub mod bridge {
         /// 派生分块缓存目录（task 028）；空字符串表示不缓存，大体网格逐次流式扫描。
         fn project_service_set_derived_chunk_dir(service: &mut ProjectService, directory: &str);
         fn format_project_dimensions(size_x: f64, size_y: f64, size_z: f64, unit: &str) -> String;
+        fn import_format_text(path: &str) -> String;
+        fn suggest_import_units(size_x: f64, size_y: f64, size_z: f64) -> String;
         fn mesh_type_catalog() -> Vec<ChoiceDefinition>;
         fn default_mesh_type() -> String;
         #[rust_name = "project_service_begin_stl_preview_response"]

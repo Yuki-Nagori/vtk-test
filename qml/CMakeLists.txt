@@ -26,6 +26,8 @@ set(PANTA_SHELL_QML_FILES
     Dialogs/ImportDialog.qml
     Dialogs/LargeMeshSettingsDialog.qml
     Dialogs/NewProjectDialog.qml
+    Dialogs/ScreenshotDialog.qml
+    Dialogs/ShortcutHelpDialog.qml
     Panels/BottomPanel.qml
     Panels/PlaybackBar.qml
     Panels/ViewportPane.qml
@@ -42,7 +44,7 @@ if(NOT PANTA_ENABLE_BRIDGE_MODULE)
   # ViewportPane 依赖 Panta.Visualization（CaeViewport），一并剔除。
   list(REMOVE_ITEM PANTA_SHELL_QML_FILES App.qml Panels/ViewportPane.qml Panels/PlaybackBar.qml
        Dialogs/NewProjectDialog.qml Dialogs/ImportDialog.qml
-       Dialogs/GenerateVolumeDialog.qml Dialogs/LargeMeshSettingsDialog.qml)
+       Dialogs/GenerateVolumeDialog.qml Dialogs/LargeMeshSettingsDialog.qml Dialogs/ScreenshotDialog.qml)
   list(APPEND PANTA_SHELL_QML_FILES AppNoBridge.qml)
 endif()
 

@@ -66,6 +66,9 @@ class ProjectViewModel : public panta::visualization::MeshSource {
         QString importPreviewDimensions READ importPreviewDimensions NOTIFY importPreviewChanged)
     Q_PROPERTY(quint64 importPreviewTriangleCount READ importPreviewTriangleCount NOTIFY
                    importPreviewChanged)
+    /// 预检尺寸推测的来源单位 ID（task 040）；空串表示无建议，界面只提示不改选。
+    Q_PROPERTY(QString importPreviewSuggestedUnits READ importPreviewSuggestedUnits NOTIFY
+                   importPreviewChanged)
     Q_PROPERTY(bool importPending READ importPending NOTIFY importPendingChanged)
     Q_PROPERTY(quint64 importRequestId READ importRequestId NOTIFY importPendingChanged)
     Q_PROPERTY(QVariantList openDocuments READ openDocuments NOTIFY documentsChanged)
@@ -184,6 +187,7 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     [[nodiscard]] const QString& importPreviewName() const;
     [[nodiscard]] const QString& importPreviewDimensions() const;
     [[nodiscard]] quint64 importPreviewTriangleCount() const;
+    [[nodiscard]] const QString& importPreviewSuggestedUnits() const;
     [[nodiscard]] bool importPending() const;
     [[nodiscard]] quint64 importRequestId() const;
 
@@ -272,6 +276,8 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     Q_INVOKABLE void clearRecentProjects();
     /// 拖放分类：返回 "project"（.panta）、"mesh"（可导入网格扩展名）或空串（不支持）。
     Q_INVOKABLE QString classifyDroppedUrl(const QUrl& url) const;
+    /// 导入窗口「格式」行（task 040）：按路径识别的格式显示名，无法识别时为空串。
+    Q_INVOKABLE QString importFormatText(const QString& path) const;
     [[nodiscard]] QStringList recentProjects() const;
     static constexpr int kMaxRecentProjects = 10;
 
@@ -453,6 +459,7 @@ class ProjectViewModel : public panta::visualization::MeshSource {
     bool m_importPreviewReady = false;
     QString m_importPreviewName;
     QString m_importPreviewDimensions;
+    QString m_importPreviewSuggestedUnits;
     quint64 m_importPreviewTriangleCount = 0;
     quint64 m_importRequest = 0;
     bool m_importPending = false;

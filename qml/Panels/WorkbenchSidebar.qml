@@ -19,6 +19,15 @@ PanelSurface {
     signal collapseRequested
     // 选中诊断节点时请求宿主展开底部面板的诊断页。
     signal qualityRevealRequested
+    // 节点右键菜单（task 040）转交宿主的命令；启用条件与工具栏同一口径，由宿主传入。
+    signal importRequested
+    signal saveRequested
+    signal exportRequested
+    signal diagnoseRequested
+    property bool canImport: false
+    property bool canSave: false
+    property bool canExport: false
+    property bool canDiagnose: false
 
     readonly property var treeModel: projectModel.objectTree
     // 会话内选中的节点 ID；节点消失时回落到活动资产或工程根节点。
@@ -72,6 +81,74 @@ PanelSurface {
         else if (node.kind === "section")
             sidebar.setSectionEnabled(!node.visible);
     }
+    // 节点菜单项：只列出与该节点类型相关的命令；导出 / 诊断作用于活动资产，非活动资产先「打开页签」。
+    function nodeMenuEntries(node: var): var {
+        const kind = node.kind ?? "";
+        const isActive = (node.assetId ?? "").length > 0 && node.assetId === sidebar.projectModel.activeDocumentId;
+        const sectionEditable = !sidebar.projectModel.animationActive && !sidebar.editLocked;
+        if (kind === "project")
+            return [["import", "导入网格…", sidebar.canImport], ["save", "保存工程", sidebar.canSave]];
+        if (kind === "asset")
+            return [["activate", "打开页签", true], ["visibility", node.visible ? "隐藏" : "显示", node.canToggleVisibility ?? false], ["diagnose", "质量诊断", isActive && sidebar.canDiagnose], ["export", "导出网格…", isActive && sidebar.canExport]];
+        if (kind === "section")
+            return [["visibility", node.visible ? "隐藏切面" : "显示切面", sectionEditable]];
+        if (kind === "quality")
+            return [["reveal", "查看诊断结果", true], ["diagnose", "重新诊断", isActive && sidebar.canDiagnose]];
+        if ((node.assetId ?? "").length > 0)
+            return [["activate", "打开页签", true]];
+        return [];
+    }
+    function runNodeCommand(nodeId: string, command: string) {
+        if (command === "activate")
+            sidebar.activateNode(nodeId);
+        else if (command === "visibility")
+            sidebar.toggleNodeVisible(nodeId);
+        else if (command === "reveal")
+            sidebar.qualityRevealRequested();
+        else if (command === "import")
+            sidebar.importRequested();
+        else if (command === "save")
+            sidebar.saveRequested();
+        else if (command === "export")
+            sidebar.exportRequested();
+        else if (command === "diagnose")
+            sidebar.diagnoseRequested();
+    }
+    // 右键、Shift+F10 与菜单键共用：先选中节点，再在行内弹出；没有可用命令的节点不弹菜单。
+    function openNodeMenu(nodeId: string, anchor: Item, x: real, y: real) {
+        sidebar.selectNode(nodeId);
+        const entries = sidebar.nodeMenuEntries(sidebar.treeModel.node(nodeId));
+        if (entries.length === 0)
+            return;
+        nodeMenu.nodeId = nodeId;
+        nodeMenu.entries = entries;
+        nodeMenu.popup(anchor, x, y);
+    }
+    function openCurrentNodeMenu() {
+        const nodeId = sidebar.selectedNode.id ?? "";
+        const row = objectTree.itemAtIndex(sidebar.treeModel.indexOfNode(nodeId));
+        if (row)
+            sidebar.openNodeMenu(nodeId, row, Theme.treeIndent, row.height);
+    }
+
+    Menu {
+        id: nodeMenu
+        objectName: "objectTreeMenu"
+        popupType: Popup.Window
+        property string nodeId: ""
+        property var entries: []
+        Repeater {
+            model: nodeMenu.entries
+            delegate: MenuItem {
+                required property var modelData
+                objectName: "objectTreeMenu_" + modelData[0]
+                text: modelData[1]
+                enabled: modelData[2]
+                onTriggered: sidebar.runNodeCommand(nodeMenu.nodeId, modelData[0])
+            }
+        }
+    }
+
     function setSectionEnabled(enabled: bool) {
         const model = sidebar.projectModel;
         model.setSection(enabled, model.sectionNormalX, model.sectionNormalY, model.sectionNormalZ, model.sectionFraction);
@@ -211,6 +288,12 @@ PanelSurface {
                     }
                     Keys.onReturnPressed: sidebar.activateNode(sidebar.selectedNode.id ?? "")
                     Keys.onEnterPressed: sidebar.activateNode(sidebar.selectedNode.id ?? "")
+                    Keys.onPressed: event => {
+                        if (event.key === Qt.Key_Menu || (event.key === Qt.Key_F10 && event.modifiers === Qt.ShiftModifier)) {
+                            sidebar.openCurrentNodeMenu();
+                            event.accepted = true;
+                        }
+                    }
 
                     delegate: Rectangle {
                         id: treeRow
@@ -246,6 +329,13 @@ PanelSurface {
                                 sidebar.selectNode(treeRow.nodeId);
                             }
                             onDoubleTapped: sidebar.activateNode(treeRow.nodeId)
+                        }
+                        TapHandler {
+                            acceptedButtons: Qt.RightButton
+                            onTapped: eventPoint => {
+                                objectTree.forceActiveFocus();
+                                sidebar.openNodeMenu(treeRow.nodeId, treeRow, eventPoint.position.x, eventPoint.position.y);
+                            }
                         }
                         RowLayout {
                             anchors.fill: parent

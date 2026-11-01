@@ -174,6 +174,20 @@ pub(super) fn format_project_dimensions(
     panta_core::project::format_project_dimensions(size_x, size_y, size_z, unit)
 }
 
+/// 导入窗口「格式」行（task 040）；无法识别时返回空串，由界面显示中文说明。
+pub(super) fn import_format_text(path: &str) -> String {
+    panta_core::project::import_format_text(std::path::Path::new(path))
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// 预检尺寸对应的单位建议（task 040）；无建议时返回空串。
+pub(super) fn suggest_import_units(size_x: f64, size_y: f64, size_z: f64) -> String {
+    panta_core::project::suggest_import_units([size_x, size_y, size_z])
+        .unwrap_or_default()
+        .to_owned()
+}
+
 pub(super) fn mesh_type_catalog() -> Vec<bridge::ChoiceDefinition> {
     panta_core::project::MESH_TYPES
         .iter()

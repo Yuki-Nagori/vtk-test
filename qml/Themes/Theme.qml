@@ -113,6 +113,12 @@ QtObject {
     readonly property int importDialogWidth: 680
     readonly property int importDialogMinimumWidth: 580
     readonly property int importDialogMinimumHeight: 240
+    // 截图选项与快捷键帮助窗口（task 040）。
+    readonly property int screenshotDialogWidth: 460
+    readonly property int screenshotDialogMinimumHeight: 220
+    readonly property int helpDialogWidth: 560
+    readonly property int helpDialogHeight: 620
+    readonly property int helpKeyColumnWidth: 180
 
     // 消息级别（task 039）："" 普通 / "info" / "success" / "warning" / "error"。
     // 状态不只靠颜色：每个级别同时配图标，文字由调用方给出。

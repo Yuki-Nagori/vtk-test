@@ -32,7 +32,8 @@ class CaeViewport : public QQuickItem {
     void setMeshVisible(bool visible);
 
     /// 把当前视口帧保存为 PNG（原子替换目标文件）；返回中文错误文案，空串表示成功。
-    Q_INVOKABLE QString saveScreenshot(const QUrl& url);
+    /// scale 为分辨率倍率（1..3），includeLegend 决定截图中是否保留 VTK 色标（task 040）。
+    Q_INVOKABLE QString saveScreenshot(const QUrl& url, int scale = 1, bool includeLegend = true);
 
     /// 平滑切换到预设视角：front/back/left/right/top/bottom/iso（task 017）。
     Q_INVOKABLE bool setViewPreset(const QString& name);
