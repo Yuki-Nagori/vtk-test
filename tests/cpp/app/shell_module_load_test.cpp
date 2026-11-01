@@ -1095,6 +1095,33 @@ class ShellModuleLoadTest final : public QObject {
         window->requestActivate();
         QVERIFY(QTest::qWaitForWindowExposed(window));
 
+        // task 034 验收：拾取、单位、LOD / 流式、时间步只在状态栏显示，侧栏与播放栏不重复。
+        auto* statusBar = window->findChild<QQuickItem*>(QStringLiteral("statusBar"));
+        QVERIFY(statusBar);
+        for (const char* name : {"pickReadout", "statusUnits", "statusTimeStep"}) {
+            auto* field = visual_item(statusBar, QString::fromLatin1(name));
+            QVERIFY2(field, name);
+            QTRY_VERIFY2(field->isVisible(), name);
+            QVERIFY2(!visual_item(sidebar, QString::fromLatin1(name)), name);
+        }
+        QVERIFY(!visual_item(sidebar, QStringLiteral("activeMeshLodStatus")));
+        QCOMPARE(visual_item(statusBar, QStringLiteral("statusUnits"))->property("text").toString(),
+                 QStringLiteral("单位 mm"));
+        QCOMPARE(
+            visual_item(statusBar, QStringLiteral("statusTimeStep"))->property("text").toString(),
+            QStringLiteral("时间步 %1/%2")
+                .arg(model->playbackFrame() + 1)
+                .arg(model->playbackFrameCount()));
+        // 播放中长状态文字归状态栏，播放栏状态行为空。
+        QVERIFY(window->findChild<QObject*>(QStringLiteral("playbackStatus"))
+                    ->property("text")
+                    .toString()
+                    .isEmpty());
+        // LOD / 流式字段：有状态文字时出现在状态栏。
+        auto* lod = visual_item(statusBar, QStringLiteral("activeMeshLodStatus"));
+        QVERIFY(lod);
+        QCOMPARE(lod->isVisible(), !model->activeMeshLodStatus().isEmpty());
+
         auto* quality = window->findChild<QQuickItem*>(QStringLiteral("meshQualityPanel"));
         QVERIFY(quality);
         QTest::keyClick(window, Qt::Key_D, Qt::ControlModifier);
